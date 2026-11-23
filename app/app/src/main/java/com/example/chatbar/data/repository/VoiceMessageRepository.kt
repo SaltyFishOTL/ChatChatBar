@@ -572,20 +572,24 @@ class VoiceMessageRepository(
                 message == null || voice.versionOwnershipConfirmed -> voice.messageVersionId
                 recorded != null && (!voice.requiresCompatibleVersion || VoiceMessageVersionPolicy.isCompatibleVersion(recorded, voice)) -> recorded.id
                 voice.requiresCompatibleVersion || !voice.messageVersionId.isNullOrBlank() ->
-                    VoiceMessageVersionPolicy.compatibleVersionId(message, voice) ?: voice.messageVersionId
+                    VoiceMessageVersionPolicy.recoverCompatibleVersionId(message, voice) ?: voice.messageVersionId
                 else -> VoiceMessageVersionPolicy.inferLegacyVersionId(message, voice, legacyState = null)
             }
             val version = versions.firstOrNull { it.id == versionId }
             val state = version?.takeIf { !voice.requiresCompatibleVersion || VoiceMessageVersionPolicy.isCompatibleVersion(it, voice) }
                 ?.let { anchorStatesByMessageVersion[voice.messageId to it.id] }
-            val anchorId = state?.let { VoiceMessageVersionPolicy.anchorIdForVoice(voice, it) }
-            voice.copy(
+            val resolved = voice.copy(
                 sessionId = sessionId,
                 messageVersionId = versionId,
                 versionOwnershipConfirmed = voice.versionOwnershipConfirmed && versionId == voice.messageVersionId,
-                anchorId = anchorId ?: voice.anchorId.takeUnless { voice.requiresCompatibleVersion },
+                legacyVersionContentHash = VoiceMessageVersionPolicy.legacyVersionContentHash(voice, version),
                 updatedAt = System.currentTimeMillis()
             )
+            resolved.copy(anchorId = state?.let {
+                VoiceMessageVersionPolicy.archivedAnchorIdForVoice(
+                    resolved, it, recoverUnversionedAnchor = voice.messageVersionId.isNullOrBlank()
+                )
+            })
         }
         restoreForSession(sessionId, remapped)
     }
@@ -635,7 +639,8 @@ class VoiceMessageRepository(
                 voice
             } else {
                 val versionId = if (voice.requiresCompatibleVersion) {
-                    VoiceMessageVersionPolicy.compatibleVersionId(message, voice) ?: return@map voice.copy(anchorId = null)
+                    VoiceMessageVersionPolicy.recoverCompatibleVersionId(message, voice)
+                        ?: return@map voice.copy(anchorId = null)
                 } else {
                     VoiceMessageVersionPolicy.inferLegacyVersionId(message, voice, legacyState)
                 }
@@ -652,14 +657,17 @@ class VoiceMessageRepository(
                     )
                     saveAnchorLocked(key, state)
                 }
-                voice.copy(
+                val resolved = voice.copy(
                     messageVersionId = versionId,
                     versionOwnershipConfirmed = false,
-                    anchorId = state?.let {
-                        VoiceMessageVersionPolicy.anchorIdForVoice(voice, it)
-                    },
+                    legacyVersionContentHash = VoiceMessageVersionPolicy.legacyVersionContentHash(voice, version),
                     updatedAt = System.currentTimeMillis()
                 )
+                resolved.copy(anchorId = state?.let {
+                    if (voice.requiresCompatibleVersion) VoiceMessageVersionPolicy.archivedAnchorIdForVoice(
+                        resolved, it, recoverUnversionedAnchor = voice.messageVersionId.isNullOrBlank()
+                    ) else VoiceMessageVersionPolicy.anchorIdForVoice(voice, it)
+                })
             }
         }
         persistChangedVoicesLocked(_voices.value, changed)

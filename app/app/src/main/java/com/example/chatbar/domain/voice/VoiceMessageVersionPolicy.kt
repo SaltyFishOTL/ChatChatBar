@@ -6,6 +6,7 @@ import com.example.chatbar.data.local.entity.VoiceAnchor
 import com.example.chatbar.data.local.entity.VoiceAnchorState
 import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
 import com.example.chatbar.domain.chat.MessageVersionSnapshot
+import java.security.MessageDigest
 import kotlin.math.abs
 
 object VoiceMessageVersionPolicy {
@@ -78,8 +79,23 @@ object VoiceMessageVersionPolicy {
     internal fun compatibleVersionId(message: ChatMessage, voice: GeneratedVoiceMessage): String? =
         MessageAlternativeVersionPolicy.versions(message).singleOrNull { isCompatibleVersion(it, voice) }?.id
 
+    internal fun recoverCompatibleVersionId(message: ChatMessage, voice: GeneratedVoiceMessage): String? {
+        // A shared line cannot establish a new owner for a previously assigned segment recording.
+        if (!voice.messageVersionId.isNullOrBlank() && voice.legacyVersionContentHash == null &&
+            voice.sourceSegmentKind != VoiceGenerationPolicy.WHOLE_MESSAGE_SOURCE_KIND) return null
+        return compatibleVersionId(message, voice)
+    }
+
     internal fun isCompatibleVersion(version: MessageVersionSnapshot, voice: GeneratedVoiceMessage): Boolean =
+        (voice.legacyVersionContentHash == null || voice.legacyVersionContentHash == contentHash(version.content)) &&
         versionContainsVoice(version, voice, requireMatchingSpeaker = true)
+
+    internal fun legacyVersionContentHash(voice: GeneratedVoiceMessage, version: MessageVersionSnapshot?): String? =
+        voice.legacyVersionContentHash ?: version?.takeIf {
+            voice.messageVersionId.isNullOrBlank() &&
+                voice.sourceSegmentKind != VoiceGenerationPolicy.WHOLE_MESSAGE_SOURCE_KIND &&
+                versionContainsVoice(it, voice, requireMatchingSpeaker = true)
+        }?.let { contentHash(it.content) }
 
     fun anchorIdForVoice(
         voice: GeneratedVoiceMessage,
@@ -107,9 +123,10 @@ object VoiceMessageVersionPolicy {
     internal fun archivedAnchorIdForVoice(
         voice: GeneratedVoiceMessage,
         state: VoiceAnchorState,
-        exactArchivedLayout: Boolean = false
+        exactArchivedLayout: Boolean = false,
+        recoverUnversionedAnchor: Boolean = false
     ): String? {
-        val archivedAnchorId = voice.anchorId ?: return null
+        if (voice.anchorId == null && !recoverUnversionedAnchor) return null
         if (voice.sessionId != state.sessionId || voice.messageId != state.messageId ||
             voice.messageVersionId != state.messageVersionId ||
             voice.sourceSegmentKind == VoiceGenerationPolicy.WHOLE_MESSAGE_SOURCE_KIND) return null
@@ -118,7 +135,7 @@ object VoiceMessageVersionPolicy {
                 normalize(speakerName.orEmpty()) == normalize(voice.sourceSpeakerName) &&
                 normalize(sourceText) == normalize(voice.sourceText)
         }
-        val savedAnchor = state.anchors.firstOrNull { it.id == archivedAnchorId }
+        val savedAnchor = state.anchors.firstOrNull { it.id == voice.anchorId }
         if (exactArchivedLayout) return savedAnchor?.id
         savedAnchor?.let { return it.takeIf(::matchesSource)?.id }
         return state.anchors.singleOrNull(::matchesSource)?.id
@@ -148,4 +165,8 @@ object VoiceMessageVersionPolicy {
 
     private fun normalize(value: String): String =
         value.replace(Regex("\\s+"), " ").trim()
+
+    private fun contentHash(content: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(content.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
 }

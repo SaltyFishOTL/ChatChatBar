@@ -10,7 +10,9 @@ import com.example.chatbar.data.local.entity.SaveSlot
 import com.example.chatbar.data.local.entity.SaveSlotImagePolicy
 import com.example.chatbar.data.local.entity.VoiceAnchorState
 import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
+import com.example.chatbar.domain.chat.SaveSlotJsonTransfer
 import com.example.chatbar.domain.chat.SaveSlotPackageStorage
+import com.example.chatbar.domain.deletion.ReplyRemoval
 import com.example.chatbar.domain.voice.FishAudioStoredAudio
 import com.example.chatbar.domain.voice.VoiceAnchorPolicy
 import com.example.chatbar.domain.voice.VoiceAnchorStateKey
@@ -19,6 +21,7 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -30,6 +33,140 @@ import org.junit.rules.TemporaryFolder
 
 class VoiceMessageRepositoryTest {
     @get:Rule val temp = TemporaryFolder()
+
+    @Test
+    fun `raw v7 recorded orphan stays at message head and exact old placement is recovered`() = runBlocking {
+        val context = TestContext(temp.newFolder())
+        val chats = ChatRepository(JsonFileStorage(context))
+        val voices = VoiceMessageRepository(JsonFileStorage(context), chats::getMessage)
+        val input = temp.newFile("legacy-v7.json")
+        input.writeText(
+            """{
+              "schemaVersion":7,"id":"slot","sessionId":"original","name":"Legacy","createdAt":1,
+              "messages":[{"id":"m","sessionId":"original","role":"ASSISTANT",
+                "content":"<n=\"甲\"/>[Still here]()","createdAt":1,"updatedAt":1}],
+              "voiceMessages":[
+                {"id":"orphan","sessionId":"original","messageId":"m","messageVersionId":"m",
+                 "anchorId":null,"sourceOrder":0,"sourceSegmentKind":"DIALOGUE","sourceSpeakerName":"甲",
+                 "sourceText":"Deleted line","taggedText":"Deleted line","characterId":"speaker","characterName":"Speaker",
+                 "voice":{"referenceId":"synthetic","title":"Synthetic"},"fishModelId":"synthetic",
+                 "audioPath":"orphan","durationMs":1,"byteLength":5,"createdAt":1,"updatedAt":1},
+                {"id":"exact","sessionId":"original","messageId":"m","messageVersionId":"m",
+                 "anchorId":"old-anchor","sourceOrder":0,"sourceSegmentKind":"DIALOGUE","sourceSpeakerName":"甲",
+                 "sourceText":"Still here","taggedText":"Still here","characterId":"speaker","characterName":"Speaker",
+                 "voice":{"referenceId":"synthetic","title":"Synthetic"},"fishModelId":"synthetic",
+                 "audioPath":"exact","durationMs":1,"byteLength":5,"createdAt":1,"updatedAt":1}]
+            }""".trimIndent()
+        )
+        val raw = input.readBytes()
+        val slot = input.inputStream().use(SaveSlotJsonTransfer::read)
+        val message = slot.messages.single().copy(sessionId = "target")
+        val recordings = slot.voiceMessages.map { voice ->
+            val audio = File(context.filesDir, "${voice.id}.mp3").apply { writeText(voice.id) }
+            voice.copy(audioPath = audio.path)
+        }
+        chats.replaceMessagesForSession(message.sessionId, listOf(message))
+        voices.restoreForSession(message.sessionId, recordings, listOf(message))
+
+        val cold = VoiceMessageRepository(JsonFileStorage(context), chats::getMessage)
+        val placements = cold.placementsForMessage(requireNotNull(chats.getMessage(message.id, message.sessionId)))
+            .associateBy { it.voice.id }
+        assertNull(placements.getValue("orphan").voice.anchorId)
+        assertNull(placements.getValue("orphan").segmentIndex)
+        assertEquals(0, placements.getValue("exact").segmentIndex)
+        placements.values.forEach { assertEquals(it.voice.id, File(it.voice.audioPath).readText()) }
+        assertArrayEquals(raw, input.readBytes())
+    }
+
+    @Test
+    fun `previously placed legacy line does not follow a different reply after deletion and archive restore`() =
+        verifySharedLegacyLine(openFirst = true)
+
+    @Test
+    fun `previously placed legacy line can follow a reply with identical whole text`() =
+        verifySharedLegacyLine(openFirst = true, sameReply = true)
+
+    @Test
+    fun `unassigned legacy line can still recover by its exact source`() = verifySharedLegacyLine(openFirst = false)
+
+    private fun verifySharedLegacyLine(openFirst: Boolean, sameReply: Boolean = false) = runBlocking {
+        val context = TestContext(temp.newFolder())
+        val chats = ChatRepository(JsonFileStorage(context))
+        val voices = VoiceMessageRepository(JsonFileStorage(context), chats::getMessage)
+        val original = chats.addMessage(ChatMessage.create(
+            "source", MessageRole.ASSISTANT, "<n=\"甲\"/>[Shared line]()\n<n=\"甲\"/>[A only]()"
+        ))
+        val originalId = MessageAlternativeVersionPolicy.activeVersionId(original)
+        val audio = File(context.filesDir, "recorded.mp3").apply { writeText("synthetic audio") }
+        val voice = recording(original, "legacy", "Shared line", null).copy(
+            messageVersionId = null, versionOwnershipConfirmed = false, audioPath = audio.path, byteLength = audio.length()
+        )
+        voices.save(voice)
+        if (openFirst) assertEquals(0, voices.placementsForMessage(original).single().segmentIndex)
+        val alternate = if (sameReply) original.content else "<n=\"甲\"/>[Shared line]()\n<n=\"甲\"/>[B only]()"
+        val regenerated = MessageAlternativeVersionPolicy.append(original, alternate, "B")
+        val current = requireNotNull(chats.updateMessageIfUnchanged(original, regenerated))
+        val survivor = requireNotNull(MessageAlternativeVersionPolicy.remove(current, originalId))
+        assertTrue(voices.prepareReplyRemoval(current, originalId, {}) { collectAudio ->
+            chats.commitReplyRemoval(current, survivor) { assertTrue(collectAudio().isEmpty()) }
+        })
+        val removal = ReplyRemoval("remove-legacy", original.sessionId, original.id, originalId, original.role,
+            original.sourceTurnId, original.sourceTurnOrder, original.timelineTurn, emptyList(), emptyList())
+        assertTrue(voices.finishReplyRemoval(removal, { cleanup -> chats.finishReplyRemoval(removal, cleanup) }, {},
+            { error("The unconfirmed recording must be retained") }))
+
+        val coldChats = ChatRepository(JsonFileStorage(context))
+        val cold = VoiceMessageRepository(JsonFileStorage(context), coldChats::getMessage)
+        val persisted = requireNotNull(coldChats.getMessage(original.id, original.sessionId))
+        val expectedVersions = if (!openFirst || sameReply) listOf("B") else emptyList<String>()
+        assertEquals(expectedVersions, cold.placementsForMessage(persisted).map { it.voice.messageVersionId })
+        val retained = cold.listForSession(original.sessionId).single()
+        assertEquals(expectedVersions.singleOrNull() ?: originalId, retained.messageVersionId)
+        assertFalse(retained.versionOwnershipConfirmed)
+        assertTrue(retained.requiresCompatibleVersion)
+        assertNotNull(retained.legacyVersionContentHash)
+        assertEquals("synthetic audio", File(retained.audioPath).readText())
+
+        val archive = SaveSlot.create(original.sessionId, "Retired line", messages = listOf(persisted))
+            .copy(schemaVersion = 7, voiceMessages = listOf(retained))
+        val inline = temp.newFile("re-export-v7.json")
+        inline.outputStream().use { SaveSlotJsonTransfer.write(archive, it) }
+        val imported = inline.inputStream().use(SaveSlotJsonTransfer::read)
+        val rebound = imported.messages.single().copy(sessionId = "inline-target")
+        val destinationAudio = File(context.filesDir, "rebound.mp3").apply { writeBytes(audio.readBytes()) }
+        coldChats.replaceMessagesForSession(rebound.sessionId, listOf(rebound))
+        cold.restoreForSession(rebound.sessionId, imported.voiceMessages.map {
+            it.copy(id = "rebound-voice", audioPath = destinationAudio.path)
+        }, listOf(rebound))
+
+        val packages = SaveSlotPackageStorage(context)
+        val modern = packages.createPackage(SaveSlot.create(original.sessionId, "Portable audio"), SaveSlotImagePolicy.NONE, true,
+            messageSource = { emit -> emit(persisted) }, ragSource = {}, voices = listOf(retained))
+        val exported = temp.newFile("re-export-v8.cbsave")
+        exported.outputStream().use { packages.export(modern, it) }
+        val packagedSession = "package-target"
+        val importedPackage = exported.inputStream().use { packages.importPackage(it, packagedSession) { name -> name }.slot }
+        packages.openReader(importedPackage).use { reader ->
+            reader.validate()
+            val restoredVoices = reader.restoreVoices(packagedSession) { _, _, input ->
+                val path = File(context.filesDir, "packaged-rebound.mp3")
+                path.outputStream().use { input.copyTo(it) }
+                FishAudioStoredAudio(path.path, 1_000, path.length())
+            }
+            coldChats.replaceMessagesForSessionStreaming(packagedSession) { emit -> reader.streamMessages(packagedSession, emit) }
+            cold.restorePackagedForSession(packagedSession, restoredVoices) { emit -> reader.streamVoiceAnchors(packagedSession, emit) }
+        }
+
+        val freshChats = ChatRepository(JsonFileStorage(context))
+        val restored = VoiceMessageRepository(JsonFileStorage(context), freshChats::getMessage)
+        for (sessionId in listOf(rebound.sessionId, packagedSession)) {
+            val message = requireNotNull(freshChats.getMessage(original.id, sessionId))
+            assertEquals(expectedVersions, restored.placementsForMessage(message).map { it.voice.messageVersionId })
+            val reboundClip = restored.listForSession(sessionId).single()
+            assertEquals(retained.legacyVersionContentHash, reboundClip.legacyVersionContentHash)
+            assertEquals("synthetic audio", File(reboundClip.audioPath).readText())
+        }
+    }
 
     @Test
     fun `restored v8 recordings recover exact placement after version removal and cold read`() = runBlocking {

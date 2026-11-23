@@ -162,6 +162,9 @@ class BackupMergeEngineTest {
             characterId = "speaker", characterName = "人物", voice = FishAudioVoiceBinding("remote-reference", "voice"),
             fishModelId = "remote-model", audioPath = audio.path, durationMs = 100, byteLength = audio.length())
         write(source, "entities/generated_voice_messages/${voice.id}.json", backupJson.encodeToString(voice))
+        val dormant = voice.copy(id = "retired-voice", messageVersionId = "removed-version", anchorId = null,
+            requiresCompatibleVersion = true, legacyVersionContentHash = MemoryHashes.text("完整旧回复"))
+        write(source, "entities/generated_voice_messages/${dormant.id}.json", backupJson.encodeToString(dormant))
         val anchor = VoiceAnchorState("message", sessionId = "session", displayContentSnapshot = "原语音正文",
             anchors = listOf(VoiceAnchor("anchor", "dialogue", "人物", "原语音正文", 0, 5, 1)))
         write(source, "entities/voice_anchor_states/message.json", backupJson.encodeToString(anchor))
@@ -211,7 +214,8 @@ class BackupMergeEngineTest {
         assertEquals(listOf(newParent.id), importedRevision.snapshotNodeIds)
         assertEquals(setOf(newLeaf.id), importedState.staleSourcesByNodeId.keys)
         assertEquals("旧内容", records<ChatMessage>(staged, "chat_messages").single { it.id == "message" }.content)
-        val copiedVoice = records<GeneratedVoiceMessage>(staged, "generated_voice_messages").single()
+        val copiedVoices = records<GeneratedVoiceMessage>(staged, "generated_voice_messages")
+        val copiedVoice = copiedVoices.single { !it.requiresCompatibleVersion }
         assertNotEquals(voice.id, copiedVoice.id)
         assertEquals(copied.id, copiedVoice.sessionId)
         assertEquals(copiedMessage.id, copiedVoice.messageId)
@@ -219,6 +223,14 @@ class BackupMergeEngineTest {
         assertEquals("remote-reference", copiedVoice.voice.referenceId)
         assertEquals("remote-model", copiedVoice.fishModelId)
         assertArrayEquals(audio.readBytes(), File(staged, File(copiedVoice.audioPath).relativeTo(local).path).readBytes())
+        val copiedDormant = copiedVoices.single { it.requiresCompatibleVersion }
+        assertNotEquals(dormant.id, copiedDormant.id)
+        assertEquals(copied.id, copiedDormant.sessionId)
+        assertEquals(copiedMessage.id, copiedDormant.messageId)
+        assertEquals(dormant.messageVersionId, copiedDormant.messageVersionId)
+        assertEquals(dormant.legacyVersionContentHash, copiedDormant.legacyVersionContentHash)
+        assertNull(copiedDormant.anchorId)
+        assertArrayEquals(audio.readBytes(), File(staged, File(copiedDormant.audioPath).relativeTo(local).path).readBytes())
         val copiedAnchor = records<VoiceAnchorState>(staged, "voice_anchor_states").single()
         assertEquals(copiedMessage.id, copiedAnchor.messageId)
         assertEquals(copied.id, copiedAnchor.sessionId)
