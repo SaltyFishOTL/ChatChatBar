@@ -208,6 +208,102 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `main stream cleans a split story followed by an independent tool wrapper`(): Unit = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val parts = listOf(
+            "<历史回复 模式=\"聚焦\">\n甲段。",
+            "乙段。\n</历史回复>",
+            PromptTemplates.narrativeModeHistoryReply("丙段。", ChatNarrativeMode.ADVANCE),
+        )
+        val expected = "甲段。\n乙段。\n丙段。"
+        val completed = assertMultipartNarrativeReply(parts, expected)
+        val previous = ChatMessage.create("multipart-next", MessageRole.ASSISTANT, completed)
+        val projected = ChatHistoryPromptPolicy.renderedHistoryText(previous, completed)
+        val nextMessages = listOf(messages.first(), ChatApiMessage.text("assistant", projected), messages.last())
+        val response = sse(listOf("""{"choices":[{"delta":{"content":"后续正文"},"finish_reason":"stop"}]}""", "[DONE]"))
+        TaskResponseServer(response, "text/event-stream").use { server ->
+            val events = withTimeout(5_000) { service().streamChat("multipart-next", nextMessages, model(server)).toList() }
+            assertEquals(StreamEvent.Done, events.last())
+            val request = Json.parseToJsonElement(server.requestBody).jsonObject
+            val contextDescription = request.getValue("tools").jsonArray.map { it.jsonObject.getValue("function").jsonObject }
+                .single { it.getValue("name").jsonPrimitive.content == "context" }.getValue("description").jsonPrimitive.content
+            val history = Json.parseToJsonElement(contextDescription).jsonArray.first().jsonObject
+            assertEquals("assistant", history.getValue("role").jsonPrimitive.content)
+            assertEquals(PromptTemplates.narrativeModeHistoryReply(expected, mode), history.getValue("content").jsonPrimitive.content)
+        }
+        assertMultipartNarrativeReply(
+            listOf(parts.last()) + parts.dropLast(1), "丙段。\n甲段。\n乙段。",
+        )
+    }
+
+    @Test
+    fun `grouped tool stories preserve literal and nested tags across their own calls`(): Unit = runBlocking {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val close = "</历史回复>"
+        val nested = PromptTemplates.narrativeModeHistoryReply("嵌入的例子。", ChatNarrativeMode.ADVANCE)
+        val independent = PromptTemplates.narrativeModeHistoryReply("另一段故事。", ChatNarrativeMode.ADVANCE)
+        val parts = listOf(
+            "$opening\n她说：“这行是引语：",
+            "$close\n引语结束。”\n~~~xml\n$close",
+            "~~~\n$nested\n旁白继续。\n$close",
+            independent,
+        )
+        val expected = "她说：“这行是引语：\n$close\n引语结束。”\n~~~xml\n$close\n~~~\n$nested\n旁白继续。\n另一段故事。"
+        assertMultipartNarrativeReply(parts, expected)
+    }
+
+    @Test
+    fun `tool grouping does not make visible examples or malformed closes eligible`(): Unit = runBlocking {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val close = "</历史回复>"
+        val independent = PromptTemplates.narrativeModeHistoryReply("另一段故事。", ChatNarrativeMode.ADVANCE)
+        val example = "$opening\n展示内容。\n$close\n这是一个标签示例。"
+        assertMultipartNarrativeReply(listOf(example, "示例解释。", independent), "$example\n示例解释。\n另一段故事。")
+        assertMultipartNarrativeReply(
+            listOf("$opening\n展示内容。", "示例下一行。\n$close", "这是一个标签示例。"),
+            "展示内容。\n示例下一行。\n$close\n这是一个标签示例。",
+        )
+        val malformed = "</历史回复 模式=\"聚焦\">"
+        assertMultipartNarrativeReply(
+            listOf("$opening\n第一段。", "中间正文。\n$malformed", independent),
+            "第一段。\n中间正文。\n$malformed\n另一段故事。",
+        )
+        assertMultipartNarrativeReply(
+            listOf("$opening\n格式正文第一段。", "格式正文第二段。\n$close", independent),
+            "$opening\n格式正文第一段。\n格式正文第二段。\n$close\n另一段故事。",
+            formatCard = "本轮输出模板：\n$opening\n正文范例\n$close",
+        )
+    }
+
+    private suspend fun assertMultipartNarrativeReply(
+        parts: List<String>, expected: String, formatCard: String? = null,
+    ): String {
+        val response = sse(parts.mapIndexed { index, part ->
+            chunk(buildJsonObject { put("content", part) }.toString(), "game_content", index = index)
+        } + listOf(chunk(reason = "tool_calls"), "[DONE]"))
+        return TaskResponseServer(response, "text/event-stream").use { server ->
+            var completion: ChatReplyCompletion? = null
+            val events = withTimeout(5_000) {
+                service().streamChat("grouped-tool-echo", messages, model(server),
+                    onReplyCompletion = { completion = it }).toList()
+            }
+            val deltas = events.filterIsInstance<StreamEvent.Delta>()
+            val raw = deltas.joinToString("") { it.text }
+            val lengths = deltas.last().toolReplyPartLengths
+            assertEquals(parts.joinToString("\n"), raw)
+            assertEquals(parts.map(String::length), lengths)
+            assertEquals(lengths, completion?.toolReplyPartLengths)
+            assertEquals(StreamEvent.Done, events.last())
+            val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.FOCUS, formatCard)
+            assertEquals("Preview", expected, cleanup.completedBody(raw, partLengths = lengths, streaming = true))
+            assertEquals("Stop", expected, cleanup.completedBody(raw, partLengths = lengths, interrupted = true))
+            cleanup.completedBody(raw, partLengths = completion?.toolReplyPartLengths.orEmpty()).also {
+                assertEquals("Done", expected, it)
+            }
+        }
+    }
+
+    @Test
     fun `multipart main stream keeps wrapper syntax inside cross call code comments and quotes`() = runBlocking {
         val literal = "<历史回复 模式=\"聚焦\">\n字面示例\n</历史回复>"
         for ((before, after) in listOf(

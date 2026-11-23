@@ -6,7 +6,11 @@ import com.example.chatbar.data.local.entity.ChatNarrativeMode
 object NarrativeHistoryEcho {
     private data class Wrapper(val name: String, val opening: String, val closings: List<String>)
     private data class WrapperBoundary(val closing: MatchResult?, val canEndWithPartialClose: Boolean)
-    private data class CleanedReply(val body: String, val matchedOuterPair: Boolean = false)
+    private data class CleanedReply(
+        val body: String,
+        val matchedOuterPair: Boolean = false,
+        val couldSpanToolCalls: Boolean = false,
+    )
     private data class LiteralMarkup(val range: IntRange, val isComment: Boolean)
     private data class ReplyLiterals(
         val ranges: List<IntRange>,
@@ -371,29 +375,59 @@ object NarrativeHistoryEcho {
                 projectedDuplicateOpenings = projectedDuplicateOpenings,
             )
             if (wholeReply.matchedOuterPair) return wholeReply.body
-            // Independent wrappers are still eligible, except where the joined Markdown makes a tag literal.
+            // Independent wrappers and groups of calls can coexist in the same tool reply.
             val joinedLiterals by lazy(LazyThreadSafetyMode.NONE) {
                 val tags = wrapperFamilyTokens.values.flatMap { it.findAll(text).toList() }.sortedBy { it.range.first }
                 classifyLiterals(text, tags, wrappers.flatMap { it.closings }, includeUnclosed = streaming || interrupted)
             }
-            var previousPartClosedWrapper = false
-            return parts.joinToString("\n") { part ->
-                val cleaned = cleanReply(
-                    text.substring(part.first, part.last + 1), streaming, interrupted,
-                    formatOutput = formatOutput,
+            var previousGroupClosedWrapper = false
+            fun cleanParts(
+                first: Int,
+                last: Int,
+                requirePair: Boolean = false,
+                followsClosedWrapper: Boolean = previousGroupClosedWrapper,
+            ): CleanedReply {
+                val start = parts[first].first
+                return cleanReply(
+                    text.substring(start, parts[last].last + 1), streaming, interrupted,
+                    requirePair = requirePair, formatOutput = formatOutput,
                     projectedDuplicateOpenings = projectedDuplicateOpenings,
                     isJoinedLiteral = { index, opening ->
-                        val joinedIndex = part.first + index
+                        val joinedIndex = start + index
                         joinedLiterals.ranges.any { joinedIndex in it } ||
                             joinedLiterals.isMarkdownContainerLine(
                                 joinedIndex,
-                                includeStandaloneLazyTags = opening && !previousPartClosedWrapper,
+                                includeStandaloneLazyTags = opening && !followsClosedWrapper,
                             )
                     },
                 )
-                // A genuine closing tag ends that reply's quoted paragraph before the next call.
-                previousPartClosedWrapper = cleaned.matchedOuterPair
-                cleaned.body
+            }
+            return buildString {
+                var first = 0
+                while (first < parts.size) {
+                    var cleaned = cleanParts(first, first)
+                    var next = first + 1
+                    if (cleaned.couldSpanToolCalls) {
+                        for (last in next..parts.lastIndex) {
+                            val grouped = cleanParts(first, last, requirePair = true)
+                            if (!grouped.matchedOuterPair) continue
+                            if (last < parts.lastIndex) {
+                                // A plain following call may explain a tag example. Only another
+                                // eligible opener establishes a boundary inside the joined body.
+                                val following = cleanParts(last + 1, last + 1, followsClosedWrapper = true)
+                                if (!following.matchedOuterPair && !following.couldSpanToolCalls) continue
+                            }
+                            cleaned = grouped
+                            next = last + 1
+                            break
+                        }
+                    }
+                    if (first > 0) append('\n')
+                    append(cleaned.body)
+                    // A genuine closing tag ends that reply's quoted paragraph before the next call.
+                    previousGroupClosedWrapper = cleaned.matchedOuterPair
+                    first = next
+                }
             }
         }
         return clean(text)
@@ -514,7 +548,7 @@ object NarrativeHistoryEcho {
             val afterClosing = closing.range.last + 1
             // A complete leading pair followed by visible prose is an example.
             if (!endsReply(closing)) {
-                return CleanedReply(text)
+                return CleanedReply(text, couldSpanToolCalls = true)
             }
             if (declared) return CleanedReply(text, matchedOuterPair = true)
             if (afterClosing == end.length) {
@@ -532,7 +566,7 @@ object NarrativeHistoryEcho {
             return CleanedReply(leadingContent + before + tail, matchedOuterPair = true)
         }
 
-        if (declared || requirePair) return CleanedReply(text)
+        if (declared || requirePair) return CleanedReply(text, couldSpanToolCalls = true)
         val sameLineContent = end.isNotEmpty() && !afterOpening.firstOrNull().isHistoryLineBreak()
         val lastTag = end.lastIndexOf('<')
         if (lastTag >= 0 && boundary.canEndWithPartialClose) {
@@ -546,9 +580,9 @@ object NarrativeHistoryEcho {
                 !isEscaped(end, lastTag) && !literals.isMarkdownContainerLine(lastTag) &&
                 literals.ranges.none { lastTag in it } && !literals.hasCodeIndentAt(lastTag) &&
                 isJoinedLiteral?.invoke(bodyStart + lastTag, false) != true
-            ) return CleanedReply(leadingContent + bodyBeforeClose(lastTag))
+            ) return CleanedReply(leadingContent + bodyBeforeClose(lastTag), couldSpanToolCalls = true)
         }
-        return CleanedReply(if (sameLineContent) text else leadingContent + body)
+        return CleanedReply(if (sameLineContent) text else leadingContent + body, couldSpanToolCalls = true)
     }
 
     private fun Wrapper.matchesProjectedDuplicate(body: String, tags: List<MatchResult>): Boolean {
