@@ -314,7 +314,8 @@ private fun splitCodeFenceSegments(visible: VisibleRoleplayText): List<RoleplayT
 }
 
 private val dashFencePattern = Regex("(?m)^[ \t]*---[ \t]*$")
-private val actionOptionsHeading = Regex(" {0,3}${Regex.escape("**【行动选项】**")}[ \\t]*")
+private const val actionOptionsTitle = "**【行动选项】**"
+private val actionOptionsHeading = Regex(" {0,3}${Regex.escape(actionOptionsTitle)}[ \\t]*")
 private val numberedActionOption = Regex(" {0,3}([1-9][0-9]{0,8})\\.(?:[ \\t]+|(?=\\*\\*))\\S.*")
 
 private fun matchesNumberedActionOption(line: String, ordinal: Int): Boolean =
@@ -449,6 +450,7 @@ private fun mergeVisibleRanges(ranges: List<VisibleRange>): List<VisibleRange> {
 
 private const val annotatedActionLabel = "（横线为选项包裹格式，必须完整输出）"
 private const val annotatedActionDashCount = 22
+internal val annotatedRoleplayActionOpening = "—".repeat(annotatedActionDashCount) + annotatedActionLabel
 private val annotatedActionBoundary = Regex(
     "(?m)^ {0,3}(—{$annotatedActionDashCount}$annotatedActionLabel|" +
         "$annotatedActionLabel—{$annotatedActionDashCount})[ \\t]*(?=\\r?\\n|\\z)",
@@ -457,6 +459,19 @@ private val annotatedActionBodyStart = Regex(
     "(?:[ \\t]*\\r?\\n)*${actionOptionsHeading.pattern}\\r?\\n" +
         "(?:[ \\t]*\\r?\\n)* {0,3}1\\.[ \\t]*\\S",
 )
+
+/** Match the partial opening only when the active format card established this option block. */
+internal fun isPendingAnnotatedRoleplayActionOpening(text: String): Boolean {
+    val line = text.lineSequence().first()
+    val opening = line.trim()
+    if (opening.isEmpty()) return false
+    if (opening != annotatedRoleplayActionOpening) {
+        return line.length == text.length && annotatedRoleplayActionOpening.startsWith(opening)
+    }
+
+    val heading = text.substring(line.length).trimStart().trimEnd(' ', '\t')
+    return actionOptionsTitle.startsWith(heading)
+}
 
 /** Recognize a received option suffix before its closing delimiter arrives. */
 internal fun isPendingRoleplayActionSuffix(text: String): Boolean {

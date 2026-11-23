@@ -42,15 +42,19 @@ object NarrativeHistoryEcho {
     private val formatTemplateAffirmation = Regex(
         "[ \\t]*(?:（[ \\t]*标签是固定输出的一部分[ \\t]*）|\\([ \\t]*标签是固定输出的一部分[ \\t]*\\))[ \\t]*[。.]?[ \\t]*",
     )
+    private const val keepTemplateTags = "(?:必须|务必|请)(?:逐字|原样|完整)保留(?:以下)?首尾标签"
+    private const val omitTemplateFence = "(?:不要|不得|禁止)输出代码围栏"
+    private const val forbidTemplateTags =
+        "(?:请勿|不要|不得|禁止|严禁)(?:在(?:本轮|回复中))?输出(?:以下(?:任何)?|下列|这些|上述|上面的)(?:历史)?标签"
     private val fencedTemplateLabel = Regex(
-        " {0,3}请严格按照以下固定模板作答，必须逐字保留首尾标签，不要输出代码围栏[：:][ \\t]*",
+        " {0,3}请严格按照以下固定模板作答[，,][ \\t]*$keepTemplateTags[，,][ \\t]*$omitTemplateFence[：:][ \\t]*",
     )
     private val replySampleLabel = Regex(" {0,3}(\\*\\*|)回复样张[ \\t]*[：:]\\1[ \\t]*")
     private val keepSampleTags = Regex(
-        "^ {0,3}(?:每次回复[ \\t]*)?(?:必须|务必|请)(?:逐字|原样|完整)保留(?:以下)?首尾标签(?=$|[，。；,.; \\t])",
+        "^ {0,3}(?:每次回复[ \\t]*)?$keepTemplateTags(?=$|[，。；,.; \\t])",
     )
     private val omitSampleFence = Regex(
-        "(?:^|[，。；,.;][ \\t]*)(?:不要|不得|禁止)输出代码围栏[。.]?[ \\t]*$",
+        "(?:^|[，。；,.;][ \\t]*)$omitTemplateFence[。.]?[ \\t]*$",
     )
     private val trailingStatusLabel = Regex(
         " {0,3}(?:(?:required[ \\t]+)?trailing[ \\t]+status[ \\t]+(?:panel[ \\t]+)?template[：:]|" +
@@ -69,11 +73,11 @@ object NarrativeHistoryEcho {
     private val formatTemplateFenceInfo = setOf("", "html", "xml")
     private val formatCounterexampleLead = Regex(
         " {0,3}(?:以下是禁止输出的反例[。.:：]?|以下标签仅供举例，不要在回复中输出[：:]|" +
-            "the following is a counterexample[.!:])[ \\t]*",
+            "$forbidTemplateTags[。.:：]?|the following is a counterexample[.!:])[ \\t]*",
         RegexOption.IGNORE_CASE,
     )
     private val formatCounterexampleTail = Regex(
-        " {0,3}(?:不得输出上面的标签[。.]?|do not output (?:these|the above) tags[.!]?)[ \\t]*",
+        " {0,3}(?:$forbidTemplateTags[。.]?|do not output (?:these|the above) tags[.!]?)[ \\t]*",
         RegexOption.IGNORE_CASE,
     )
     private val statusFenceInfo = Regex("(text|status)(?=$|[ \\t(（]).*", RegexOption.IGNORE_CASE)
@@ -82,6 +86,7 @@ object NarrativeHistoryEcho {
     private val proseDelimiters = mapOf(
         '「' to '」', '『' to '』', '｢' to '｣', '“' to '”', '‘' to '’', '«' to '»', '"' to '"', '\'' to '\'',
     )
+    private val leadingApostropheContraction = Regex("t(?:is|was|were|will|would)(?![a-z])", RegexOption.IGNORE_CASE)
     private val unfinishedPluralPossessor = Regex("(?:the|these|those|our|your|their)[ \\t]+[a-z]{2,}s")
     private val unfinishedPossessedWord = Regex("[a-z]{2,}")
     private val chineseSpeechLead = Regex("[说說][ \\t]*[：:]?[ \\t]*$")
@@ -97,6 +102,7 @@ object NarrativeHistoryEcho {
         val declaredOpenings: Set<String> = emptySet(),
         val trailingStatusInfos: Set<String> = emptySet(),
         val singlePairOpenings: Set<String> = emptySet(),
+        val declaresAnnotatedActions: Boolean = false,
     )
 
     internal class RequestCleanup internal constructor(
@@ -136,7 +142,9 @@ object NarrativeHistoryEcho {
 
     private fun declaredOutput(formatCard: String): FormatOutput {
         val candidates = wrappers.filter { it.opening in formatCard }
-        if (candidates.isEmpty() && typedStatusInfos.none { formatCard.contains("```$it", ignoreCase = true) }) {
+        if (candidates.isEmpty() && annotatedRoleplayActionOpening !in formatCard &&
+            typedStatusInfos.none { formatCard.contains("```$it", ignoreCase = true) }
+        ) {
             return FormatOutput()
         }
         val tokens = candidates.map { it.name }.distinct().flatMap { name ->
@@ -181,7 +189,7 @@ object NarrativeHistoryEcho {
                     previousVisibleLine(literals.markdown, standaloneLabel.first)
                 }
                 val after = following.asSequence().firstOrNull { it.isNotBlank() }
-                if (lead?.let { formatCounterexampleLead.matches(literals.markdown.substring(it)) } == true ||
+                if (literals.matchesVisibleLine(lead, formatCounterexampleLead) ||
                     after?.let(formatCounterexampleTail::matches) == true
                 ) continue
                 add(wrapper.opening)
@@ -199,7 +207,7 @@ object NarrativeHistoryEcho {
                 ) continue
                 val before = previousVisibleLine(literals.markdown, label.first)
                 val after = literals.markdown.substring(fence.range.last + 1).lineSequence().firstOrNull(String::isNotBlank)
-                if (before?.let { formatCounterexampleLead.matches(literals.markdown.substring(it)) } == true ||
+                if (literals.matchesVisibleLine(before, formatCounterexampleLead) ||
                     after?.let(formatCounterexampleTail::matches) == true
                 ) continue
 
@@ -236,8 +244,22 @@ object NarrativeHistoryEcho {
                 }
             }
         }
-        return FormatOutput(declaredOpenings, trailingStatusInfos, singlePairOpenings)
+        val declaresAnnotatedActions = roleplayAnnotatedActionRanges(literals.markdown).any { range ->
+            literals.isUnprotected(range.first) && literals.isUnprotected(range.last) &&
+                !literals.matchesVisibleLine(
+                    previousVisibleLine(literals.markdown, range.first), formatCounterexampleLead,
+                ) &&
+                literals.markdown.substring(range.last + 1).lineSequence().firstOrNull(String::isNotBlank)
+                    ?.let(formatCounterexampleTail::matches) != true
+        }
+        return FormatOutput(declaredOpenings, trailingStatusInfos, singlePairOpenings, declaresAnnotatedActions)
     }
+
+    private fun ReplyLiterals.matchesVisibleLine(line: IntRange?, pattern: Regex): Boolean =
+        line != null && isUnprotected(line.first) && pattern.matches(markdown.substring(line))
+
+    private fun ReplyLiterals.isUnprotected(position: Int): Boolean =
+        ranges.none { position in it } && !isMarkdownContainerLine(position, includeStandaloneLazyTags = true)
 
     private fun Wrapper.hasExactlyOnePair(text: String): Boolean =
         text.startsWith(opening) && closings.any(text::endsWith) &&
@@ -411,7 +433,7 @@ object NarrativeHistoryEcho {
             tag.range.last + 1 == end.length ||
                 hasOnlyReplySuffix(
                     body, tag.range.last + 1, suffixRanges, literals, streaming || interrupted,
-                    formatOutput.trailingStatusInfos,
+                    formatOutput,
                 )
 
         val terminal = visibleTags.lastOrNull()?.takeIf { tag ->
@@ -544,7 +566,7 @@ object NarrativeHistoryEcho {
         suffixRanges: List<IntRange>,
         literals: ReplyLiterals,
         provisional: Boolean,
-        trailingStatusInfos: Set<String>,
+        formatOutput: FormatOutput,
     ): Boolean {
         var next = start
         for (range in suffixRanges) {
@@ -554,8 +576,8 @@ object NarrativeHistoryEcho {
         }
         val remainder = text.substring(next).trimStart()
         if (remainder.isEmpty()) return true
-        if (!provisional) return false
-        if (commentOpening.startsWith(remainder.trimEnd())) return true
+        if (provisional && commentOpening.startsWith(remainder.trimEnd())) return true
+        if (!provisional && !formatOutput.declaresAnnotatedActions) return false
 
         val position = text.length - remainder.length
         val line = lineStart(text, position)
@@ -563,12 +585,13 @@ object NarrativeHistoryEcho {
         if (indent.length > 3 || indent.any { it != ' ' }) return false
 
         // A status opener can arrive a token at a time. A newline already committed to ordinary code stays literal.
-        if (MarkdownCodeFences.legacyStatusOpening.startsWith(remainder) ||
-            trailingStatusInfos.any { "```$it".startsWith(remainder, ignoreCase = true) }
+        if (provisional && (MarkdownCodeFences.legacyStatusOpening.startsWith(remainder) ||
+                formatOutput.trailingStatusInfos.any { "```$it".startsWith(remainder, ignoreCase = true) })
         ) return true
-        return literals.ranges.none { position in it } &&
-            !literals.isMarkdownContainerLine(position, includeStandaloneLazyTags = true) &&
-            isPendingRoleplayActionSuffix(literals.markdown.substring(line) + text.substring(literals.markdown.length))
+        if (!literals.isUnprotected(position)) return false
+        val action = literals.markdown.substring(line) + text.substring(literals.markdown.length)
+        return formatOutput.declaresAnnotatedActions && isPendingAnnotatedRoleplayActionOpening(action) ||
+            provisional && isPendingRoleplayActionSuffix(action)
     }
 
     internal fun isStandaloneLegacyHistoryWrapper(text: String): Boolean {
@@ -766,6 +789,10 @@ object NarrativeHistoryEcho {
             val precedesWord = text.getOrNull(index + 1)?.isLetterOrDigit() == true
             // Apostrophes in contractions and possessives do not start a prose quote.
             if (symbol == '\'' && followsWord && (precedesWord || open < 0)) continue
+            if (open < 0 && !followsWord && (symbol == '\'' || symbol == '‘') &&
+                leadingApostropheContraction.matchesAt(text, index + 1) &&
+                !hasContractionQuoteClose(text, index, symbol, ::isProseDelimiter)
+            ) continue
             if (symbol == '’' && followsWord && (isWordApostrophe(text, index) ||
                     isCurlyPossessive(text, open, index, interiorClosings, ::isProseDelimiter))
             ) continue
@@ -787,6 +814,23 @@ object NarrativeHistoryEcho {
             }
         }
         if (includeUnclosed && open >= 0) add(open..text.lastIndex)
+    }
+
+    private fun hasContractionQuoteClose(
+        text: String,
+        opening: Int,
+        marker: Char,
+        isProseDelimiter: (Int) -> Boolean,
+    ): Boolean {
+        val closing = proseDelimiters.getValue(marker)
+        val next = (opening + 1 until text.length).firstOrNull { index ->
+            (text[index] == marker || text[index] == closing) &&
+                !isWordApostrophe(text, index) && isProseDelimiter(index)
+        } ?: return false
+        if (text[next] != closing) return false
+        // For straight quotes, a mark before a new word can start the next quotation.
+        return marker != closing || !text[next - 1].isWhitespace() ||
+            text.getOrNull(next + 1)?.isLetterOrDigit() != true
     }
 
     private fun isCurlyPossessive(

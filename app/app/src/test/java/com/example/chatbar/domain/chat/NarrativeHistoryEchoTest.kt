@@ -94,6 +94,122 @@ class NarrativeHistoryEchoTest {
     }
 
     @Test
+    fun activeAnnotatedActionCardKeepsEveryReceivedOpeningPrefix() {
+        val story = "门开了。"
+        val dashes = "—".repeat(22)
+        val label = "（横线为选项包裹格式，必须完整输出）"
+        val heading = "**【行动选项】**"
+        val opening = "$dashes$label"
+        val template = "$opening\n$heading\n\n1.**进门**\n\n2.**等候**\n\n$label$dashes"
+        val illustrativeCards = listOf(
+            null,
+            "正文之后允许补充叙事。",
+            "以下是禁止输出的反例。\n$template",
+            "她引述：“\n$template\n”",
+            "```markdown\n$template\n```",
+        )
+        for (mode in ChatNarrativeMode.entries) for (lineBreak in listOf("\n", "\r\n")) {
+            val wrapped = PromptTemplates.narrativeModeHistoryReply(story, mode).replace("\n", lineBreak)
+            val active = NarrativeHistoryEcho.forRequest(mode, template.replace("\n", lineBreak))
+            val prefixes = (1..opening.length).map(opening::take) +
+                (0..heading.length).map { "$opening\n\n${heading.take(it)}" }
+            for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+                for (prefix in prefixes) {
+                    val suffix = "\n\n$prefix".replace("\n", lineBreak)
+                    assertEquals(prefix, story + suffix, active.completedBody(
+                        wrapped + suffix, streaming = streaming, interrupted = interrupted,
+                    ))
+                }
+                val complete = "\n\n$template".replace("\n", lineBreak)
+                assertEquals(story + complete, active.completedBody(
+                    wrapped + complete, streaming = streaming, interrupted = interrupted,
+                ))
+                for (literal in listOf("————另一位叙述者", "————\n这行仍然是故事。", "$opening\n另一段叙事。")) {
+                    val reply = wrapped + "\n\n$literal".replace("\n", lineBreak)
+                    assertEquals(reply, active.completedBody(reply, streaming = streaming, interrupted = interrupted))
+                }
+                val incomplete = wrapped + lineBreak + lineBreak + "————"
+                for (card in illustrativeCards) {
+                    val unproven = NarrativeHistoryEcho.forRequest(mode, card)
+                    assertEquals(card, incomplete, unproven.completedBody(
+                        incomplete, streaming = streaming, interrupted = interrupted,
+                    ))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun explicitMandatoryFencedTemplatesKeepTheAuthoredPair() {
+        val mode = ChatNarrativeMode.FOCUS
+        val story = "门开了。"
+        val wrapped = PromptTemplates.narrativeModeHistoryReply(story, mode)
+        val sample = "```xml\n$wrapped\n```"
+        val label = "请严格按照以下固定模板作答，务必逐字保留首尾标签，不要输出代码围栏："
+        for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+            val declared = NarrativeHistoryEcho.forRequest(mode, "$label\n$sample")
+            assertEquals(wrapped, declared.completedBody(wrapped, streaming = streaming, interrupted = interrupted))
+            for (card in listOf(
+                "“$label”\n$sample",
+                "> $label\n\n$sample",
+                "<!-- $label -->\n$sample",
+                "以下是禁止输出的反例。\n$label\n$sample",
+                "$label\n$sample\n请勿在本轮输出以下任何历史标签。",
+            )) {
+                val illustrative = NarrativeHistoryEcho.forRequest(mode, card)
+                assertEquals(card, story, illustrative.completedBody(
+                    wrapped, streaming = streaming, interrupted = interrupted,
+                ))
+            }
+        }
+    }
+
+    @Test
+    fun visibleProhibitionKeepsAnUnfencedExampleFromDeclaringOutput() {
+        val mode = ChatNarrativeMode.ADVANCE
+        val story = "列车抵达了。"
+        val wrapped = PromptTemplates.narrativeModeHistoryReply(story, mode)
+        val sample = PromptTemplates.narrativeModeHistoryReply("示例正文", mode)
+        val prohibition = "请勿在本轮输出以下任何历史标签"
+        for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+            for (card in listOf("$prohibition：\n$sample", "$sample\n$prohibition。")) {
+                val illustrative = NarrativeHistoryEcho.forRequest(mode, card)
+                assertEquals(card, story, illustrative.completedBody(
+                    wrapped, streaming = streaming, interrupted = interrupted,
+                ))
+            }
+            for (card in listOf("“$prohibition：”\n$sample", "<!-- $prohibition： -->\n$sample")) {
+                val declared = NarrativeHistoryEcho.forRequest(mode, card)
+                assertEquals(card, wrapped, declared.completedBody(
+                    wrapped, streaming = streaming, interrupted = interrupted,
+                ))
+            }
+        }
+    }
+
+    @Test
+    fun leadingEnglishContractionsKeepTheOuterCloseVisibleAndRealQuotesLiteral() {
+        val close = "</历史回复>"
+        for (mode in ChatNarrativeMode.entries) {
+            val cleanup = NarrativeHistoryEcho.forRequest(mode, null)
+            val stories = listOf(
+                "'Twas a cold night.",
+                "‘Tis near dawn.",
+                "’Twere better so.",
+                "'Twas cold. She said 'copy the literal\n$close\nfrom the card.'",
+                "‘Twas a quotation containing\n$close\nthis tag.’\nShe waited.",
+                "'The quoted tag was\n$close\nprinted on the sign.'\nShe waited.",
+            )
+            for (story in stories) {
+                val wrapped = PromptTemplates.narrativeModeHistoryReply(story, mode)
+                for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+                    assertEquals(story, cleanup.completedBody(wrapped, streaming = streaming, interrupted = interrupted))
+                }
+            }
+        }
+    }
+
+    @Test
     fun literalDashBlocksAndAnOwnedTemplateKeepTheirWrapper() {
         val mode = ChatNarrativeMode.FOCUS
         val opening = "<历史回复 模式=\"聚焦\">"

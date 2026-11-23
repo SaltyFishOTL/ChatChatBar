@@ -7,7 +7,6 @@ import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.domain.prompt.AiTaskContext
 import com.example.chatbar.domain.prompt.AiTaskKind
 import com.example.chatbar.domain.prompt.PromptTemplates
-import java.io.File
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.util.concurrent.CountDownLatch
@@ -711,16 +710,15 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
-    fun `main stream preserves the bundled annotated action and status blocks after the narrative`() = runBlocking {
-        val asset = listOf("app/app/src/main/assets", "app/src/main/assets", "src/main/assets")
-            .map { File(it, "presets/formats/erowriting-format.json") }.first(File::isFile)
-        val preset = Json.parseToJsonElement(asset.readText()).jsonObject.getValue("content").jsonPrimitive.content.lines()
+    fun `main stream preserves annotated action and status blocks after the narrative`() = runBlocking {
+        val dashes = "—".repeat(22)
         val optionLabel = "（横线为选项包裹格式，必须完整输出）"
-        val optionOpen = preset.single { it.startsWith('—') && it.endsWith(optionLabel) }
-        val optionClose = preset.single { it.startsWith(optionLabel) && it.endsWith('—') }
-        val heading = preset.single { it == "**【行动选项】**" }
-        val statusOpen = preset.single { it.startsWith("```text（三个点") }
-        val statusClose = preset.single { it.startsWith("（三个点") && it.endsWith("```") }
+        val optionOpen = dashes + optionLabel
+        val optionClose = optionLabel + dashes
+        val heading = "**【行动选项】**"
+        val statusLabel = "（三个点为状态包裹格式，必须完整输出）"
+        val statusOpen = "```text$statusLabel"
+        val statusClose = "$statusLabel```"
         val actions = "$optionOpen\n$heading\n\n1. **[稍候]()**\n\n2. **[离开]()**\n$optionClose"
         val status = "$statusOpen\n地点：门外\n$statusClose"
         val story = "她推开门。"
@@ -730,6 +728,20 @@ class ExperimentalToolTransportTest {
         val raw = "$wrapped\n\n$actions\n\n$status"
         assertNarrativeReplyStates(raw, expected = body)
         assertNarrativeReplyStates(raw.replace("\n", "\r\n"), expected = body.replace("\n", "\r\n"))
+        val headingPrefix = heading.take(4)
+        val actionDeltas = listOf(
+            "\n\n${optionOpen.take(4)}",
+            optionOpen.drop(4),
+            "\n$headingPrefix",
+            actions.removePrefix("$optionOpen\n$headingPrefix") + "\n\n$status",
+        )
+        assertNarrativeReplyDeltas(
+            listOf(wrapped) + actionDeltas,
+            actionDeltas.runningFold(story, String::plus),
+            body,
+            formatCard = "$actions\n\n$status",
+        )
+
         val note = "<!-- 选项旁注 -->"
         assertNarrativeReplyStates(raw.replace("1. **[稍候]()**", "1. **[稍候]()** $note"),
             expected = body.replace("1. **[稍候]()**", "1. **[稍候]()** $note"))
