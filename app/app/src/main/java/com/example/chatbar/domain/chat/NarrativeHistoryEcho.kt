@@ -45,11 +45,19 @@ object NarrativeHistoryEcho {
     private val fencedTemplateLabel = Regex(
         " {0,3}请严格按照以下固定模板作答，必须逐字保留首尾标签，不要输出代码围栏[：:][ \\t]*",
     )
+    private val replySampleLabel = Regex(" {0,3}(\\*\\*|)回复样张[ \\t]*[：:]\\1[ \\t]*")
+    private val keepSampleTags = Regex(
+        "^ {0,3}(?:每次回复[ \\t]*)?(?:必须|务必|请)(?:逐字|原样|完整)保留(?:以下)?首尾标签(?=$|[，。；,.; \\t])",
+    )
+    private val omitSampleFence = Regex(
+        "(?:^|[，。；,.;][ \\t]*)(?:不要|不得|禁止)输出代码围栏[。.]?[ \\t]*$",
+    )
     private val trailingStatusLabel = Regex(
         " {0,3}(?:(?:required[ \\t]+)?trailing[ \\t]+status[ \\t]+(?:panel[ \\t]+)?template[：:]|" +
             "(?:write the story first\\.[ \\t]+)?end every reply with (?:exactly )?one status panel after the story\\." +
             "(?:[ \\t]+keep the status fence(?: and replace the time)?\\.)?|" +
-            "每次回复末尾必须输出以下状态栏[：:])[ \\t]*",
+            "每次回复末尾必须输出以下状态栏[：:]|" +
+            "每次回复(?:必须)?以(?:一个)?状态栏结束[。.]?)[ \\t]*",
         RegexOption.IGNORE_CASE,
     )
     private val singlePairTemplateConstraint = Regex(
@@ -57,7 +65,7 @@ object NarrativeHistoryEcho {
             "use exactly one pair of the following tags\\.[ \\t]+do not repeat them inside the reply\\.)[ \\t]*",
         RegexOption.IGNORE_CASE,
     )
-    private const val trailingStatusOpening = "```status"
+    private val typedStatusInfos = setOf("status", "text")
     private val formatTemplateFenceInfo = setOf("", "html", "xml")
     private val formatCounterexampleLead = Regex(
         " {0,3}(?:以下是禁止输出的反例[。.:：]?|以下标签仅供举例，不要在回复中输出[：:]|" +
@@ -87,7 +95,7 @@ object NarrativeHistoryEcho {
 
     internal data class FormatOutput(
         val declaredOpenings: Set<String> = emptySet(),
-        val trailingStatusDeclared: Boolean = false,
+        val trailingStatusInfos: Set<String> = emptySet(),
         val singlePairOpenings: Set<String> = emptySet(),
     )
 
@@ -128,7 +136,9 @@ object NarrativeHistoryEcho {
 
     private fun declaredOutput(formatCard: String): FormatOutput {
         val candidates = wrappers.filter { it.opening in formatCard }
-        if (candidates.isEmpty() && trailingStatusOpening !in formatCard.lowercase()) return FormatOutput()
+        if (candidates.isEmpty() && typedStatusInfos.none { formatCard.contains("```$it", ignoreCase = true) }) {
+            return FormatOutput()
+        }
         val tokens = candidates.map { it.name }.distinct().flatMap { name ->
             wrapperFamilyTokens.getValue(name).findAll(formatCard).toList()
         }.sortedBy { it.range.first }
@@ -136,7 +146,7 @@ object NarrativeHistoryEcho {
         val markup = tokens.filter {
             literals.isVisibleWrapperTag(formatCard, it, includeStandaloneLazyTags = true)
         }
-        var trailingStatusDeclared = false
+        val trailingStatusInfos = mutableSetOf<String>()
         val singlePairOpenings = mutableSetOf<String>()
         val declaredOpenings = buildSet {
             var matchedEnd = -1
@@ -194,13 +204,26 @@ object NarrativeHistoryEcho {
                 ) continue
 
                 val labelText = literals.markdown.substring(label)
+                val precedingInstruction = before?.takeIf {
+                    literals.ranges.none { range -> it.first in range } &&
+                        !literals.isMarkdownContainerLine(it.first, includeStandaloneLazyTags = true)
+                }?.let(literals.markdown::substring)
+                val isReplySample = replySampleLabel.matches(labelText)
                 val contentStart = literals.markdown.indexOf('\n', fence.range.first) + 1
                 val template = formatCard.substring(contentStart, closingLine).trim()
-                if (fence.isTrailingStatusFence() && template.isNotBlank() && trailingStatusLabel.matches(labelText)) {
-                    trailingStatusDeclared = true
+                val statusInfo = fence.typedStatusInfo()
+                if (statusInfo != null && template.isNotBlank() &&
+                    (trailingStatusLabel.matches(labelText) ||
+                        isReplySample && precedingInstruction?.let(trailingStatusLabel::matches) == true)
+                ) {
+                    trailingStatusInfos += statusInfo
                 }
+                val explicitReplySample = isReplySample && precedingInstruction != null &&
+                    keepSampleTags.containsMatchIn(precedingInstruction) &&
+                    omitSampleFence.containsMatchIn(precedingInstruction)
                 if (fence.info.lowercase() !in formatTemplateFenceInfo ||
-                    !fencedTemplateLabel.matches(labelText) && !formatTemplateLabel.matches(labelText)
+                    !fencedTemplateLabel.matches(labelText) && !formatTemplateLabel.matches(labelText) &&
+                        !explicitReplySample
                 ) continue
                 val wrapper = candidates.firstOrNull {
                     template.startsWith(it.opening) && it.closings.any(template::endsWith)
@@ -213,15 +236,15 @@ object NarrativeHistoryEcho {
                 }
             }
         }
-        return FormatOutput(declaredOpenings, trailingStatusDeclared, singlePairOpenings)
+        return FormatOutput(declaredOpenings, trailingStatusInfos, singlePairOpenings)
     }
 
     private fun Wrapper.hasExactlyOnePair(text: String): Boolean =
         text.startsWith(opening) && closings.any(text::endsWith) &&
             wrapperFamilyTokens.getValue(name).findAll(text).count() == 2
 
-    private fun MarkdownCodeFences.Block.isTrailingStatusFence(): Boolean =
-        topLevel && marker == '`' && markerLength == 3 && info.equals("status", ignoreCase = true)
+    private fun MarkdownCodeFences.Block.typedStatusInfo(): String? =
+        info.lowercase().takeIf { topLevel && marker == '`' && markerLength == 3 && it in typedStatusInfos }
 
     private fun previousVisibleLine(markdown: String, before: Int): IntRange? {
         var end = before
@@ -364,7 +387,8 @@ object NarrativeHistoryEcho {
         }
         val suffixRanges by lazy(LazyThreadSafetyMode.NONE) {
             val status = literals.fences.filter {
-                it.topLevel && it.legacyStatus || formatOutput.trailingStatusDeclared && it.isTrailingStatusFence()
+                it.topLevel && it.legacyStatus ||
+                    it.typedStatusInfo()?.let(formatOutput.trailingStatusInfos::contains) == true
             }.map { it.range }
             val options = (roleplayAnnotatedActionRanges(literals.markdown).asSequence() +
                 roleplayListedActionRanges(literals.markdown)).filter { range ->
@@ -387,7 +411,7 @@ object NarrativeHistoryEcho {
             tag.range.last + 1 == end.length ||
                 hasOnlyReplySuffix(
                     body, tag.range.last + 1, suffixRanges, literals, streaming || interrupted,
-                    formatOutput.trailingStatusDeclared,
+                    formatOutput.trailingStatusInfos,
                 )
 
         val terminal = visibleTags.lastOrNull()?.takeIf { tag ->
@@ -520,7 +544,7 @@ object NarrativeHistoryEcho {
         suffixRanges: List<IntRange>,
         literals: ReplyLiterals,
         provisional: Boolean,
-        trailingStatusDeclared: Boolean,
+        trailingStatusInfos: Set<String>,
     ): Boolean {
         var next = start
         for (range in suffixRanges) {
@@ -540,7 +564,7 @@ object NarrativeHistoryEcho {
 
         // A status opener can arrive a token at a time. A newline already committed to ordinary code stays literal.
         if (MarkdownCodeFences.legacyStatusOpening.startsWith(remainder) ||
-            trailingStatusDeclared && trailingStatusOpening.startsWith(remainder, ignoreCase = true)
+            trailingStatusInfos.any { "```$it".startsWith(remainder, ignoreCase = true) }
         ) return true
         return literals.ranges.none { position in it } &&
             !literals.isMarkdownContainerLine(position, includeStandaloneLazyTags = true) &&
@@ -614,6 +638,9 @@ object NarrativeHistoryEcho {
             }
             val roleplayLiteralCode = indentedCode + inlineCode + literalFences.map { it.range } + cdata
             val ranges = codeBlocks + inlineCode + comments + cdata
+            val dialogue = if (interpretProseQuotes && ('[' in end || '［' in end)) {
+                roleplaySpokenDialogueRanges(end, ranges, includeUnclosed) { isEscaped(end, it) }
+            } else emptyList()
             val quoteDelimitersToSkip = ranges + familyTags.map { it.range }
             val interiorClosings = if (includeUnclosed) familyTags.mapIndexedNotNull { index, tag ->
                 val position = tag.range.first
@@ -629,10 +656,10 @@ object NarrativeHistoryEcho {
             } else emptyList()
             val quotes = proseQuoteRanges(
                 end, source, quoteDelimitersToSkip, includeUnclosed, interiorClosings, onMarkup,
-                interpretProseQuotes,
+                interpretProseQuotes, dialogue,
             )
             return ReplyLiterals(
-                ranges + quotes, roleplayLiteralCode, lazyQuoteLineStarts, listItemLineStarts,
+                ranges + quotes + dialogue, roleplayLiteralCode, lazyQuoteLineStarts, listItemLineStarts,
                 indentedParagraphLineStarts, source, comments, fences,
             )
         }
@@ -699,13 +726,14 @@ object NarrativeHistoryEcho {
         interiorClosings: List<Int>,
         onMarkup: ((LiteralMarkup) -> Unit)?,
         interpretProseQuotes: Boolean,
+        dialogue: List<IntRange>,
     ): List<IntRange> = buildList {
         var open = -1
         var closing: Char? = null
         var depth = 0
         var canOpenComment = onMarkup != null
         fun isProseDelimiter(index: Int): Boolean =
-            !isEscaped(text, index) && delimiterExclusions.none { index in it }
+            !isEscaped(text, index) && delimiterExclusions.none { index in it } && dialogue.none { index in it }
 
         for (index in text.indices) {
             if (canOpenComment && text.startsWith(commentOpening, index) &&

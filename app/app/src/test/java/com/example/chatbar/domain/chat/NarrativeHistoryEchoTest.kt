@@ -455,6 +455,84 @@ class NarrativeHistoryEchoTest {
         }
     }
 
+    @Test fun roleplaySpeakerBracketsKeepTheLiteralCloseAcrossPreviewStopAndCompletion() {
+        val closing = "</历史回复>"
+        for (mode in ChatNarrativeMode.entries) {
+            val opening = "<历史回复 模式=\"${mode.shortLabel}\">"
+            val cleanup = NarrativeHistoryEcho.forRequest(mode, null)
+            for ((lead, end) in listOf("<n=\"琳\"/>[" to "]()", "＜ｎ＝“琳”／＞［" to "］（）")) {
+                val draft = "${lead}抄下这行：\n$closing"
+                val body = "$draft\n这是纸上的标签。$end\n门开了。"
+                val wrapped = "$opening\n$body\n$closing"
+                for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+                    assertEquals(body, cleanup.completedBody(wrapped, interrupted = interrupted, streaming = streaming))
+                }
+                assertEquals(draft, cleanup.completedBody("$opening\n$draft", streaming = true))
+                assertEquals(draft, cleanup.completedBody("$opening\n$draft", interrupted = true))
+            }
+            val bracketField = "门上的标牌开头是 [位置"
+            val wrappedField = "$opening\n$bracketField\n$closing"
+            assertEquals(bracketField, cleanup.completedBody(wrappedField, streaming = true))
+            assertEquals(bracketField, cleanup.completedBody(wrappedField, interrupted = true))
+        }
+    }
+
+    @Test fun explicitReplySamplePreservesItsTagsButAnIllustrationDoesNot() {
+        val mode = ChatNarrativeMode.FOCUS
+        val story = "门开了。"
+        val wrapped = PromptTemplates.narrativeModeHistoryReply(story, mode)
+        val sample = "回复样张：\n```xml\n$wrapped\n```"
+        val instruction = "每次回复必须逐字保留以下首尾标签，正文写在两者之间。不要输出代码围栏。"
+        for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+            val declared = NarrativeHistoryEcho.forRequest(mode, "$instruction\n$sample")
+            assertEquals(wrapped, declared.completedBody(wrapped, interrupted = interrupted, streaming = streaming))
+            for (card in listOf(
+                sample,
+                "<!-- $instruction -->\n$sample",
+                "旁注引述了规则：$instruction\n$sample",
+                "$instruction\n$sample\n不得输出上面的标签。",
+            )) {
+                val illustrative = NarrativeHistoryEcho.forRequest(mode, card)
+                assertEquals(story, illustrative.completedBody(wrapped, interrupted = interrupted, streaming = streaming))
+            }
+        }
+    }
+
+    @Test fun declaredTextStatusFollowsTheStoryWithoutRestoringTheEchoOrDroppingTheFence() {
+        val mode = ChatNarrativeMode.ADVANCE
+        val closing = "</历史回复>"
+        val code = "```kotlin\nval bracket = \"[地点]\"  \n```"
+        val story = "灯亮了。\n\n$code"
+        val wrapped = PromptTemplates.narrativeModeHistoryReply(story, mode)
+        val panel = "```text\n[地点]：车站  \n[注记]：$closing\n```"
+        val template = panel.replace("车站", "{地点}")
+        val raw = "$wrapped\n\n$panel"
+        val labels = listOf("每次回复末尾必须输出以下状态栏：", "每次回复以一个状态栏结束。\n回复样张：")
+        val preview = NarrativeHistoryEcho.forRequest(mode, "${labels.first()}\n$template")
+        for (pending in listOf(panel.take(4), panel.substringBeforeLast("```"))) {
+            assertEquals("$story\n\n$pending", preview.completedBody("$wrapped\n\n$pending", streaming = true))
+            assertEquals("$story\n\n$pending", preview.completedBody("$wrapped\n\n$pending", interrupted = true))
+        }
+        for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+            for (label in labels) {
+                val declared = NarrativeHistoryEcho.forRequest(mode, "$label\n$template")
+                assertEquals("$story\n\n$panel", declared.completedBody(raw, interrupted = interrupted, streaming = streaming))
+            }
+            for (card in listOf(
+                "文字代码示例：\n$template",
+                "以下是禁止输出的反例。\n${labels.first()}\n$template",
+                "${labels.first()}\n${template.replace("```text", "```status")}",
+            )) {
+                val illustrative = NarrativeHistoryEcho.forRequest(mode, card)
+                assertEquals(raw, illustrative.completedBody(raw, interrupted = interrupted, streaming = streaming))
+                assertEquals("$story\n\n$panel", illustrative.completedBody(
+                    PromptTemplates.narrativeModeHistoryReply("$story\n\n$panel", mode),
+                    interrupted = interrupted, streaming = streaming,
+                ))
+            }
+        }
+    }
+
     @Test fun formatCardMentionsDoNotOptOutOfEchoCleanup() {
         val opening = "<历史回复 模式=\"推进\">"
         val closing = "</历史回复>"

@@ -737,12 +737,46 @@ private fun segmentVisibleStart(segment: RoleplayTextSegment, visible: VisibleRo
 private fun segmentVisibleEnd(segment: RoleplayTextSegment, visible: VisibleRoleplayText): Int =
     visible.rawIndexes.indexOf(segment.endExclusive - 1).takeIf { it >= 0 }?.plus(1) ?: visible.text.length
 
-private fun findNextDialogueOpen(text: String, start: Int, end: Int, literalCode: List<IntRange>): Int {
+internal fun roleplaySpokenDialogueRanges(
+    text: String,
+    nonProse: List<IntRange>,
+    includeUnclosed: Boolean,
+    isEscaped: (Int) -> Boolean,
+): List<IntRange> = buildList {
+    var cursor = 0
+    while (cursor < text.length) {
+        val open = findNextDialogueOpen(text, cursor, text.length, nonProse, isEscaped)
+        if (open < 0) break
+        val lineStart = maxOf(text.lastIndexOf('\n', open - 1), text.lastIndexOf('\r', open - 1)) + 1
+        val speaker = findRoleplaySpeakerPrefix(text, open, lineStart)?.takeIf { prefix ->
+            !isEscaped(prefix.start) && nonProse.none { prefix.start in it }
+        }
+        val close = findDialogueClose(text, open, text.length, nonProse, isEscaped)
+        if (close > 0 && (speaker != null || isDialogueParenthesisClose(text[close - 1]))) {
+            add(open until close)
+            cursor = close
+        } else if (close < 0 && speaker != null && includeUnclosed) {
+            add(open until text.length)
+            break
+        } else {
+            cursor = open + 1
+        }
+    }
+}
+
+private fun findNextDialogueOpen(
+    text: String,
+    start: Int,
+    end: Int,
+    literalCode: List<IntRange>,
+    isEscaped: ((Int) -> Boolean)? = null,
+): Int {
     var index = start
     while (index < end) {
         if (
             isDialogueBracketOpen(text[index]) &&
-            (index == 0 || !isImageMarkerPrefix(text[index - 1])) && literalCode.none { index in it }
+            (index == 0 || !isImageMarkerPrefix(text[index - 1])) && literalCode.none { index in it } &&
+            isEscaped?.invoke(index) != true
         ) {
             return index
         }
@@ -751,9 +785,17 @@ private fun findNextDialogueOpen(text: String, start: Int, end: Int, literalCode
     return -1
 }
 
-private fun findDialogueClose(text: String, open: Int, end: Int, literalCode: List<IntRange>): Int {
+private fun findDialogueClose(
+    text: String,
+    open: Int,
+    end: Int,
+    literalCode: List<IntRange>,
+    isEscaped: ((Int) -> Boolean)? = null,
+): Int {
     var bracketClose = open + 1
-    while (bracketClose < end && (!isDialogueBracketClose(text[bracketClose]) || literalCode.any { bracketClose in it })) {
+    while (bracketClose < end && (!isDialogueBracketClose(text[bracketClose]) ||
+            literalCode.any { bracketClose in it } || isEscaped?.invoke(bracketClose) == true)
+    ) {
         bracketClose++
     }
     if (bracketClose >= end) return -1
@@ -761,7 +803,9 @@ private fun findDialogueClose(text: String, open: Int, end: Int, literalCode: Li
         return bracketClose + 1
     }
     var parenthesisClose = bracketClose + 2
-    while (parenthesisClose < end && (!isDialogueParenthesisClose(text[parenthesisClose]) || literalCode.any { parenthesisClose in it })) {
+    while (parenthesisClose < end && (!isDialogueParenthesisClose(text[parenthesisClose]) ||
+            literalCode.any { parenthesisClose in it } || isEscaped?.invoke(parenthesisClose) == true)
+    ) {
         parenthesisClose++
     }
     return if (parenthesisClose < end) parenthesisClose + 1 else bracketClose + 1
@@ -908,16 +952,16 @@ private fun findLastRoleplaySpeakerPrefix(
     )
 }
 
-private fun findRoleplaySpeakerPrefix(content: String, segmentStart: Int): RoleplaySpeakerPrefix? {
+private fun findRoleplaySpeakerPrefix(content: String, segmentStart: Int, minimumStart: Int = 0): RoleplaySpeakerPrefix? {
     var markerEnd = segmentStart.coerceIn(0, content.length)
-    while (markerEnd > 0 && content[markerEnd - 1].isWhitespace()) markerEnd--
-    if (markerEnd <= 0) return null
+    while (markerEnd > minimumStart && content[markerEnd - 1].isWhitespace()) markerEnd--
+    if (markerEnd <= minimumStart || content[markerEnd - 1] !in ">＞") return null
 
-    val match = roleplaySpeakerMarkerPattern.findAll(content.substring(0, markerEnd)).lastOrNull()
+    val match = roleplaySpeakerMarkerPattern.findAll(content.substring(minimumStart, markerEnd)).lastOrNull()
         ?: return null
-    if (match.range.last + 1 != markerEnd) return null
+    if (match.range.last + 1 != markerEnd - minimumStart) return null
     return RoleplaySpeakerPrefix(
-        start = match.range.first,
+        start = minimumStart + match.range.first,
         speakerName = match.groupValues[1].trim()
     )
 }
