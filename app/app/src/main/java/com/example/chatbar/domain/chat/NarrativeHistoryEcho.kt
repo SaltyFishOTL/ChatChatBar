@@ -247,6 +247,7 @@ object NarrativeHistoryEcho {
         private val projectedDuplicateOpenings = mutableSetOf<String>()
         private val projectedInnerOpenings = mutableMapOf<String, MutableSet<String>>()
         private val projectedClosings = mutableSetOf<String>()
+        private val projectedPaddedFrames = mutableSetOf<String>()
         private val narrativeHeadings = mutableSetOf<String>()
         private val authoredSources = mutableMapOf<String, UserOutput>()
         private val authoredPairs = mutableSetOf<String>()
@@ -301,6 +302,9 @@ object NarrativeHistoryEcho {
                 if (projection != "${wrapper.opening}\n$body\n${wrapper.closings.first()}") continue
                 projectedOpenings += wrapper.opening
                 projectedClosings += wrapper.closings.first()
+                if (wrapper != legacyWrapper && (body.firstOrNull().isHistoryLineBreak() || body.lastOrNull().isHistoryLineBreak())) {
+                    projectedPaddedFrames += projection
+                }
                 if (legacyWrapper.isStandalonePair(body) && isStandaloneLegacyHistoryWrapper(body)) {
                     authoredPairs += body
                 }
@@ -403,6 +407,7 @@ object NarrativeHistoryEcho {
             val cleaned = cleanCompletedBody(
                 body, replyFormat, interrupted, lengths, streaming, projectedDuplicateOpenings,
                 projectedInnerOpenings = projectedInnerOpenings,
+                projectedPaddedFrames = projectedPaddedFrames,
                 allowedOpenings = projectedOpenings + formatOutput.counterexampleOpenings,
                 literalOutput = currentLiteralOutput.copy(pairs = authoredPairs),
                 trailerHeadings = headings,
@@ -1095,6 +1100,7 @@ object NarrativeHistoryEcho {
         streaming: Boolean,
         projectedDuplicateOpenings: Set<String> = emptySet(),
         projectedInnerOpenings: Map<String, Set<String>> = emptyMap(),
+        projectedPaddedFrames: Set<String> = emptySet(),
         allowedOpenings: Set<String>? = null,
         literalOutput: LiteralOutput = LiteralOutput(),
         trailerHeadings: List<String> = emptyList(),
@@ -1106,6 +1112,7 @@ object NarrativeHistoryEcho {
             part, streaming, interrupted, requirePair = requirePair, formatOutput = formatOutput,
             projectedDuplicateOpenings = projectedDuplicateOpenings,
             projectedInnerOpenings = projectedInnerOpenings,
+            projectedPaddedFrames = projectedPaddedFrames,
             allowedOpenings = allowedOpenings, literalOutput = literalOutput, trailerHeadings = trailerHeadings,
             cleanExposedBody = cleanExposedBody,
         )
@@ -1124,6 +1131,7 @@ object NarrativeHistoryEcho {
             val wholeReply = cleanReply(
                 text, streaming, interrupted, requirePair = true, formatOutput = formatOutput,
                 projectedDuplicateOpenings = projectedDuplicateOpenings, projectedInnerOpenings = projectedInnerOpenings,
+                projectedPaddedFrames = projectedPaddedFrames,
                 allowedOpenings = allowedOpenings, literalOutput = literalOutput, trailerHeadings = trailerHeadings,
                 cleanExposedBody = cleanExposedBody,
             )
@@ -1168,6 +1176,7 @@ object NarrativeHistoryEcho {
                         requirePair = requireSectionPair, formatOutput = formatOutput,
                         projectedDuplicateOpenings = projectedDuplicateOpenings,
                         projectedInnerOpenings = projectedInnerOpenings,
+                        projectedPaddedFrames = projectedPaddedFrames,
                         allowedOpenings = allowedOpenings,
                         literalOutput = literalOutput, trailerHeadings = trailerHeadings,
                         cleanExposedBody = cleanExposedBody,
@@ -1353,6 +1362,7 @@ object NarrativeHistoryEcho {
         formatOutput: FormatOutput = FormatOutput(),
         projectedDuplicateOpenings: Set<String> = emptySet(),
         projectedInnerOpenings: Map<String, Set<String>> = emptyMap(),
+        projectedPaddedFrames: Set<String> = emptySet(),
         isJoinedLiteral: ((index: Int, opening: Boolean) -> Boolean)? = null,
         allowedOpenings: Set<String>? = null,
         literalOutput: LiteralOutput = LiteralOutput(),
@@ -1526,10 +1536,13 @@ object NarrativeHistoryEcho {
             }
             if (declared) return CleanedReply(text, matchedOuterPair = true)
             if (afterClosing == end.length) {
+                // The exact sent projection identifies its two framing LF bytes. Its original
+                // body padding, including line breaks or Markdown hard-break spaces, is content.
+                val before = if (text in projectedPaddedFrames) {
+                    text.substring(openingStart + wrapper.opening.length + 1, bodyStart + position - 1)
+                } else bodyBeforeClose(position)
                 return CleanedReply(
-                    leadingContent + cleanExposedBody(
-                        removeInnerTransport(bodyBeforeClose(position), requireInnerPair = true)
-                    ),
+                    leadingContent + cleanExposedBody(removeInnerTransport(before, requireInnerPair = true)),
                     matchedOuterPair = true,
                 )
             }

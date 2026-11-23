@@ -679,6 +679,17 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `normal SSE preserves the body bytes of an exact frame sent as history`(): Unit = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val body = "\nFirst line\n<!-- Editorial note -->  \n"
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, body).copy(narrativeMode = mode)
+        assertNarrativeReplyStates(
+            PromptTemplates.narrativeModeHistoryReply(body, mode), body,
+            previousAssistant = prior, experimental = false,
+        )
+    }
+
+    @Test
     fun `main stream reserves an explicit format after an inline editor comment`() = runBlocking {
         val raw = "<历史回复 模式=\"聚焦\">正文</历史回复>"
         val card = "输出格式：<!-- 编辑注记 -->$raw"

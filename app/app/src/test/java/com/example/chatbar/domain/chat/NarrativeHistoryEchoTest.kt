@@ -1088,6 +1088,20 @@ class NarrativeHistoryEchoTest {
         }
     }
 
+    @Test fun exactSentProjectionPreservesOriginalBodyPadding() {
+        val mode = ChatNarrativeMode.FOCUS
+        val prior = "\nFirst line\n<!-- Editorial note -->  \n"
+        val original = PromptTemplates.narrativeModeHistoryReply(prior, mode)
+        val ordinary = PromptTemplates.narrativeModeHistoryReply("\nNew line  \n", mode)
+        val cleanup = NarrativeHistoryEcho.forRequest(mode, null).apply { recordHistoryProjection(prior, original) }
+        for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+            assertEquals(prior, cleanup.completedBody(original, streaming = streaming, interrupted = interrupted))
+            assertEquals("New line", cleanup.completedBody(ordinary, streaming = streaming, interrupted = interrupted))
+        }
+        val declared = NarrativeHistoryEcho.forRequest(mode, original).apply { recordHistoryProjection(prior, original) }
+        assertEquals(original, declared.completedBody(original))
+    }
+
     @Test fun labelledFormatTemplateRequiresTheVisibleBalancedClose() {
         val inner = "<历史回复 模式=\"聚焦\">{正文}</历史回复>"
         val template = "本轮输出模板：<历史回复 模式=\"推进\">$inner</历史回复>"
