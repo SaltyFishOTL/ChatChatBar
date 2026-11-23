@@ -23,6 +23,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
+internal class ReplyAudioFileCleanupException :
+    IllegalStateException("回复已删除，语音文件清理失败，将在重试时继续")
+
 data class VoiceSegmentAnchor(
     val segment: CurrentVoiceSegment,
     val anchor: VoiceAnchor
@@ -352,7 +355,7 @@ class VoiceMessageRepository(
 
     internal suspend fun deleteUnownedReplyAudio(paths: List<String>, deleteAudio: (String) -> Boolean) {
         pruneUnreferencedAudio(paths) { path ->
-            check(deleteAudio(path)) { "回复已删除，语音文件清理失败，将在重试时继续" }
+            if (!deleteAudio(path)) throw ReplyAudioFileCleanupException()
         }
     }
 

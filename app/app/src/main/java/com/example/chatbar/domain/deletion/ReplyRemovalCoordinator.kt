@@ -7,6 +7,7 @@ import com.example.chatbar.data.local.entity.ChunkSourceType
 import com.example.chatbar.data.local.entity.VectorChunk
 import com.example.chatbar.data.repository.ChatRepository
 import com.example.chatbar.data.repository.ChatRagSourceRevision
+import com.example.chatbar.data.repository.ReplyAudioFileCleanupException
 import com.example.chatbar.data.repository.VoiceMessageRepository
 import com.example.chatbar.domain.backup.LocalDataMaintenance
 import com.example.chatbar.domain.image.NovelAiImageStorage
@@ -88,6 +89,8 @@ internal class ReplyRemovalCoordinator(
                 RemovalCommit(cleanupError = null)
             } catch (error: CancellationException) {
                 throw error
+            } catch (error: ReplyAudioFileCleanupException) {
+                RemovalCommit(error.message)
             } catch (_: Exception) {
                 RemovalCommit("回复已删除，相关索引或附件清理尚未完成，将在重新打开会话时重试")
             }
