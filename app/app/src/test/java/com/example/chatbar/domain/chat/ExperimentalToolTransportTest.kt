@@ -1021,6 +1021,14 @@ class ExperimentalToolTransportTest {
         for (card in listOf(
             "$prohibition\n\n$bridge\n$label$example",
             "$prohibition\n$bridge\n\n$label$example",
+            "Do not output these history tags in your reply.\n\n" +
+                "For reference, the following shows the provider's history metadata:\n" +
+                "Output template:\n```xml\n$example\n```",
+        )) {
+            assertNarrativeReplyStates(wrapped, expected = story, formatCard = card, experimental = false)
+        }
+        for (card in listOf(
+            "$prohibition\n# An independent section\n$bridge\n$label$example",
             "$prohibition\nKeep doing this for the rest of the story.\n$label$example",
             "> $prohibition\n\n$bridge\n$label$example",
             "$prohibition\n> $bridge\n\n$label$example",
@@ -1039,7 +1047,7 @@ class ExperimentalToolTransportTest {
         val echoed = PromptTemplates.narrativeModeHistoryReply(inner, mode)
         val partial = echoed.substringBeforeLast("\n</历史回复>")
         assertNarrativeReplyDeltas(
-            listOf(partial, "\n</历史回复>"), listOf(inner, story), story,
+            listOf(partial, "\n</历史回复>"), listOf(story, story), story,
             previousAssistant = previous, experimental = false,
         )
         assertNarrativeReplyStates(echoed, expected = inner, experimental = false)
@@ -1048,6 +1056,40 @@ class ExperimentalToolTransportTest {
         assertNarrativeReplyStates(echoed, expected = echoed, formatCard = "输出模板：$inner",
             previousAssistant = previous, experimental = false)
         assertEquals(old, previous.displayContent)
+    }
+
+    @Test
+    fun `ordinary SSE removes witnessed double transport before a preserved suffix`() = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val close = "</历史回复>"
+        val old = PromptTemplates.narrativeModeHistoryReply("雨落在窗沿。", mode)
+        val previous = ChatMessage.create("fixture", MessageRole.ASSISTANT, old).copy(narrativeMode = mode)
+        val story = "门外亮了起来。"
+        val partial = "$opening\n$opening\n$story\n$close\n</历史"
+        assertNarrativeReplyDeltas(
+            listOf(partial, "回复>\n<!-- keep -->"), listOf(story, "$story\n<!-- keep -->"),
+            "$story\n<!-- keep -->", previousAssistant = previous, experimental = false,
+        )
+        val status = "```status\nTime: 10:00\n```"
+        assertNarrativeReplyStates(
+            "$opening\n$opening\n$story\n$close\n$close\n$status", expected = "$story\n$status",
+            formatCard = "Required trailing status panel template:\n$status",
+            previousAssistant = previous, experimental = true,
+        )
+    }
+
+    @Test
+    fun `ordinary SSE ignores fenced tags while recognizing witnessed double transport`() = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val close = "</历史回复>"
+        val story = "门外亮了起来。\n```xml\n$close\n```\n有人来了。"
+        val original = PromptTemplates.narrativeModeHistoryReply(story, mode)
+        val previous = ChatMessage.create("fixture", MessageRole.ASSISTANT, original).copy(narrativeMode = mode)
+        val echoed = PromptTemplates.narrativeModeHistoryReply(original, mode)
+        assertNarrativeReplyStates(echoed, expected = story, previousAssistant = previous, experimental = false)
+        assertNarrativeReplyStates(echoed, expected = original, experimental = false)
+        assertEquals(original, previous.displayContent)
     }
 
     @Test
