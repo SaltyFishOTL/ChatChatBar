@@ -61,6 +61,7 @@ object MarkdownCodeFences {
         onIndentedCodeLine: ((IntRange) -> Unit)? = null,
         onContainerLine: ((Int) -> Unit)? = null,
         onListItemLine: ((Int) -> Unit)? = null,
+        onIndentedParagraphLine: ((Int) -> Unit)? = null,
     ): List<Block> = buildList {
         val containers = mutableListOf<Container>()
         var offset = 0
@@ -126,9 +127,13 @@ object MarkdownCodeFences {
             val match = fenceLine.matchEntire(remainder)
             if (match == null) {
                 if (existing == null) {
-                    val startsIndentedCode = !paragraph && dedentedParagraph.isEmpty() && remainder.startsWith("    ")
+                    val hasCodeIndent = remainder.startsWith("    ")
+                    val startsIndentedCode = !paragraph && dedentedParagraph.isEmpty() && hasCodeIndent
                     if (startsIndentedCode && remainder.isNotBlank()) {
                         onIndentedCodeLine?.invoke(start until start + rawLine.length)
+                    }
+                    if (paragraph && containers.isEmpty() && hasCodeIndent && remainder.isNotBlank()) {
+                        onIndentedParagraphLine?.invoke(start)
                     }
                     val endsSetextHeading = paragraph && setextUnderline.matches(remainder)
                     paragraph = !startsIndentedCode && remainder.isNotBlank() && !thematicBreak.matches(remainder) &&

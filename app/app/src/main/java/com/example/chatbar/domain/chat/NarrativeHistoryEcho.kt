@@ -12,6 +12,7 @@ object NarrativeHistoryEcho {
         val roleplayLiteralCode: List<IntRange>,
         val lazyQuoteLineStarts: Set<Int>,
         val listItemLineStarts: Set<Int>,
+        val indentedParagraphLineStarts: Set<Int>,
         val markdown: String,
         val commentRanges: List<IntRange>,
         val fences: List<MarkdownCodeFences.Block>,
@@ -220,7 +221,7 @@ object NarrativeHistoryEcho {
         var openingStart = first
         while (openingStart < text.length) {
             openingStart = when {
-                text.startsWith(commentOpening, openingStart) && !isIndentedCodeLine(text, openingStart) ->
+                text.startsWith(commentOpening, openingStart) && !hasCodeIndent(text, openingStart) ->
                     closedCommentEnd(text, openingStart) ?: return CleanedReply(text)
                 text.startsWith("```", openingStart) && MarkdownCodeFences.legacyStatusLabel in text -> {
                     val line = lineStart(text, openingStart)
@@ -231,7 +232,7 @@ object NarrativeHistoryEcho {
             }
             while (openingStart < text.length && text[openingStart].isWhitespace()) openingStart++
         }
-        if (openingStart == text.length || isIndentedCodeLine(text, openingStart)) return CleanedReply(text)
+        if (openingStart == text.length || hasCodeIndent(text, openingStart)) return CleanedReply(text)
         val leadingContent = if (openingStart == first) "" else text.substring(0, openingStart)
         val start = text.substring(openingStart)
         val wrapper = wrappers.firstOrNull { start.startsWith(it.opening) }
@@ -255,7 +256,8 @@ object NarrativeHistoryEcho {
             classifyLiterals(end, familyTags, wrapper.closings, includeUnclosed = streaming || interrupted)
         }
         val visibleTags = familyTags.filter { tag ->
-            literals.isVisibleWrapperTag(end, tag) && isJoinedLiteral?.invoke(bodyStart + tag.range.first, false) != true
+            literals.isVisibleWrapperTag(end, tag, allowIndentedParagraphTag = true) &&
+                isJoinedLiteral?.invoke(bodyStart + tag.range.first, false) != true
         }
         val suffixRanges by lazy(LazyThreadSafetyMode.NONE) {
             val status = literals.fences.filter { it.topLevel && it.legacyStatus }.map { it.range }
@@ -309,7 +311,7 @@ object NarrativeHistoryEcho {
             if ((streaming || identifiable || interrupted && (suffix.length > 1 || aloneOnLine)) &&
                 wrapper.closings.any { suffix.length < it.length && it.startsWith(suffix) } &&
                 !isEscaped(end, lastTag) && !literals.isMarkdownContainerLine(lastTag) &&
-                literals.ranges.none { lastTag in it } && !isIndentedCodeLine(literals.markdown, lastTag) &&
+                literals.ranges.none { lastTag in it } && !literals.hasCodeIndentAt(lastTag) &&
                 isJoinedLiteral?.invoke(bodyStart + lastTag, false) != true
             ) return CleanedReply(leadingContent + end.substring(0, lastTag).trimEnd())
         }
@@ -336,12 +338,20 @@ object NarrativeHistoryEcho {
         text: String,
         tag: MatchResult,
         includeStandaloneLazyTags: Boolean = false,
+        allowIndentedParagraphTag: Boolean = false,
     ): Boolean {
         val position = tag.range.first
         val quote = text.getOrNull(position - 1)
         val asciiQuoted = (quote == '"' || quote == '\'') && text.getOrNull(tag.range.last + 1) == quote
         return !asciiQuoted && !isEscaped(text, position) && ranges.none { position in it } &&
-            !isMarkdownContainerLine(position, includeStandaloneLazyTags) && !isIndentedCodeLine(markdown, position)
+            !isMarkdownContainerLine(position, includeStandaloneLazyTags) && !hasCodeIndentAt(position, allowIndentedParagraphTag)
+    }
+
+    private fun ReplyLiterals.hasCodeIndentAt(offset: Int, allowIndentedParagraphTag: Boolean = true): Boolean {
+        val start = lineStart(markdown, offset)
+        val startsParagraphLine = allowIndentedParagraphTag && start in indentedParagraphLineStarts &&
+            markdown.subSequence(start, offset).isBlank()
+        return !startsParagraphLine && hasCodeIndent(markdown, offset)
     }
 
     private fun ReplyLiterals.isLazyQuoteLine(offset: Int): Boolean =
@@ -422,15 +432,17 @@ object NarrativeHistoryEcho {
         fun inspect(source: String, onComment: ((IntRange) -> Unit)?): ReplyLiterals {
             val lazyQuoteLineStarts = mutableSetOf<Int>()
             val listItemLineStarts = mutableSetOf<Int>()
+            val indentedParagraphLineStarts = mutableSetOf<Int>()
             val indentedCode = mutableListOf<IntRange>()
             val fences = MarkdownCodeFences.blocks(
                 source,
                 onLazyQuoteLine = { lazyQuoteLineStarts += it },
                 onIndentedCodeLine = { indentedCode += it },
                 onListItemLine = { listItemLineStarts += it },
+                onIndentedParagraphLine = { indentedParagraphLineStarts += it },
             )
             val codeBlocks = indentedCode + fences.map { it.range }
-            val inlineCode = inlineCodeRangesOutsideBlocks(source, codeBlocks)
+            val inlineCode = inlineCodeRangesOutsideBlocks(source, codeBlocks, indentedParagraphLineStarts)
             val literalFences = fences.filter { fence ->
                 fence.marker == '~' || fence.info.isNotEmpty() && !statusFenceInfo.matches(fence.info)
             }
@@ -443,7 +455,8 @@ object NarrativeHistoryEcho {
                 val nextTag = familyTags.getOrNull(index + 1)?.range?.first ?: end.length
                 val continuationLines = end.subSequence(tag.range.last + 1, nextTag).lineSequence().iterator()
                 position.takeIf {
-                    tag.value in closings && linePrefix.isBlank() && !isIndentedCodeLine(source, position) &&
+                    tag.value in closings && linePrefix.isBlank() &&
+                        !hasCodeIndent(source, position, indentedParagraphLineStarts) &&
                         ranges.none { position in it } && continuationLines.next().isBlank() &&
                         continuationLines.hasNext() && hanIdeograph.containsMatchIn(continuationLines.next())
                 }
@@ -453,7 +466,8 @@ object NarrativeHistoryEcho {
                 interpretProseQuotes,
             )
             return ReplyLiterals(
-                ranges + quotes, roleplayLiteralCode, lazyQuoteLineStarts, listItemLineStarts, source, comments, fences,
+                ranges + quotes, roleplayLiteralCode, lazyQuoteLineStarts, listItemLineStarts,
+                indentedParagraphLineStarts, source, comments, fences,
             )
         }
 
@@ -469,27 +483,38 @@ object NarrativeHistoryEcho {
         return result
     }
 
-    private fun inlineCodeRangesOutsideBlocks(body: String, codeBlocks: List<IntRange>): List<IntRange> {
+    private fun inlineCodeRangesOutsideBlocks(
+        body: String,
+        codeBlocks: List<IntRange>,
+        indentedParagraphLineStarts: Set<Int>,
+    ): List<IntRange> {
         if ('`' !in body) return emptyList()
         val boundaries = (codeBlocks + paragraphBreak.findAll(body).map { it.range }.toList())
             .sortedBy { it.first }
         return buildList {
             var start = 0
             for (boundary in boundaries) {
-                if (start < boundary.first) addAll(inlineCodeRanges(body, start, boundary.first))
+                if (start < boundary.first) {
+                    addAll(inlineCodeRanges(body, start, boundary.first, indentedParagraphLineStarts))
+                }
                 start = maxOf(start, boundary.last + 1)
             }
-            if (start < body.length) addAll(inlineCodeRanges(body, start, body.length))
+            if (start < body.length) addAll(inlineCodeRanges(body, start, body.length, indentedParagraphLineStarts))
         }
     }
 
-    private fun inlineCodeRanges(text: String, start: Int, end: Int): List<IntRange> = buildList {
+    private fun inlineCodeRanges(
+        text: String,
+        start: Int,
+        end: Int,
+        indentedParagraphLineStarts: Set<Int>,
+    ): List<IntRange> = buildList {
         val runs = backtickRuns.findAll(text, start).takeWhile { it.range.first < end }.toList()
         var index = 0
         while (index < runs.size) {
             val opening = runs[index++]
             val position = opening.range.first
-            if (isIndentedCodeLine(text, position)) continue
+            if (hasCodeIndent(text, position, indentedParagraphLineStarts)) continue
             val unescapedStart = if (isEscaped(text, position)) position + 1 else position
             val length = opening.range.last + 1 - unescapedStart
             if (length == 0) continue
@@ -635,8 +660,9 @@ object NarrativeHistoryEcho {
     private fun lineStart(text: String, offset: Int): Int =
         maxOf(text.lastIndexOf('\n', offset - 1), text.lastIndexOf('\r', offset - 1)) + 1
 
-    private fun isIndentedCodeLine(text: String, offset: Int): Boolean {
+    private fun hasCodeIndent(text: String, offset: Int, indentedParagraphLineStarts: Set<Int> = emptySet()): Boolean {
         val lineStart = lineStart(text, offset)
+        if (lineStart in indentedParagraphLineStarts) return false
         val contentStart = MarkdownCodeFences.afterQuotePrefixes(text, lineStart)
         val indent = text.substring(contentStart.coerceAtMost(offset), offset).takeWhile { it == ' ' || it == '\t' }
         return indent.length >= 4 || '\t' in indent

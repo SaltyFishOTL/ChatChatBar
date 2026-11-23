@@ -477,6 +477,56 @@ class ExperimentalToolTransportTest {
         }
     }
 
+    @Test
+    fun `main stream closes a history wrapper on an indented paragraph continuation`() = runBlocking {
+        val story = "雨停了。"
+        val opening = "<历史回复 模式=\"推进\">"
+        val closing = "</历史回复>"
+        for (indent in listOf("    ", "\t")) {
+            val partial = "$opening\n$story\n$indent${closing.dropLast(1)}"
+            assertNarrativeReplyStates(partial, expected = story)
+            assertNarrativeReplyDeltas(listOf(partial, ">"), listOf(story, story), story)
+        }
+    }
+
+    @Test
+    fun `main stream preserves the status suffix after an indented history close`() = runBlocking {
+        val story = "雨停了。"
+        val opening = "<历史回复 模式=\"推进\">"
+        val closing = "</历史回复>"
+        val wrapped = "$opening\n$story\n    $closing"
+        val annotated = "```text（三个点为状态包裹格式，必须完整输出）\n地点：门外\n```"
+        assertNarrativeReplyDeltas(listOf(wrapped, "\n\n$annotated"), listOf(story, "$story\n\n$annotated"), "$story\n\n$annotated")
+
+        val normalStatus = "$wrapped\n\n```status\n地点：门外\n```"
+        val visibleProse = "$wrapped\n\n接下来解释上面的标记。"
+        assertNarrativeReplyStates(normalStatus, expected = normalStatus)
+        assertNarrativeReplyStates(visibleProse, expected = visibleProse)
+    }
+
+    @Test
+    fun `main stream preserves literal indented history markers in code quotes and lists`() = runBlocking {
+        val story = "雨停了。"
+        val opening = "<历史回复 模式=\"推进\">"
+        val closing = "</历史回复>"
+        for (body in listOf(
+            "$story\n\n    $closing",
+            "## 示例\n    $closing",
+            "> 引用原文。\n    $closing",
+            "- 列展示例。\n    $closing",
+            "$story\n    她展示的结束标签是 $closing",
+        )) {
+            assertNarrativeReplyStates("$opening\n$body", expected = body)
+            assertNarrativeReplyStates("$opening\n$body\n\n$closing", expected = body)
+        }
+
+        val inlineCode = "$story\n    `$closing`"
+        assertNarrativeReplyStates("$opening\n$inlineCode\n$closing", expected = inlineCode)
+
+        val card = "请阅读格式说明。\n    $opening\n    {正文}\n    $closing"
+        assertNarrativeReplyStates("$opening\n$story\n$closing", expected = story, formatCard = card)
+    }
+
     private suspend fun assertNarrativeReplyStates(raw: String, expected: String, formatCard: String? = null) =
         assertNarrativeReplyDeltas(listOf(raw), listOf(expected), expected, formatCard)
 
