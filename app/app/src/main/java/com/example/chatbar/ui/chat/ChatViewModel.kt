@@ -3238,21 +3238,23 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             null
                         }
                         currentUserApiMessage?.let { userMessage ->
+                            val narrativeModeTail = PromptTemplates.narrativeModeTailSystemPrompt(
+                                requestNarrativeMode,
+                                ChatHistoryPromptPolicy.previousNarrativeMode(
+                                    contextMsgs,
+                                    alternativeTargetMessageId?.let {
+                                        chatRepository.getMessage(it, sessionId)
+                                    }
+                                )
+                            )
                             appendCurrentUserAndCcbTailMessages(
                                 messages = apiMessages,
                                 userMessage = userMessage,
                                 strongPromptSystemSuffix = strongPromptSystemSuffix,
                                 postUserSystemPrompt = postUserSystemPrompt,
-                                narrativeModeSystemPrompt = PromptTemplates.narrativeModeTailSystemPrompt(
-                                    requestNarrativeMode,
-                                    ChatHistoryPromptPolicy.previousNarrativeMode(
-                                        contextMsgs,
-                                        alternativeTargetMessageId?.let {
-                                            chatRepository.getMessage(it, sessionId)
-                                        }
-                                    )
-                                )
+                                narrativeModeSystemPrompt = narrativeModeTail
                             )
+                            narrativeEcho.recordNarrativePrompt(narrativeModeTail, requestUserContent)
                         }
                     }
 

@@ -134,14 +134,15 @@ object NarrativeHistoryEcho {
         private val formatOutput: FormatOutput = FormatOutput(),
         private val formatCard: String? = null,
         private val repairOpenings: Set<String>? = null,
+        private val repairLiteralSources: List<String> = emptyList(),
     ) {
         private val projectedDuplicateOpenings = mutableSetOf<String>()
         private val projectedClosings = mutableSetOf<String>()
-        private var narrativeHeading: String? = null
+        private val narrativeHeadings = mutableSetOf<String>()
         private var currentUserText: String? = null
 
         fun recordNarrativePrompt(prompt: String, userText: String?) {
-            narrativeHeading = prompt.lineSequence().firstOrNull()?.takeIf(String::isNotBlank)
+            prompt.lineSequence().firstOrNull()?.takeIf(String::isNotBlank)?.let(narrativeHeadings::add)
             currentUserText = userText
         }
 
@@ -176,21 +177,26 @@ object NarrativeHistoryEcho {
             streaming: Boolean = false,
         ): String {
             if (!enabled) return text
+            val provisional = streaming || interrupted
             if (repairOpenings != null) {
-                return cleanReply(
+                val cleaned = cleanReply(
                     text, streaming, interrupted, formatOutput = formatOutput, allowedOpenings = repairOpenings,
                 ).body
+                if (cleaned != text) return cleaned
+                val repairClosings = wrappers.filter { it.opening in repairOpenings }.flatMap { it.closings }
+                return withoutOrphanClosing(text, repairClosings, provisional, formatOutput) { partial ->
+                    repairLiteralSources.any { partial in it }
+                }
             }
 
-            val heading = narrativeHeading?.takeUnless(::isAuthored)
-            val provisional = streaming || interrupted
-            val reply = if (heading == null) text.indices else withoutEchoedHeading(text, heading, provisional)
+            val headings = narrativeHeadings.filterNot(::isAuthored)
+            val reply = withoutEchoedHeading(text, headings, provisional, ::isAuthored)
             val body = text.substring(reply)
             val lengths = if (reply == text.indices) partLengths else partLengths.trimTo(reply, text.length)
             val cleaned = cleanCompletedBody(body, formatOutput, interrupted, lengths, streaming, projectedDuplicateOpenings)
             if (cleaned != body) return cleaned
-            val closing = projectedClosings.firstOrNull { body.trimEnd().endsWith(it) && !isAuthored(it) }
-            return if (closing == null) cleaned else withoutOrphanClosing(body, closing, provisional)
+            val closings = projectedClosings.filterNot(::isAuthored)
+            return withoutOrphanClosing(body, closings, provisional, formatOutput, ::isAuthored)
         }
     }
 
@@ -208,24 +214,40 @@ object NarrativeHistoryEcho {
                 userText?.contains(wrapper.opening) != true &&
                 wrapper.closings.none { userText?.contains(it) == true }
         }.mapTo(mutableSetOf(), Wrapper::opening)
-        return RequestCleanup(enabled = openings.isNotEmpty(), formatOutput = output, repairOpenings = openings)
+        return RequestCleanup(
+            enabled = openings.isNotEmpty(), formatOutput = output, repairOpenings = openings,
+            repairLiteralSources = listOfNotNull(original, userText),
+        )
     }
 
-    private fun withoutEchoedHeading(text: String, heading: String, provisional: Boolean): IntRange {
-        val start = text.indexOfFirst { !it.isHistoryLineBreak() }.takeIf { it >= 0 } ?: return text.indices
-        val headEnd = text.indexOfAny(charArrayOf('\r', '\n'), start).takeIf { it >= 0 } ?: text.length
-        val tailEnd = text.indexOfLast { !it.isWhitespace() } + 1
-        val tailStart = lineStart(text, tailEnd)
-        val atStart = text.regionMatches(start, heading, 0, heading.length) && headEnd - start == heading.length
-        val atEnd = text.regionMatches(tailStart, heading, 0, heading.length) && tailEnd - tailStart == heading.length
-        if (!atStart && !atEnd) return text.indices
-        val literals = classifyLiterals(text, includeUnclosed = provisional)
-        val bodyStart = if (atStart && literals.isUnprotected(start)) {
-            (headEnd until text.length).firstOrNull { !text[it].isHistoryLineBreak() } ?: text.length
-        } else 0
-        val bodyEnd = if (atEnd && literals.isUnprotected(tailStart)) {
-            (bodyStart until tailStart).lastOrNull { !text[it].isHistoryLineBreak() }?.plus(1) ?: bodyStart
-        } else text.length
+    private fun withoutEchoedHeading(
+        text: String, headings: List<String>, provisional: Boolean, isAuthored: (String) -> Boolean,
+    ): IntRange {
+        if (headings.isEmpty() || text.isBlank()) return text.indices
+        val literals by lazy(LazyThreadSafetyMode.NONE) { classifyLiterals(text, includeUnclosed = provisional) }
+        fun matches(line: String, allowPrefix: Boolean): Boolean = headings.any { heading ->
+            line == heading || allowPrefix && heading.startsWith(line) &&
+                line.startsWith(heading.substringBefore('（').removeSuffix("】")) && !isAuthored(line)
+        }
+
+        var bodyStart = 0
+        while (bodyStart < text.length) {
+            val start = (bodyStart until text.length).firstOrNull { !text[it].isHistoryLineBreak() } ?: break
+            val end = text.indexOfAny(charArrayOf('\r', '\n'), start).takeIf { it >= 0 } ?: text.length
+            if (!matches(text.substring(start, end), provisional && end == text.length) ||
+                !literals.isUnprotected(start)
+            ) break
+            bodyStart = (end until text.length).firstOrNull { !text[it].isHistoryLineBreak() } ?: text.length
+        }
+        var bodyEnd = text.length
+        while (bodyEnd > bodyStart) {
+            val end = (bodyEnd - 1 downTo bodyStart).firstOrNull { !text[it].isWhitespace() }?.plus(1) ?: break
+            val start = lineStart(text, end)
+            if (!matches(text.substring(start, end), provisional && bodyEnd == text.length) ||
+                !literals.isUnprotected(start)
+            ) break
+            bodyEnd = (start - 1 downTo bodyStart).firstOrNull { !text[it].isHistoryLineBreak() }?.plus(1) ?: bodyStart
+        }
         return bodyStart until bodyEnd
     }
 
@@ -241,17 +263,43 @@ object NarrativeHistoryEcho {
         }
     }
 
-    private fun withoutOrphanClosing(text: String, closing: String, provisional: Boolean): String {
+    private fun withoutOrphanClosing(
+        text: String, closings: List<String>, provisional: Boolean, formatOutput: FormatOutput,
+        isAuthored: (String) -> Boolean,
+    ): String {
+        if (closings.isEmpty() || "</" !in text) return text
         val end = text.trimEnd()
-        val position = end.length - closing.length
-        if (position <= 0 || !end[position - 1].isHistoryLineBreak()) return text
-        val body = end.substring(0, position).trimEnd('\r', '\n')
-        if (body.isBlank() || body.trimEnd().last() in ":：") return text
-        val family = wrappers.first { closing in it.closings }.name
-        val tags = wrapperFamilyTokens.getValue(family).findAll(end).toList()
-        val literals = classifyLiterals(end, tags, listOf(closing), includeUnclosed = provisional)
+        val partial = if (provisional) end.substring(lineStart(end, end.length)) else ""
+        val tags = wrappers.filter { wrapper -> wrapper.closings.any { it in closings } }
+            .distinctBy(Wrapper::name)
+            .flatMap { wrapperFamilyTokens.getValue(it.name).findAll(end).toList() }
+            .sortedBy { it.range.first }
+        val candidates = tags.filter { it.value in closings && lineStart(end, it.range.first) == it.range.first }
+        val partialClosing = partial.takeIf {
+            it.length > 2 && closings.any { close ->
+                val name = wrappers.first { close in it.closings }.name
+                it.startsWith("</${name.dropLast(1)}") && it.length < close.length && close.startsWith(it)
+            } && !isAuthored(it)
+        }
+        if (candidates.isEmpty() && partialClosing == null) return text
+        val literals = classifyLiterals(end, tags, closings, includeUnclosed = provisional)
         val visible = tags.filter { literals.isVisibleWrapperTag(end, it, includeStandaloneLazyTags = true) }
-        return if (visible.size == 1 && visible.single().range.first == position) body else text
+        val close = visible.singleOrNull()?.takeIf { it in candidates }
+        val position = close?.range?.first ?: if (visible.isEmpty() && partialClosing != null) {
+            (end.length - partialClosing.length).takeIf { literals.isUnprotected(it) } ?: return text
+        } else return text
+        val before = end.substring(0, position)
+        val lastBodyCharacter = before.trimEnd().lastOrNull()
+        if (lastBodyCharacter == ':' || lastBodyCharacter == '：') return text
+        if (close == null || close.range.last == end.lastIndex) return before.trimEnd('\r', '\n')
+        val suffixStart = close.range.last + 1
+        if (!hasOnlyReplySuffix(
+                end, suffixStart, literals.replySuffixRanges(formatOutput, provisional), literals,
+                provisional, formatOutput,
+            )
+        ) return text
+        val suffix = text.substring(suffixStart)
+        return if (suffix.lineSequence().first().isNotBlank()) before + suffix else before.trimEnd('\r', '\n') + suffix
     }
 
     private fun declaredOutput(formatCard: String): FormatOutput {
@@ -628,21 +676,7 @@ object NarrativeHistoryEcho {
                 isJoinedLiteral?.invoke(bodyStart + tag.range.first, false) != true
         }
         val suffixRanges by lazy(LazyThreadSafetyMode.NONE) {
-            val status = literals.fences.filter {
-                it.topLevel && it.legacyStatus || when (val info = it.statusInfo()) {
-                    null -> false
-                    "" -> it.matchesBareStatusLead(
-                        literals.markdown, formatOutput.trailingBareStatusLeads, streaming || interrupted,
-                    )
-                    else -> info in formatOutput.trailingStatusInfos
-                }
-            }.map { it.range }
-            val options = (roleplayAnnotatedActionRanges(literals.markdown).asSequence() +
-                roleplayListedActionRanges(literals.markdown)).filter { range ->
-                literals.ranges.none { range.first in it || range.last in it } &&
-                    !literals.isMarkdownContainerLine(range.first) && !literals.isMarkdownContainerLine(range.last)
-            }.toList()
-            (literals.commentRanges + status + options).sortedBy { it.first }
+            literals.replySuffixRanges(formatOutput, streaming || interrupted)
         }
         fun bodyBeforeClose(position: Int): String {
             val trimmed = body.substring(0, position).trimEnd()
@@ -811,6 +845,22 @@ object NarrativeHistoryEcho {
         return includeStandaloneLazyTags || (start until offset).any { index ->
             !markdown[index].isWhitespace() && commentRanges.none { index in it }
         }
+    }
+
+    private fun ReplyLiterals.replySuffixRanges(formatOutput: FormatOutput, provisional: Boolean): List<IntRange> {
+        val status = fences.filter {
+            it.topLevel && it.legacyStatus || when (val info = it.statusInfo()) {
+                null -> false
+                "" -> it.matchesBareStatusLead(markdown, formatOutput.trailingBareStatusLeads, provisional)
+                else -> info in formatOutput.trailingStatusInfos
+            }
+        }.map { it.range }
+        val options = (roleplayAnnotatedActionRanges(markdown).asSequence() +
+            roleplayListedActionRanges(markdown)).filter { range ->
+            ranges.none { range.first in it || range.last in it } &&
+                !isMarkdownContainerLine(range.first) && !isMarkdownContainerLine(range.last)
+        }.toList()
+        return (commentRanges + status + options).sortedBy { it.first }
     }
 
     private fun hasOnlyReplySuffix(
