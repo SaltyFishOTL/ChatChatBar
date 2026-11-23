@@ -13,6 +13,10 @@ object NarrativeHistoryEcho {
         val couldSpanToolCalls: Boolean = false,
     )
     private data class LiteralMarkup(val range: IntRange, val isComment: Boolean)
+    private data class UserOutput(
+        val exactPairs: Set<String> = emptySet(),
+        val templateOpenings: Set<String> = emptySet(),
+    )
     private data class ReplyLiterals(
         val ranges: List<IntRange>,
         val roleplayLiteralCode: List<IntRange>,
@@ -52,7 +56,17 @@ object NarrativeHistoryEcho {
     )
     private const val keepTemplateTags =
         "(?:(?:必须|务必|请)(?:逐字|原样|完整)保留(?:以下)?首尾标签|" +
-            "(?:keep|preserve)[ \\t]+(?:both|the)[ \\t]+(?:opening and closing[ \\t]+)?tags[ \\t]+verbatim)"
+            "(?:keep|preserve)[ \\t]+(?:both|the)[ \\t]+(?:opening and closing[ \\t]+)?tags[ \\t]+" +
+            "(?:verbatim|exactly as (?:written|shown)))"
+    private const val userTemplateSlot = "(\\[[\\p{L}][\\p{L}\\p{N}_ -]{0,31}\\])"
+    private val userTemplateInstruction = Regex(
+        " {0,3}(?:use (?:exactly )?(?:this|the following) XML (?:shape|template)[,.;][ \\t]*" +
+            "replace $userTemplateSlot with (?:new prose|new story text|the new story)[ \\t]+" +
+            "and (?:keep|preserve) both tags(?: verbatim| exactly as (?:written|shown))?|" +
+            "请(?:严格)?使用以下[ \\t]*XML[ \\t]*模板[，,][ \\t]*将${userTemplateSlot}替换为新正文[，,]?[ \\t]*并保留首尾标签)" +
+            "[：:][ \\t]*",
+        RegexOption.IGNORE_CASE,
+    )
     private const val omitTemplateFence =
         "(?:(?:不要|不得|禁止)输出代码围栏|" +
             "(?:omit|do not (?:output|include))[ \\t]+(?:the[ \\t]+)?(?:surrounding[ \\t]+)?(?:code[ \\t]+)?fence)"
@@ -106,6 +120,13 @@ object NarrativeHistoryEcho {
             "(?:history metadata|historical metadata|history tags|metadata tags)[.!:]?[ \\t]*",
         RegexOption.IGNORE_CASE,
     )
+    private val historyExampleExplanation = Regex(
+        " {0,3}(?:(?:以上|上述)(?:的)?(?:历史(?:记录)?标签|标签)(?:仅用于|只是为了)" +
+            "(?:演示|说明|展示)(?:历史(?:记录)?格式|历史元数据)[。.]?|" +
+            "(?:The (?:above|preceding)|These) (?:history|metadata) tags (?:are|were) " +
+            "(?:only|just) (?:an example|for illustration)\\.?)[ \\t]*",
+        RegexOption.IGNORE_CASE,
+    )
     private val statusFenceInfo = Regex("(text|status)(?=$|[ \\t(（]).*", RegexOption.IGNORE_CASE)
     private val paragraphBreak = Regex("\\r?\\n[ \\t]*\\r?\\n")
     private val bareCarriageReturn = Regex("\\r(?!\\n)")
@@ -147,13 +168,16 @@ object NarrativeHistoryEcho {
         private val narrativeHeadings = mutableSetOf<String>()
         private val sentUserTexts = mutableSetOf<String>()
         private val authoredPairs = mutableSetOf<String>()
+        private val authoredTemplateOpenings = mutableSetOf<String>()
 
         fun recordNarrativePrompt(prompt: String, userText: String?) {
             prompt.lineSequence().forEachIndexed { index, line ->
                 if (line.isNotBlank() && (index == 0 || line in narrativeModeHeadings)) narrativeHeadings += line
             }
             if (userText != null && sentUserTexts.add(userText)) {
-                authoredPairs += declaredUserPairs(userText)
+                val output = declaredUserOutput(userText)
+                authoredPairs += output.exactPairs
+                authoredTemplateOpenings += output.templateOpenings
             }
         }
 
@@ -215,11 +239,14 @@ object NarrativeHistoryEcho {
             }
 
             val headings = narrativeHeadings.filterNot(::isAuthored)
+            val replyFormat = if (authoredTemplateOpenings.isEmpty()) formatOutput else {
+                formatOutput.copy(declaredOpenings = formatOutput.declaredOpenings + authoredTemplateOpenings)
+            }
             val reply = withoutEchoedHeading(text, headings, provisional, ::isAuthored)
             val body = text.substring(reply)
             val lengths = if (reply == text.indices) partLengths else partLengths.trimTo(reply, text.length)
             val cleaned = cleanCompletedBody(
-                body, formatOutput, interrupted, lengths, streaming, projectedDuplicateOpenings,
+                body, replyFormat, interrupted, lengths, streaming, projectedDuplicateOpenings,
                 allowedOpenings = projectedOpenings + formatOutput.counterexampleOpenings,
                 authoredPairs = authoredPairs,
                 trailerHeadings = headings,
@@ -288,13 +315,15 @@ object NarrativeHistoryEcho {
         return if (removeFrom < 0) null else removeFrom until preserveFrom
     }
 
-    private fun declaredUserPairs(text: String?): Set<String> {
-        if (text == null || wrappers.none { it.opening in text }) return emptySet()
+    private fun declaredUserOutput(text: String): UserOutput {
+        if (wrappers.none { it.opening in text }) return UserOutput()
+        val templateOpenings = mutableSetOf<String>()
+        val literals by lazy(LazyThreadSafetyMode.NONE) { classifyLiterals(text) }
         fun startsLine(offset: Int): Boolean {
             val start = lineStart(text, offset)
             return offset - start <= 3 && (start until offset).all { text[it] == ' ' }
         }
-        return buildSet {
+        val pairs = buildSet {
             for (family in wrapperFamilyTokens.values) {
                 val tags = family.findAll(text).toList()
                 for ((index, tag) in tags.withIndex()) {
@@ -308,9 +337,18 @@ object NarrativeHistoryEcho {
                     val standalonePair = text.getOrNull(tag.range.last + 1).isHistoryLineBreak() &&
                         startsLine(closing.range.first)
                     if (singleLine || standalonePair) add(pair)
+                    if (!standalonePair) continue
+                    val lead = previousVisibleLine(text, lineStart(text, tag.range.first)) ?: continue
+                    val instruction = userTemplateInstruction.matchEntire(text.substring(lead)) ?: continue
+                    val slot = (instruction.groups[1] ?: instruction.groups[2])?.value ?: continue
+                    val templateBody = text.substring(tag.range.last + 1, closing.range.first).trim()
+                    if (templateBody == slot && literals.isUnprotected(lead.first) &&
+                        literals.isUnprotected(tag.range.first) && literals.isUnprotected(closing.range.first)
+                    ) templateOpenings += wrapper.opening
                 }
             }
         }
+        return UserOutput(pairs, templateOpenings)
     }
 
     internal fun forRequest(narrativeMode: ChatNarrativeMode?, formatCard: String?): RequestCleanup =
@@ -703,6 +741,12 @@ object NarrativeHistoryEcho {
                 val tags = wrapperFamilyTokens.values.flatMap { it.findAll(text).toList() }.sortedBy { it.range.first }
                 classifyLiterals(text, tags, wrappers.flatMap { it.closings }, includeUnclosed = streaming || interrupted)
             }
+            fun explainsPreviousExample(index: Int): Boolean =
+                parts.getOrNull(index)?.let { part ->
+                    text.substring(part).lineSequence().firstOrNull(String::isNotBlank)
+                        ?.let(historyExampleExplanation::matches)
+                } == true
+
             var previousGroupClosedWrapper = false
             fun cleanParts(
                 first: Int,
@@ -738,16 +782,20 @@ object NarrativeHistoryEcho {
                 while (first < parts.size) {
                     var cleaned = cleanParts(first, first)
                     var next = first + 1
+                    if (cleaned.matchedOuterPair && explainsPreviousExample(next)) {
+                        cleaned = CleanedReply(text.substring(parts[first]))
+                    }
                     if (cleaned.couldSpanToolCalls) {
                         for (last in next..parts.lastIndex) {
                             val grouped = cleanParts(first, last, requirePair = true)
                             if (!grouped.matchedOuterPair) continue
                             if (last < parts.lastIndex) {
-                                // A plain following call may explain a tag example. Only another
-                                // eligible opener or a close in its own call establishes a boundary.
+                                // Prose after a split pair is ambiguous unless a call boundary establishes
+                                // the close. An explicit explanation still identifies a literal example.
                                 val following = cleanParts(last + 1, last + 1, followsClosedWrapper = true)
                                 val closingPart = text.substring(parts[last]).trim()
-                                if (!following.matchedOuterPair && !following.couldSpanToolCalls &&
+                                if (explainsPreviousExample(last + 1) ||
+                                    !following.matchedOuterPair && !following.couldSpanToolCalls &&
                                     wrappers.none { closingPart in it.closings }
                                 ) {
                                     // Preserve an ambiguous group intact instead of stripping half its pair.

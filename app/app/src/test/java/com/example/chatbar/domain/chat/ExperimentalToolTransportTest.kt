@@ -1796,6 +1796,79 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `an explicit user output template keeps its tags around replaced story text`() = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "雨落在窗沿。").copy(narrativeMode = mode)
+        val sample = PromptTemplates.narrativeModeHistoryReply("[story]", mode)
+        val story = "她推开门。"
+        val wrapped = PromptTemplates.narrativeModeHistoryReply(story, mode)
+        val opening = wrapped.substringBefore('\n')
+        val rest = wrapped.substring(opening.length)
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            val declarations = listOf(
+                "Use exactly this XML shape, replace [story] with new prose and keep both tags:",
+                "请使用以下 XML 模板，将[story]替换为新正文并保留首尾标签：",
+            )
+            for (declaration in declarations) {
+                assertNarrativeReplyDeltas(
+                    listOf(opening, rest), listOf(opening, wrapped), wrapped,
+                    previousAssistant = prior, experimental = experimental, toolCall = toolCall,
+                    currentUserText = "$declaration\n$sample",
+                )
+            }
+            for (reference in listOf(
+                "Here is a historical XML sample for reference:",
+                declarations.first().replace("[story]", "[another]"),
+            )) {
+                assertNarrativeReplyDeltas(
+                    listOf(wrapped), listOf(story), story,
+                    previousAssistant = prior, experimental = experimental, toolCall = toolCall,
+                    currentUserText = "$reference\n$sample",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `a format card can explicitly require the tags in an unfenced output`() = runBlocking {
+        val mode = ChatNarrativeMode.ADVANCE
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "雨落在窗沿。").copy(narrativeMode = mode)
+        val sample = PromptTemplates.narrativeModeHistoryReply("[story]", mode)
+        val wrapped = PromptTemplates.narrativeModeHistoryReply("她到达码头。", mode)
+        val fencedSample = "Output format:\n```xml\n$sample\n```"
+        val format = "Preserve the opening and closing tags exactly as written. Do not include the code fence.\n$fencedSample"
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            assertNarrativeReplyDeltas(
+                listOf(wrapped), listOf(wrapped), wrapped, formatCard = format,
+                previousAssistant = prior, experimental = experimental, toolCall = toolCall,
+            )
+            val body = wrapped.lineSequence().elementAt(1)
+            assertNarrativeReplyDeltas(
+                listOf(wrapped), listOf(body), body, formatCard = "The sample is a reference.\n$fencedSample",
+                previousAssistant = prior, experimental = experimental, toolCall = toolCall,
+            )
+        }
+    }
+
+    @Test
+    fun `an explanation delivered in the next tool call preserves the literal example`(): Unit = runBlocking {
+        val sample = PromptTemplates.narrativeModeHistoryReply("示例正文。", ChatNarrativeMode.FOCUS)
+        val explanation = "以上标签仅用于演示历史记录格式。"
+        val anotherStory = PromptTemplates.narrativeModeHistoryReply("雨停了。", ChatNarrativeMode.ADVANCE)
+        for (exampleParts in listOf(
+            listOf(sample),
+            listOf(sample.substringBeforeLast('\n'), sample.substringAfterLast('\n')),
+        )) {
+            assertMultipartNarrativeReply(
+                exampleParts + listOf(explanation, anotherStory), "$sample\n$explanation\n雨停了。",
+            )
+        }
+        assertMultipartNarrativeReply(
+            listOf(sample, "她擦掉了白板。", anotherStory), "示例正文。\n她擦掉了白板。\n雨停了。",
+        )
+    }
+
+    @Test
     fun `repair SSE removes a forbidden outer pair while retaining an original code sample`() = runBlocking {
         val mode = ChatNarrativeMode.FOCUS
         val sample = PromptTemplates.narrativeModeHistoryReply("字面样张。", mode)
