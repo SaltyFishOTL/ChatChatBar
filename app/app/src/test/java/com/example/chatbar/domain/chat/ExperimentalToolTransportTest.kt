@@ -605,6 +605,30 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `main stream keeps a nested reply if visible prose follows its only close`() = runBlocking {
+        val mode = ChatNarrativeMode.ADVANCE
+        val opening = "<历史回复 模式=\"推进\">"
+        val closing = "</历史回复>"
+        val card = "每次回复只使用一对以下首尾标签，正文中不得重复这两个标签。\n" +
+            "输出模板：\n$opening\n（故事正文）\n$closing"
+        val previous = ChatMessage.create(
+            "fixture", MessageRole.ASSISTANT,
+            PromptTemplates.narrativeModeHistoryReply("雨落在窗沿。", mode),
+        ).copy(narrativeMode = mode)
+        val authored = PromptTemplates.narrativeModeHistoryReply("门外传来脚步。", mode)
+        val provisional = "$opening\n$authored"
+        val continuation = "$provisional\n这一段在内层标签外继续。"
+        assertNarrativeReplyStates(continuation, expected = continuation, formatCard = card, previousAssistant = previous)
+        assertNarrativeReplyDeltas(
+            listOf(provisional, "\n</历史回", "复>"),
+            listOf(authored, authored, authored),
+            expectedCompleted = authored,
+            formatCard = card,
+            previousAssistant = previous,
+        )
+    }
+
+    @Test
     fun `main stream accepts ordinary closers only for annotated status outside the wrapper`() = runBlocking {
         val story = "她推开门。"
         val wrapped = "<历史回复 模式=\"推进\">\n$story\n</历史回复>"

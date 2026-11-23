@@ -453,9 +453,16 @@ object NarrativeHistoryEcho {
         if (openingTag.range.first != 0 || openingTag.value != opening) return false
         val closingTags = tags.drop(1)
         if (closingTags.size > 2 || closingTags.any { it.value !in closings }) return false
-        if (closingTags.size < 2) return true
-        val separator = body.subSequence(closingTags[0].range.last + 1, closingTags[1].range.first)
-        return separator.isBlank() && separator.any { it.isHistoryLineBreak() }
+        val innerClose = closingTags.firstOrNull() ?: return true
+        val outerClose = closingTags.getOrNull(1)
+        val tail = body.subSequence(innerClose.range.last + 1, outerClose?.range?.first ?: body.length)
+        if (outerClose != null) return tail.isBlank() && tail.any { it.isHistoryLineBreak() }
+        if (tail.isBlank()) return true
+
+        // A pending outer close can follow the inner pair, but prose invalidates the duplicate shape.
+        val prefix = tail.trimStart()
+        return tail.take(tail.length - prefix.length).any { it.isHistoryLineBreak() } &&
+            closings.any { it.startsWith(prefix) }
     }
 
     private fun wrapperBoundary(wrapper: Wrapper, tags: Sequence<MatchResult>): WrapperBoundary {
