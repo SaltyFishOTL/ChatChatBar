@@ -1953,6 +1953,37 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `a blank line with horizontal padding does not expose an issued title or its wrapper`() = runBlocking {
+        val story = "她收起雨伞。"
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "雨落在窗沿。").copy(narrativeMode = mode)
+            val prompt = PromptTemplates.narrativeModeSystemPrompt(mode)
+            val heading = prompt.lineSequence().first()
+            val reply = PromptTemplates.narrativeModeHistoryReply(story, mode)
+            val opening = reply.substringBefore('\n')
+            val wrappedBody = reply.substringAfter('\n')
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                for (blankLine in listOf("\n", " \n", "\t \r\n")) {
+                    assertNarrativeReplyDeltas(
+                        listOf("$blankLine$heading\n$opening", "\n$wrappedBody"), listOf("", story), story,
+                        previousAssistant = prior, narrativePrompt = prompt, experimental = experimental, toolCall = toolCall,
+                    )
+                }
+                val code = " \n    $heading\n\n$story"
+                assertNarrativeReplyDeltas(
+                    listOf(code), listOf(code), code,
+                    previousAssistant = prior, narrativePrompt = prompt, experimental = experimental, toolCall = toolCall,
+                )
+                val paddedProse = " \n  $story"
+                assertNarrativeReplyDeltas(
+                    listOf(paddedProse), listOf(paddedProse), paddedProse,
+                    previousAssistant = prior, narrativePrompt = prompt, experimental = experimental, toolCall = toolCall,
+                )
+            }
+        }
+    }
+
+    @Test
     fun `the sent title stays visible when the story explicitly reads it aloud`() = runBlocking {
         for (mode in ChatNarrativeMode.entries) {
             val prompt = PromptTemplates.narrativeModeSystemPrompt(mode)
@@ -2038,6 +2069,31 @@ class ExperimentalToolTransportTest {
                         currentUserText = source,
                     )
                 }
+            }
+        }
+    }
+
+    @Test
+    fun `a required user template survives horizontal padding after the closing tag`() = runBlocking {
+        val story = "她收起雨伞。"
+        val instruction = "Use this XML template, replace [story] with new prose and keep both tags verbatim:"
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "雨落在窗沿。").copy(narrativeMode = mode)
+            val sample = PromptTemplates.narrativeModeHistoryReply("[story]", mode)
+            val reply = PromptTemplates.narrativeModeHistoryReply(story, mode)
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                for (padding in listOf("", " ", "\t ")) {
+                    assertNarrativeReplyDeltas(
+                        listOf(reply), listOf(reply), reply,
+                        previousAssistant = prior, experimental = experimental, toolCall = toolCall,
+                        currentUserText = "$instruction\n$sample$padding\nWrite the prose in Chinese.",
+                    )
+                }
+                assertNarrativeReplyDeltas(
+                    listOf(reply), listOf(story), story,
+                    previousAssistant = prior, experimental = experimental, toolCall = toolCall,
+                    currentUserText = "$instruction\n$sample This is the end of the example.\nWrite the prose in Chinese.",
+                )
             }
         }
     }

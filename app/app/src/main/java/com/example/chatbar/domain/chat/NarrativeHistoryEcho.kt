@@ -374,7 +374,8 @@ object NarrativeHistoryEcho {
                     val wrapper = wrappers.firstOrNull { it.opening == tag.value } ?: continue
                     val closing = wrapperBoundary(wrapper, tags.asSequence().drop(index + 1)).closing ?: continue
                     val end = closing.range.last + 1
-                    if (end < text.length && !text[end].isHistoryLineBreak()) continue
+                    val closingLineEnd = text.indexOfAny(charArrayOf('\r', '\n'), end).takeIf { it >= 0 } ?: text.length
+                    if ((end until closingLineEnd).any { !text[it].isHorizontalPadding() }) continue
                     val visibleLead = literals.visibleLine(lead)
                     val labeled = visibleLead?.let(formatTemplateLabel::matches) == true
                     val prohibitionLead = if (labeled && lead != null) previousVisibleLine(literals.markdown, lead.first) else lead
@@ -482,13 +483,17 @@ object NarrativeHistoryEcho {
 
         val commentsEnd = leadingClosedCommentLinesEnd(text)
         var bodyStart = commentsEnd
-        while (bodyStart < text.length) {
-            val start = (bodyStart until text.length).firstOrNull { !text[it].isHistoryLineBreak() } ?: break
+        var cursor = commentsEnd
+        while (cursor < text.length) {
+            val start = (cursor until text.length).firstOrNull { !text[it].isHistoryLineBreak() } ?: break
             val end = text.indexOfAny(charArrayOf('\r', '\n'), start).takeIf { it >= 0 } ?: text.length
-            if (!matches(text.substring(start, end), provisional && end == text.length) ||
+            cursor = (end until text.length).firstOrNull { !text[it].isHistoryLineBreak() } ?: text.length
+            val line = text.substring(start, end)
+            if (line.all { it.isHorizontalPadding() }) continue
+            if (!matches(line, provisional && end == text.length) ||
                 !literals.isUnprotected(start) || isJoinedLiteral(start)
             ) break
-            bodyStart = (end until text.length).firstOrNull { !text[it].isHistoryLineBreak() } ?: text.length
+            bodyStart = cursor
         }
         val prefixEnd = if (bodyStart > commentsEnd) commentsEnd else 0
         if (bodyStart == commentsEnd) bodyStart = 0
@@ -1292,6 +1297,8 @@ object NarrativeHistoryEcho {
     }
 
     private fun Char?.isHistoryLineBreak(): Boolean = this == '\n' || this == '\r'
+
+    private fun Char.isHorizontalPadding(): Boolean = this == ' ' || this == '\t'
 
     /** Closed comments hidden in the bubble. Code and escaped comment openers are literal. */
     internal fun hiddenHtmlCommentRanges(text: String): List<IntRange> =
