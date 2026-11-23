@@ -2368,7 +2368,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     private suspend fun performMessageFormatRepair(
         message: ChatMessage,
-        automatic: Boolean
+        automatic: Boolean,
+        userText: String? = null
     ): ChatMessage {
         val appSettings = settingsRepository.getAppSettings()
         val currentSession = chatRepository.getSession(sessionId) ?: return message
@@ -2406,6 +2407,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         }
 
         val originalContent = message.displayContent
+        val repairEcho = NarrativeHistoryEcho.forFormatRepair(formatCard, originalContent, userText)
         var result = message
         var repairedPrefix = ""
         var sawDone = false
@@ -2431,7 +2433,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                     messageId = message.id,
                                     previewContent = MessageFormatRepairPolicy.progressiveOverlay(
                                         original = originalContent,
-                                        repairedPrefix = repairedPrefix
+                                        repairedPrefix = repairEcho.completedBody(repairedPrefix, streaming = true)
                                     )
                                 )
                             }
@@ -2442,12 +2444,13 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             is StreamEvent.Usage -> Unit
                         }
                     }
-                    if (!sawDone || repairedPrefix.isBlank()) {
+                    val repaired = repairEcho.completedBody(repairedPrefix)
+                    if (!sawDone || repaired.isBlank()) {
                         throw IllegalStateException("格式修复模型返回空结果")
                     }
                     result = when {
-                        MessageFormatRepairPolicy.isUnchangedResult(repairedPrefix) ||
-                            repairedPrefix == originalContent -> {
+                        MessageFormatRepairPolicy.isUnchangedResult(repaired) ||
+                            repaired == originalContent -> {
                             val unchanged = message.copy(
                                 formatRepairNotice = MessageFormatRepairPolicy.recoverableNotice(message),
                                 updatedAt = System.currentTimeMillis()
@@ -2459,12 +2462,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         else -> {
                             val notice = MessageFormatRepairPolicy.completedRepairNotice(
                                 original = originalContent,
-                                repaired = repairedPrefix
+                                repaired = repaired
                             )
                             persistFormatRepairMessage(
                                 MessageFormatRepairPolicy.replaceCurrentDisplayContent(
                                     message = message,
-                                    replacement = repairedPrefix,
+                                    replacement = repaired,
                                     notice = notice
                                 )
                             )
@@ -2474,19 +2477,21 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     if (!formatRepairStopRequested) throw cancelled
                     val mixedContent = MessageFormatRepairPolicy.progressiveOverlay(
                         original = originalContent,
-                        repairedPrefix = repairedPrefix
+                        repairedPrefix = repairEcho.completedBody(repairedPrefix, interrupted = true)
                     )
-                    result = persistFormatRepairMessage(
-                        MessageFormatRepairPolicy.replaceCurrentDisplayContent(
-                            message = message,
-                            replacement = mixedContent,
-                            notice = MessageFormatRepairNotice(
-                                kind = MessageFormatRepairNoticeKind.STOPPED,
-                                targetContent = mixedContent,
-                                originalContent = originalContent
+                    result = withContext(NonCancellable) {
+                        persistFormatRepairMessage(
+                            MessageFormatRepairPolicy.replaceCurrentDisplayContent(
+                                message = message,
+                                replacement = mixedContent,
+                                notice = MessageFormatRepairNotice(
+                                    kind = MessageFormatRepairNoticeKind.STOPPED,
+                                    targetContent = mixedContent,
+                                    originalContent = originalContent
+                                )
                             )
                         )
-                    )
+                    }
                 } catch (error: Exception) {
                     result = persistFormatRepairFailure(
                         message = message,
@@ -3202,6 +3207,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             false
                         }
                     }
+                    narrativeEcho.recordNarrativePrompt(promptLayers.narrativeModeSystemPrompt, currentUserContent)
                     if (shouldAddUserPrompt && currentUserContent != null) {
                         val requestUserContent = FormatCardUserToolPolicy.appendRequestSuffix(
                             userContent = currentUserContent,
@@ -3380,7 +3386,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 if (appSettings.automaticFormatCheckEnabled) {
                                     persistedAssistantMessage = performMessageFormatRepair(
                                         message = persistedAssistantMessage,
-                                        automatic = true
+                                        automatic = true,
+                                        userText = currentUserContent
                                     )
                                 }
                                 if (!automaticImageHandled &&

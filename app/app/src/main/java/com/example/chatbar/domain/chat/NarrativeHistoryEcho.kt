@@ -126,24 +126,41 @@ object NarrativeHistoryEcho {
         val trailingBareStatusLeads: Set<String> = emptySet(),
         val singlePairOpenings: Set<String> = emptySet(),
         val declaresAnnotatedActions: Boolean = false,
+        val counterexampleOpenings: Set<String> = emptySet(),
     )
 
     internal class RequestCleanup internal constructor(
         private val enabled: Boolean,
         private val formatOutput: FormatOutput = FormatOutput(),
+        private val formatCard: String? = null,
+        private val repairOpenings: Set<String>? = null,
     ) {
         private val projectedDuplicateOpenings = mutableSetOf<String>()
+        private val projectedClosings = mutableSetOf<String>()
+        private var narrativeHeading: String? = null
+        private var currentUserText: String? = null
+
+        fun recordNarrativePrompt(prompt: String, userText: String?) {
+            narrativeHeading = prompt.lineSequence().firstOrNull()?.takeIf(String::isNotBlank)
+            currentUserText = userText
+        }
+
+        private fun isAuthored(token: String): Boolean =
+            formatCard?.contains(token) == true || currentUserText?.contains(token) == true
 
         val declaresLegacyHistoryWrapper: Boolean
             get() = legacyWrapper.opening in formatOutput.declaredOpenings
 
         /** Record double framing that entered this request around a stored single pair. */
         fun recordHistoryProjection(body: String, projection: String) {
+            if (projection == body && isStandaloneLegacyHistoryWrapper(projection)) {
+                projectedClosings += legacyWrapper.closings.first { projection.endsWith(it) }
+            }
             for (wrapper in wrappers) {
                 val declaredSinglePair = wrapper.opening in formatOutput.singlePairOpenings
-                if (wrapper.opening in projectedDuplicateOpenings ||
-                    projection != "${wrapper.opening}\n$body\n${wrapper.closings.first()}"
-                ) continue
+                if (projection != "${wrapper.opening}\n$body\n${wrapper.closings.first()}") continue
+                projectedClosings += wrapper.closings.first()
+                if (wrapper.opening in projectedDuplicateOpenings) continue
                 val undeclaredTransportPair = wrapper != legacyWrapper &&
                     wrapper.opening !in formatOutput.declaredOpenings && wrapper.isStandalonePair(body)
                 if (declaredSinglePair && wrapper.hasExactlyOnePair(body) ||
@@ -157,14 +174,85 @@ object NarrativeHistoryEcho {
             interrupted: Boolean = false,
             partLengths: List<Int> = emptyList(),
             streaming: Boolean = false,
-        ): String = if (enabled) {
-            cleanCompletedBody(text, formatOutput, interrupted, partLengths, streaming, projectedDuplicateOpenings)
-        } else text
+        ): String {
+            if (!enabled) return text
+            if (repairOpenings != null) {
+                return cleanReply(
+                    text, streaming, interrupted, formatOutput = formatOutput, allowedOpenings = repairOpenings,
+                ).body
+            }
+
+            val heading = narrativeHeading?.takeUnless(::isAuthored)
+            val provisional = streaming || interrupted
+            val reply = if (heading == null) text.indices else withoutEchoedHeading(text, heading, provisional)
+            val body = text.substring(reply)
+            val lengths = if (reply == text.indices) partLengths else partLengths.trimTo(reply, text.length)
+            val cleaned = cleanCompletedBody(body, formatOutput, interrupted, lengths, streaming, projectedDuplicateOpenings)
+            if (cleaned != body) return cleaned
+            val closing = projectedClosings.firstOrNull { body.trimEnd().endsWith(it) && !isAuthored(it) }
+            return if (closing == null) cleaned else withoutOrphanClosing(body, closing, provisional)
+        }
     }
 
     internal fun forRequest(narrativeMode: ChatNarrativeMode?, formatCard: String?): RequestCleanup =
         if (narrativeMode == null) RequestCleanup(enabled = false)
-        else RequestCleanup(enabled = true, formatOutput = formatCard?.let(::declaredOutput) ?: FormatOutput())
+        else RequestCleanup(
+            enabled = true, formatOutput = formatCard?.let(::declaredOutput) ?: FormatOutput(), formatCard = formatCard,
+        )
+
+    internal fun forFormatRepair(formatCard: String?, original: String, userText: String? = null): RequestCleanup {
+        val output = formatCard?.let(::declaredOutput) ?: FormatOutput()
+        val openings = wrappers.filter { wrapper ->
+            wrapper.opening in output.counterexampleOpenings && wrapper.opening !in output.declaredOpenings &&
+                wrapper.opening !in original && wrapper.closings.none { it in original } &&
+                userText?.contains(wrapper.opening) != true &&
+                wrapper.closings.none { userText?.contains(it) == true }
+        }.mapTo(mutableSetOf(), Wrapper::opening)
+        return RequestCleanup(enabled = openings.isNotEmpty(), formatOutput = output, repairOpenings = openings)
+    }
+
+    private fun withoutEchoedHeading(text: String, heading: String, provisional: Boolean): IntRange {
+        val start = text.indexOfFirst { !it.isHistoryLineBreak() }.takeIf { it >= 0 } ?: return text.indices
+        val headEnd = text.indexOfAny(charArrayOf('\r', '\n'), start).takeIf { it >= 0 } ?: text.length
+        val tailEnd = text.indexOfLast { !it.isWhitespace() } + 1
+        val tailStart = lineStart(text, tailEnd)
+        val atStart = text.regionMatches(start, heading, 0, heading.length) && headEnd - start == heading.length
+        val atEnd = text.regionMatches(tailStart, heading, 0, heading.length) && tailEnd - tailStart == heading.length
+        if (!atStart && !atEnd) return text.indices
+        val literals = classifyLiterals(text, includeUnclosed = provisional)
+        val bodyStart = if (atStart && literals.isUnprotected(start)) {
+            (headEnd until text.length).firstOrNull { !text[it].isHistoryLineBreak() } ?: text.length
+        } else 0
+        val bodyEnd = if (atEnd && literals.isUnprotected(tailStart)) {
+            (bodyStart until tailStart).lastOrNull { !text[it].isHistoryLineBreak() }?.plus(1) ?: bodyStart
+        } else text.length
+        return bodyStart until bodyEnd
+    }
+
+    private fun List<Int>.trimTo(reply: IntRange, textLength: Int): List<Int> {
+        if (size <= 1 || any { it < 0 } || sumOf(Int::toLong) + size - 1 != textLength.toLong()) return emptyList()
+        var offset = 0
+        val end = reply.last + 1
+        return mapNotNull { length ->
+            val limit = offset + length
+            val overlap = minOf(limit, end) - maxOf(offset, reply.first)
+            offset = limit + 1
+            overlap.takeIf { it >= 0 }
+        }
+    }
+
+    private fun withoutOrphanClosing(text: String, closing: String, provisional: Boolean): String {
+        val end = text.trimEnd()
+        val position = end.length - closing.length
+        if (position <= 0 || !end[position - 1].isHistoryLineBreak()) return text
+        val body = end.substring(0, position).trimEnd('\r', '\n')
+        if (body.isBlank() || body.trimEnd().last() in ":：") return text
+        val family = wrappers.first { closing in it.closings }.name
+        val tags = wrapperFamilyTokens.getValue(family).findAll(end).toList()
+        val literals = classifyLiterals(end, tags, listOf(closing), includeUnclosed = provisional)
+        val visible = tags.filter { literals.isVisibleWrapperTag(end, it, includeStandaloneLazyTags = true) }
+        return if (visible.size == 1 && visible.single().range.first == position) body else text
+    }
 
     private fun declaredOutput(formatCard: String): FormatOutput {
         val candidates = wrappers.filter { it.opening in formatCard }
@@ -181,6 +269,7 @@ object NarrativeHistoryEcho {
         val trailingStatusInfos = mutableSetOf<String>()
         val trailingBareStatusLeads = mutableSetOf<String>()
         val singlePairOpenings = mutableSetOf<String>()
+        val counterexampleOpenings = mutableSetOf<String>()
         val declaredOpenings = buildSet {
             var matchedEnd = -1
             for ((index, opening) in markup.withIndex()) {
@@ -215,7 +304,10 @@ object NarrativeHistoryEcho {
                 val after = nextNonblankLine(literals.markdown, matchedEnd + 1)
                 if (literals.isCounterexampleBefore(lead) ||
                     literals.matchesVisibleLine(after, formatCounterexampleTail)
-                ) continue
+                ) {
+                    counterexampleOpenings += wrapper.opening
+                    continue
+                }
                 add(wrapper.opening)
                 if (explicitLabel && lead != null &&
                     singlePairTemplateConstraint.matches(literals.markdown.substring(lead)) &&
@@ -231,15 +323,24 @@ object NarrativeHistoryEcho {
                 ) continue
                 val before = previousVisibleLine(literals.markdown, label.first)
                 val after = nextNonblankLine(literals.markdown, fence.range.last + 1)
-                if (literals.isCounterexampleBefore(before) ||
-                    literals.matchesVisibleLine(after, formatCounterexampleTail)
-                ) continue
+                val isCounterexample = literals.isCounterexampleBefore(before) ||
+                    literals.isCounterexampleBefore(label) || literals.matchesVisibleLine(after, formatCounterexampleTail)
 
                 val labelText = literals.markdown.substring(label)
                 val precedingInstruction = literals.visibleLine(before)
                 val isReplySample = replySampleLabel.matches(labelText)
                 val contentStart = literals.markdown.indexOf('\n', fence.range.first) + 1
                 val template = formatCard.substring(contentStart, closingLine).trim()
+                if (isCounterexample) {
+                    val example = candidates.firstOrNull {
+                        template.startsWith(it.opening) && it.closings.any(template::endsWith)
+                    }
+                    if (example != null && cleanReply(
+                            template, streaming = false, interrupted = false, requirePair = true,
+                        ).matchedOuterPair
+                    ) counterexampleOpenings += example.opening
+                    continue
+                }
                 val statusInfo = fence.statusInfo()
                 if (statusInfo != null && template.isNotBlank() &&
                     (trailingStatusLabel.matches(labelText) ||
@@ -279,6 +380,7 @@ object NarrativeHistoryEcho {
         }
         return FormatOutput(
             declaredOpenings, trailingStatusInfos, trailingBareStatusLeads, singlePairOpenings, declaresAnnotatedActions,
+            counterexampleOpenings,
         )
     }
 
@@ -478,6 +580,7 @@ object NarrativeHistoryEcho {
         formatOutput: FormatOutput = FormatOutput(),
         projectedDuplicateOpenings: Set<String> = emptySet(),
         isJoinedLiteral: ((index: Int, opening: Boolean) -> Boolean)? = null,
+        allowedOpenings: Set<String>? = null,
     ): CleanedReply {
         val first = text.indexOfFirst { !it.isWhitespace() }
         if (first < 0) return CleanedReply(text)
@@ -501,11 +604,12 @@ object NarrativeHistoryEcho {
         if (openingStart == text.length || hasCodeIndent(text, openingStart)) return CleanedReply(text)
         val leadingContent = if (openingStart == first) "" else text.substring(0, openingStart)
         val start = text.substring(openingStart)
-        val wrapper = wrappers.firstOrNull { start.startsWith(it.opening) }
+        val candidates = if (allowedOpenings == null) wrappers else wrappers.filter { it.opening in allowedOpenings }
+        val wrapper = candidates.firstOrNull { start.startsWith(it.opening) }
         if (wrapper == null) {
             val identifiable = start.startsWith("<历史回复 模式=") || start.startsWith("<聚焦模式=")
             if (!requirePair && (streaming || identifiable || interrupted && start.length > 1) &&
-                wrappers.any { it.opening.startsWith(start) } && formatOutput.declaredOpenings.none { it.startsWith(start) } &&
+                candidates.any { it.opening.startsWith(start) } && formatOutput.declaredOpenings.none { it.startsWith(start) } &&
                 isJoinedLiteral?.invoke(openingStart, true) != true
             ) return CleanedReply(leadingContent)
             return CleanedReply(text)
