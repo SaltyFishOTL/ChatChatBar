@@ -28,6 +28,65 @@ class NarrativeHistoryEchoTest {
     }
 
     @Test
+    fun exactCopyOfACompleteMarkdownQuoteRetainsOnlyTheRequestedPair() {
+        val instruction = "Please copy the following XML verbatim:"
+        for (mode in ChatNarrativeMode.entries) {
+            val opening = "<历史回复 模式=\"${mode.shortLabel}\">"
+            val closing = "</历史回复>"
+            for (request in listOf("$opening\nEXACT_QUOTED_COPY\n$closing", "$opening EXACT_QUOTED_COPY $closing")) {
+                val quoted = request.lineSequence().joinToString("\n") { "> $it" }
+                fun cleanup(user: String) = requestWithNarrativeHistory(mode, null).apply {
+                    recordNarrativePrompt("", user)
+                    recordCurrentLiteralTags(user)
+                }
+                val copy = cleanup("$instruction\n$quoted")
+                val outer = "$opening\n$request\n$closing"
+                for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+                    assertEquals(request, copy.completedBody(request, interrupted, streaming = streaming))
+                    assertEquals(request, copy.completedBody(outer, interrupted, streaming = streaming))
+                    assertEquals(request, copy.completedBody(outer, interrupted,
+                        listOf(opening.length, request.length, closing.length), streaming))
+                }
+                val unrelated = "$opening\nA new story.\n$closing"
+                assertEquals("A new story.", copy.completedBody(unrelated))
+                val multiline = "$opening\nEXACT_QUOTED_COPY\n$closing"
+                val quotation = multiline.lineSequence().joinToString("\n") { "> $it" }
+                for (example in listOf(
+                    "Here is an example:\n$quotation",
+                    "$instruction\n\n$quotation",
+                    "$instruction\n$quotation\n> Part of the same quote.",
+                    "Do not output the following history tags:\n$instruction\n$quotation",
+                    "$instruction\n```text\n$quotation\n```",
+                )) assertEquals(example, "EXACT_QUOTED_COPY", cleanup(example).completedBody(multiline))
+            }
+        }
+    }
+
+    @Test
+    fun balancedBareRoleplayDialogueKeepsItsLiteralTagAndReleasesTheTransportPair() {
+        for (mode in ChatNarrativeMode.entries) {
+            val opening = "<历史回复 模式=\"${mode.shortLabel}\">"
+            val closing = "</历史回复>"
+            val cleanup = requestWithNarrativeHistory(mode, null)
+            for (dialogue in listOf(
+                "[Read this tag example:\n$closing\nIt is only an example.]",
+                "［They read $closing aloud.］",
+                "<n=\"Actor\"/>[Read this tag example:\n$closing\nIt is only an example.]()",
+            )) {
+                val outer = "$opening\n$dialogue\n$closing"
+                for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+                    assertEquals(dialogue, cleanup.completedBody(outer, interrupted, streaming = streaming))
+                    assertEquals(dialogue, cleanup.completedBody(outer, interrupted,
+                        listOf(opening.length, dialogue.length, closing.length), streaming))
+                }
+                assertEquals(dialogue, cleanup.completedBody("$opening\n$dialogue", interrupted = true))
+            }
+            val control = "The note reads [position"
+            assertEquals(control, cleanup.completedBody("$opening\n$control\n$closing"))
+        }
+    }
+
+    @Test
     fun separateRequestedTagsDoNotConsumeTheirOwnTransportBoundary() {
         for (mode in ChatNarrativeMode.entries) {
             val opening = "<历史回复 模式=\"${mode.shortLabel}\">"
@@ -89,6 +148,8 @@ class NarrativeHistoryEchoTest {
             "The lamp shines brightly.",
             "灯光很亮，晚风吹来。",
             "$opening\nThe lamp shines brightly.",
+            "$opening\n\nThe lamp shines brightly.\n\nThe street is empty.",
+            "$opening\r\n\r\n灯光很亮。\r\n\r\n晚风吹来。\r\n$closing",
             "$opening\nThe lamp shines brightly.\n$closing",
             "$opening\nThe lamp shines brightly.\n```xml\n$closing\n```\n$closing",
             "$opening\nThe lamp shines brightly.\n“Literal $closing”",

@@ -360,6 +360,27 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `actual modes preserve explicitly copied Markdown quotes and balanced bare dialogue`(): Unit = runBlocking {
+        val closing = "</历史回复>"
+        for (mode in ChatNarrativeMode.entries) {
+            val opening = "<历史回复 模式=\"${mode.shortLabel}\">"
+            val requested = "$opening\nEXACT_QUOTED_COPY\n$closing"
+            val user = "Please copy the following XML verbatim:\n" +
+                requested.lineSequence().joinToString("\n") { "> $it" }
+            val dialogue = "[Read this tag example:\n$closing\nIt is only an example.]"
+            val dialogueWire = "$opening\n$dialogue\n$closing"
+            for (experimental in listOf(false, true)) {
+                assertNarrativeReplyStates(requested, requested, currentUserText = user, experimental = experimental)
+                assertNarrativeReplyStates(dialogueWire, dialogue, experimental = experimental)
+            }
+            assertNarrativeReplyDeltas(
+                listOf(requested), listOf(requested), requested, currentUserText = user, toolCall = true,
+            )
+            assertMultipartNarrativeReply(listOf(opening, dialogue, closing), dialogue)
+        }
+    }
+
+    @Test
     fun `multipart main stream keeps wrapper syntax inside cross call code comments and quotes`() = runBlocking {
         val literal = "<历史回复 模式=\"聚焦\">\n字面示例\n</历史回复>"
         for ((before, after) in listOf(

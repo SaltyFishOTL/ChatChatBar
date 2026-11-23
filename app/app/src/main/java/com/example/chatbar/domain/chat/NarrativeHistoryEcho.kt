@@ -336,24 +336,29 @@ object NarrativeHistoryEcho {
                 seenLength = text.length
                 if (partLengths.isNotEmpty()) requiresFullCleanup = true
                 val from = bodyStart
-                if (!requiresFullCleanup && from != null && (previousLength until text.length).all { text[it].isPlainPreviewCharacter() }) {
+                if (!requiresFullCleanup && from != null && (previousLength until text.length).all { text[it].isPlainPreviewBodyCharacter() }) {
                     return text.substring(from)
                 }
                 if (from != null) requiresFullCleanup = true
                 val cleaned = completedBody(text, partLengths = partLengths, streaming = true)
                 if (requiresFullCleanup) return cleaned
 
-                val opening = projectedOpenings.firstOrNull { text.startsWith("$it\n") }
-                if (opening == null && projectedOpenings.any { "$it\n".startsWith(text) }) return cleaned
-                val candidateStart = if (opening == null) 0 else opening.length + 1
-                // Only a single plain narration line can be admitted. Any syntax that a later
-                // chunk could complete stays on the authoritative scanner.
-                val canReuse = repairOpenings == null &&
-                    narrativeHeadings.all { it.trimStart().firstOrNull()?.isPlainPreviewCharacter() == false } &&
+                val openings = repairOpenings ?: projectedOpenings
+                val opening = openings.firstOrNull { text.startsWith(it) && text.getOrNull(it.length).isHistoryLineBreak() }
+                if (opening == null && openings.any { it.startsWith(text) }) return cleaned
+                var candidateStart = opening?.length ?: 0
+                if (opening != null) {
+                    while (text.getOrNull(candidateStart).isHistoryLineBreak()) candidateStart++
+                    // Additional leading line breaks still belong to the transport framing.
+                    if (candidateStart == text.length) return cleaned
+                }
+                // Paragraph boundaries in plain narration have no effect on transport removal.
+                // Delimiters, indentation and headings stay on the authoritative scanner.
+                val canReuse = narrativeHeadings.all { it.trimStart().firstOrNull()?.isPlainPreviewCharacter() == false } &&
                     (opening == null || opening !in formatOutput.declaredOpenings &&
                         opening !in currentLiteralOutput.openings && opening !in authoredTemplateOpenings &&
                         authoredPairs.none { it.startsWith(opening) }) &&
-                    (candidateStart until text.length).all { text[it].isPlainPreviewCharacter() } &&
+                    (candidateStart until text.length).all { text[it].isPlainPreviewBodyCharacter() } &&
                     cleaned.length == text.length - candidateStart &&
                     text.regionMatches(candidateStart, cleaned, 0, cleaned.length)
                 if (canReuse) bodyStart = candidateStart else requiresFullCleanup = true
@@ -484,7 +489,9 @@ object NarrativeHistoryEcho {
                     val start = tag.range.first
                     val line = lineStart(text, start)
                     val atLineStart = startsLine(start)
-                    if (!atLineStart && (tag.value in wrapperClosings ||
+                    val quotedOpening = tag.value !in wrapperClosings && start > line &&
+                        MarkdownCodeFences.afterQuotePrefixes(literals.markdown, line) == start
+                    if (!atLineStart && !quotedOpening && (tag.value in wrapperClosings ||
                             !inlineExactCopyInstruction.matches(text.subSequence(line, start)))
                     ) continue
                     val lead = previousVisibleLine(literals.markdown, line)
@@ -517,6 +524,16 @@ object NarrativeHistoryEcho {
                     val end = closing.range.last + 1
                     val closingLineEnd = text.indexOfAny(charArrayOf('\r', '\n'), end).takeIf { it >= 0 } ?: text.length
                     if ((end until closingLineEnd).any { !text[it].isHorizontalPadding() }) continue
+                    if (quotedOpening) {
+                        if (lead == null || !literals.matchesVisibleLine(lead, inlineExactCopyInstruction) ||
+                            literals.ranges.containsOffset(start) || literals.ranges.containsOffset(closing.range.first)
+                        ) continue
+                        val copy = exactQuotedPair(text, literals, lead, start, closing) ?: continue
+                        if (literals.prohibitsWrapper(previousVisibleLine(literals.markdown, lead.first), end)) {
+                            counterexampleClosingStarts += closing.range.first
+                        } else add(copy)
+                        continue
+                    }
                     val visibleLead = literals.visibleLine(lead)
                     val labeled = visibleLead?.let(formatTemplateLabel::matches) == true
                     val prohibitionLead = if (labeled && lead != null) previousVisibleLine(literals.markdown, lead.first) else lead
@@ -582,6 +599,43 @@ object NarrativeHistoryEcho {
             else templateOpenings += wrapper.opening
         }
         return UserOutput(LiteralOutput(pairs, standaloneOpenings, standaloneClosings), templateOpenings, counterexampleClosingStarts)
+    }
+
+    /** An explicit copy directive applies to a whole quoted pair with explicit line prefixes. */
+    private fun exactQuotedPair(
+        text: String, literals: ReplyLiterals, lead: IntRange, opening: Int, closing: MatchResult,
+    ): String? {
+        val markdown = literals.markdown
+        val firstLine = lineStart(markdown, opening)
+        val lastLine = lineStart(markdown, closing.range.first)
+        val gap = markdown.substring(lead.last + 1, firstLine)
+        if (gap != "\n" && gap != "\r\n") return null
+        val quoteDepth = markdown.subSequence(firstLine, opening).count { it == '>' }
+        val afterClosing = closing.range.last + 1
+        val endOfLastLine = nextHistoryLineStart(text, lineEnd(text, afterClosing))
+        if (endOfLastLine < text.length && (MarkdownCodeFences.afterQuotePrefixes(markdown, endOfLastLine) > endOfLastLine ||
+                literals.isLazyQuoteLine(endOfLastLine))) return null
+
+        return buildString {
+            var line = firstLine
+            while (line <= lastLine) {
+                val start = MarkdownCodeFences.afterQuotePrefixes(markdown, line)
+                if (markdown.subSequence(line, start).count { it == '>' } != quoteDepth) return null
+                if (line == lastLine) {
+                    append(text, start, afterClosing)
+                    break
+                }
+                val next = nextHistoryLineStart(text, lineEnd(text, start))
+                append(text, start, next)
+                line = next
+            }
+        }
+    }
+
+    private fun nextHistoryLineStart(text: String, end: Int): Int = when {
+        end == text.length -> end
+        text.startsWith("\r\n", end) -> end + 2
+        else -> end + 1
     }
 
     private fun userTemplateSlotFromInstruction(line: String): String? {
@@ -1656,6 +1710,8 @@ object NarrativeHistoryEcho {
     private fun Char.isPlainPreviewCharacter(): Boolean =
         isLetterOrDigit() || this in " .,!?;:，。！？；：、"
 
+    private fun Char.isPlainPreviewBodyCharacter(): Boolean = isHistoryLineBreak() || isPlainPreviewCharacter()
+
     private fun Char?.isHistoryLineBreak(): Boolean = this == '\n' || this == '\r'
 
     private fun Char.isHorizontalPadding(): Boolean = this == ' ' || this == '\t'
@@ -1736,7 +1792,8 @@ object NarrativeHistoryEcho {
             val roleplayLiteralCode = indentedCode + inlineCode + literalFences.map { it.range } + cdata
             val ranges = (codeBlocks + inlineCode + comments + cdata).indexedRanges()
             val dialogue = if (interpretProseQuotes && ('[' in end || '［' in end)) {
-                roleplaySpokenDialogueRanges(end, ranges, includeUnclosed) { isEscaped(end, it) }
+                val closingPositions = familyTags.filter { it.value in closings }.map { it.range.first }
+                roleplaySpokenDialogueRanges(end, ranges, includeUnclosed, closingPositions) { isEscaped(end, it) }
             } else emptyList()
             val quoteDelimitersToSkip = (ranges + familyTags.map { it.range }).indexedRanges()
             val interiorClosings = if (includeUnclosed) familyTags.mapIndexedNotNull { index, tag ->

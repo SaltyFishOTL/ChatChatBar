@@ -774,6 +774,7 @@ internal fun roleplaySpokenDialogueRanges(
     text: String,
     nonProse: List<IntRange>,
     includeUnclosed: Boolean,
+    historyClosingPositions: List<Int>,
     isEscaped: (Int) -> Boolean,
 ): List<IntRange> = buildList {
     var cursor = 0
@@ -785,8 +786,10 @@ internal fun roleplaySpokenDialogueRanges(
             !isEscaped(prefix.start) && nonProse.none { prefix.start in it }
         }
         val close = findDialogueClose(text, open, text.length, nonProse, isEscaped)
-        if (close > 0 && (speaker != null || isDialogueParenthesisClose(text[close - 1]))) {
-            add(open until close)
+        val balanced = open until close
+        if (close > 0 && (speaker != null || isDialogueParenthesisClose(text[close - 1]) ||
+                historyClosingPositions.any { it in balanced })) {
+            add(balanced)
             cursor = close
         } else if (close < 0 && speaker != null && includeUnclosed) {
             add(open until text.length)

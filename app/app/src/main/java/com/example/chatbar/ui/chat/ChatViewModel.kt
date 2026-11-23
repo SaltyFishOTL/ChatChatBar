@@ -2408,6 +2408,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
         val originalContent = message.displayContent
         val repairEcho = NarrativeHistoryEcho.forFormatRepair(formatCard, originalContent, userText)
+        val repairDeltaPreview = repairEcho.streamingPreview()
+        val repairOrdinaryPreview = repairEcho.streamingPreview()
         var result = message
         var repairedPrefix = ""
         var ordinaryPreview: String? = null
@@ -2418,14 +2420,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             messageId = message.id,
             previewContent = originalContent
         )
-        fun updateRepairPreview() {
+        fun updateRepairPreview(cleanedPrefix: String) {
             _messageFormatRepairState.value = MessageFormatRepairState(
                 messageId = message.id,
                 previewContent = MessageFormatRepairPolicy.progressiveOverlay(
                     original = originalContent,
-                    repairedPrefix = repairEcho.completedBody(
-                        ordinaryPreview ?: repairedPrefix, partLengths = repairPartLengths, streaming = true,
-                    ),
+                    repairedPrefix = cleanedPrefix,
                 ),
             )
         }
@@ -2442,13 +2442,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         when (event) {
                             is StreamEvent.Delta -> {
                                 ordinaryPreview = null
+                                val previousLength = repairedPrefix.length
                                 repairedPrefix += event.text
                                 repairPartLengths = event.toolReplyPartLengths
-                                updateRepairPreview()
+                                updateRepairPreview(repairDeltaPreview.appendedBody(repairedPrefix, previousLength, repairPartLengths))
                             }
                             is StreamEvent.ContentPreview -> {
+                                val previousLength = ordinaryPreview.orEmpty().length
                                 ordinaryPreview = event.text.takeIf(String::isNotEmpty)
-                                updateRepairPreview()
+                                val cleaned = ordinaryPreview?.let {
+                                    repairOrdinaryPreview.appendedBody(it, previousLength, repairPartLengths)
+                                } ?: repairEcho.completedBody(repairedPrefix, partLengths = repairPartLengths, streaming = true)
+                                updateRepairPreview(cleaned)
                             }
                             is StreamEvent.Error -> throw IllegalStateException(event.message)
                             StreamEvent.Done -> sawDone = true
