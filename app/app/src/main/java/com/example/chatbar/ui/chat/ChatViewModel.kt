@@ -3270,6 +3270,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 narrativeModeSystemPrompt = narrativeModeTail
                             )
                             narrativeEcho.recordNarrativePrompt(narrativeModeTail, requestUserContent)
+                            narrativeEcho.recordCurrentLiteralOpenings(currentUserContent)
                             narrativeEcho.recordAuthoredOutput(strongPromptSystemSuffix)
                         }
                     }

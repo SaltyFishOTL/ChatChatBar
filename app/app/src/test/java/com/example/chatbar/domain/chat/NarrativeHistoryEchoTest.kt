@@ -21,6 +21,61 @@ class NarrativeHistoryEchoTest {
     }
 
     @Test
+    fun keepsIsolatedMultilineCommentsAndReclassifiesMarkupThatCanChangeMarkdown() {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val closing = "</历史回复>"
+        val notes = List(96) { "<!-- note $it\nsecond line with $closing -->" }
+        val hiddenFence = "<!-- note\n~~~\n-->"
+        val literalCode = "```text\n<!-- literal code -->\n```"
+        val body = (listOf("Her `notebook` lay open.") + notes + hiddenFence +
+            listOf(literalCode, "She reads ‘the notes’ carefully.")).joinToString("\n\n")
+        val raw = "$opening\n$body\n$closing"
+        fun hidden(text: String) = NarrativeHistoryEcho.hiddenHtmlCommentRanges(text).map(text::substring)
+        assertEquals(notes + hiddenFence, hidden(raw))
+        for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+            assertEquals(body, NarrativeHistoryEcho.replyBody(raw, streaming = streaming, interrupted = interrupted))
+        }
+    }
+
+    @Test
+    fun keepsAStandaloneLiteralOpeningOnlyWhenTheCurrentUserExplicitlyRequestsIt() {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val advanceOpening = "<历史回复 模式=\"推进\">"
+        val closing = "</历史回复>"
+        val request = "Please show the literal opening tag only on its own line, then explain it:\n$opening"
+        val ordinaryExample = "This tag is used in history."
+        val literalReply = "$opening\n$ordinaryExample"
+        val transport = "$opening\n$ordinaryExample\n$closing"
+        fun cleanup() = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.FOCUS, null).apply {
+            recordHistoryProjection("Earlier story.", "$opening\nEarlier story.\n$closing")
+            recordHistoryProjection("Earlier summary.", "$advanceOpening\nEarlier summary.\n$closing")
+            recordNarrativePrompt("", request)
+        }
+        for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+            fun NarrativeHistoryEcho.RequestCleanup.clean(text: String, lengths: List<Int> = emptyList()) =
+                completedBody(text, interrupted, lengths, streaming)
+            val authored = cleanup().apply { recordCurrentLiteralOpenings(request) }
+            assertEquals(literalReply, authored.clean(literalReply))
+            assertEquals(ordinaryExample, authored.clean(transport))
+            assertEquals(
+                ordinaryExample,
+                authored.clean(transport, listOf(opening.length, ordinaryExample.length, closing.length)),
+            )
+            assertEquals(ordinaryExample, authored.clean("$advanceOpening\n$ordinaryExample"))
+            assertEquals(ordinaryExample, cleanup().clean(literalReply))
+            val unrelated = listOf(
+                "This is an example of an opening tag:\n$opening",
+                "```xml\n$request\n```",
+                "Do not output these history tags:\n$request",
+            )
+            for (source in unrelated) {
+                val incidental = cleanup().apply { recordCurrentLiteralOpenings(source) }
+                assertEquals(ordinaryExample, incidental.clean(literalReply))
+            }
+        }
+    }
+
+    @Test
     fun carriesGenuineCommentsOutsideTheOuterWrapperInEveryReplyState() {
         val wrappers = listOf(
             "<历史回复 模式=\"聚焦\">" to "</历史回复>",
