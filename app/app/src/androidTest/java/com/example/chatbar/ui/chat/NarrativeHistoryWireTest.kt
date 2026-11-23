@@ -55,6 +55,8 @@ class NarrativeHistoryWireTest {
         val experimental: Boolean get() = this != ORDINARY
     }
 
+    private enum class LiteralCase { OPENING, INLINE_CLOSE, LAZY_LIST_CLOSE }
+
     @Before fun prepareSyntheticApplication() = runBlocking {
         assumeTrue("Use the repository-supported isolated Android test build", BuildConfig.ISOLATED_ANDROID_TEST)
         val app = ChatBarApp.instance
@@ -85,8 +87,18 @@ class NarrativeHistoryWireTest {
     }
 
     @Test fun currentUserLiteralOpenerSurvivesStreamingStopAndCompletion() = runBlocking {
-        verifyReply(Transport.ORDINARY, stop = true, requestLiteralOpener = true)
-        verifyReply(Transport.EXPERIMENTAL_TEXT, stop = false, requestLiteralOpener = true)
+        verifyReply(Transport.ORDINARY, stop = true, literal = LiteralCase.OPENING)
+        verifyReply(Transport.EXPERIMENTAL_TEXT, stop = false, literal = LiteralCase.OPENING)
+    }
+
+    @Test fun exactMultilineCopyWithInlineClosingSurvivesStopAndCompletion() = runBlocking {
+        verifyReply(Transport.ORDINARY, stop = true, literal = LiteralCase.INLINE_CLOSE)
+        verifyReply(Transport.EXPERIMENTAL_TEXT, stop = false, literal = LiteralCase.INLINE_CLOSE)
+    }
+
+    @Test fun lazyListClosingExampleSurvivesStopAndGenuineOuterClosing() = runBlocking {
+        verifyReply(Transport.ORDINARY, stop = true, literal = LiteralCase.LAZY_LIST_CLOSE)
+        verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = LiteralCase.LAZY_LIST_CLOSE)
     }
 
     private suspend fun verifyTransport(transport: Transport) {
@@ -98,7 +110,7 @@ class NarrativeHistoryWireTest {
         transport: Transport,
         stop: Boolean,
         continuation: String? = null,
-        requestLiteralOpener: Boolean = false,
+        literal: LiteralCase? = null,
     ) {
         val app = ChatBarApp.instance
         val settings = app.settingsRepository.getAppSettings()
@@ -110,13 +122,23 @@ class NarrativeHistoryWireTest {
         val template = PromptTemplates.narrativeModeHistoryReply("[story]", mode).prependIndent("> ")
         val framedReply = PromptTemplates.narrativeModeHistoryReply(prose, mode)
         val opener = framedReply.substringBefore('\n')
-        val authorsTemplate = !stop && continuation == null && !requestLiteralOpener
+        val closing = framedReply.substringAfterLast('\n')
+        val exactInlineCopy = "$opener\n例子$closing"
+        val listExample = "- A literal closing-tag example:\n$closing"
+        val listBody = if (stop) listExample else "$listExample\n\nThe explanation continues."
+        val authorsTemplate = !stop && continuation == null && literal == null
         val input = when {
-            requestLiteralOpener -> "Please show the literal opening tag only on its own line, then explain it:\n$opener"
+            literal == LiteralCase.OPENING -> "Please show the literal opening tag only on its own line, then explain it:\n$opener"
+            literal == LiteralCase.INLINE_CLOSE -> "请逐字照抄以下文本并保留首尾标签：\n$exactInlineCopy"
             authorsTemplate -> "Use exactly this XML shape, replace [story] with new prose and keep both tags:\n$template"
             else -> "Continue the scene."
         }
-        val reply = if (requestLiteralOpener) "$opener\nThis is the opening tag." else framedReply
+        val reply = when (literal) {
+            LiteralCase.OPENING -> "$opener\nThis is the opening tag."
+            LiteralCase.INLINE_CLOSE -> exactInlineCopy
+            LiteralCase.LAZY_LIST_CLOSE -> if (stop) "$opener\n$listBody" else PromptTemplates.narrativeModeHistoryReply(listBody, mode)
+            null -> framedReply
+        }
         val secondScene = "A bird flies past the entrance."
         val parts = if (continuation == null) listOf(reply) else listOf(
             reply.substringBeforeLast('\n'),
@@ -125,7 +147,8 @@ class NarrativeHistoryWireTest {
         )
         val expected = when {
             continuation != null -> listOf(prose, secondScene, continuation).joinToString("\n")
-            authorsTemplate || requestLiteralOpener -> reply
+            literal == LiteralCase.LAZY_LIST_CLOSE -> listBody
+            authorsTemplate || literal != null -> reply
             else -> prose
         }
         val modelName = "Synthetic narrative wire ${transport.name}"

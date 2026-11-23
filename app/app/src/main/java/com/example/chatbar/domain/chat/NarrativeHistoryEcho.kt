@@ -186,6 +186,12 @@ object NarrativeHistoryEcho {
             "(?:only|just) (?:an example|for illustration)\\.?)[ \\t]*",
         RegexOption.IGNORE_CASE,
     )
+    private val literalClosingTagLead = Regex(
+        "(?:\\b(?:literal|example of(?: the)?)[ \\t]+(?:closing|history)[ -]tag|" +
+            "\\b(?:closing|history)[ -]tag[ \\t]+(?:example|sample)|" +
+            "(?:结束|闭合|历史)标签(?:的)?(?:示例|样例))[ \\t]*[:：][ \\t]*$",
+        RegexOption.IGNORE_CASE,
+    )
     private val statusFenceInfo = Regex("(text|status)(?=$|[ \\t(（]).*", RegexOption.IGNORE_CASE)
     private val paragraphBreak = Regex("\\r?\\n[ \\t]*\\r?\\n")
     private val bareCarriageReturn = Regex("\\r(?!\\n)")
@@ -455,7 +461,11 @@ object NarrativeHistoryEcho {
                     val pair = text.substring(start, end)
                     val standalonePair = atLineStart && text.getOrNull(tag.range.last + 1).isHistoryLineBreak() &&
                         startsLine(closing.range.first)
-                    if (singleLine || standalonePair) add(pair)
+                    val explicitMultilineCopy = atLineStart && visiblePair && !singleLine && lead != null &&
+                        visibleLead?.let(inlineExactCopyInstruction::matches) == true &&
+                        literals.markdown.substring(lead.last + 1, line) in setOf("\n", "\r\n") &&
+                        text.getOrNull(tag.range.last + 1).isHistoryLineBreak()
+                    if (singleLine || standalonePair || explicitMultilineCopy) add(pair)
                     if (!standalonePair || !visiblePair || visibleLead == null) continue
                     val templateBody = text.substring(tag.range.last + 1, closing.range.first).trim()
                     val slot = userTemplateSlotFromInstruction(visibleLead)
@@ -1178,6 +1188,7 @@ object NarrativeHistoryEcho {
         }
         val visibleTags = familyTags.filter { tag ->
             literals.isVisibleWrapperTag(end, tag, allowIndentedParagraphTag = true) &&
+                (tag.value !in wrapper.closings || !literals.isCaptionedLazyListClosing(tag.range.first)) &&
                 isJoinedLiteral?.invoke(bodyStart + tag.range.first, false) != true
         }
         val suffixRanges by lazy(LazyThreadSafetyMode.NONE) {
@@ -1210,15 +1221,15 @@ object NarrativeHistoryEcho {
                 ) || headingAfterClose(tag.range.last + 1) != null
 
         val terminal = visibleTags.lastOrNull()?.takeIf { tag ->
-            tag.value in wrapper.closings && !literals.isLazyQuoteLine(tag.range.first) && endsReply(tag)
+            tag.value in wrapper.closings && !literals.isLazyContainerLine(tag.range.first) && endsReply(tag)
         }
-        // A proven close outside the Markdown quote lets an earlier lazy line stay literal.
-        val outsideQuote = terminal?.let {
+        // A proven close outside the Markdown container leaves its earlier lazy lines literal.
+        val outsideContainer = terminal?.let {
             wrapperBoundary(wrapper, visibleTags.asSequence().filterNot { tag ->
-                tag.value in wrapper.closings && literals.isLazyQuoteLine(tag.range.first)
+                tag.value in wrapper.closings && literals.isLazyContainerLine(tag.range.first)
             }).takeIf { it.closing == terminal }
         }
-        val boundary = outsideQuote ?: wrapperBoundary(wrapper, visibleTags.asSequence())
+        val boundary = outsideContainer ?: wrapperBoundary(wrapper, visibleTags.asSequence())
         val closing = boundary.closing
         val exactAuthoredPair = closing != null && authoredPairs.isNotEmpty() &&
             text.substring(openingStart, bodyStart + closing.range.last + 1) in authoredPairs
@@ -1313,6 +1324,7 @@ object NarrativeHistoryEcho {
                 (streaming || identifiable || interrupted && (suffix.length > 1 || aloneOnLine)) &&
                 wrapper.closings.any { suffix.length < it.length && it.startsWith(suffix) } &&
                 !isEscaped(end, lastTag) && !literals.isMarkdownContainerLine(lastTag) &&
+                !literals.isCaptionedLazyListClosing(lastTag) &&
                 literals.ranges.none { lastTag in it } && !literals.hasCodeIndentAt(lastTag) &&
                 isJoinedLiteral?.invoke(bodyStart + lastTag, false) != true
             ) {
@@ -1375,7 +1387,9 @@ object NarrativeHistoryEcho {
                 val openings = ArrayDeque<MatchResult>()
                 for (tag in visible) {
                     if (tag.value.startsWith("</")) {
-                        if (skipLazyClose && literals.isLazyQuoteLine(tag.range.first)) continue
+                        if (literals.isCaptionedLazyListClosing(tag.range.first) ||
+                            skipLazyClose && literals.isLazyContainerLine(tag.range.first)
+                        ) continue
                         val open = openings.removeLastOrNull() ?: continue
                         val wrapper = wrappers.firstOrNull { it.opening == open.value } ?: continue
                         if (tag.value in wrapper.closings) {
@@ -1394,8 +1408,9 @@ object NarrativeHistoryEcho {
         text: String, from: Int, limit: Int, trailerHeadings: List<String>,
     ): Boolean {
         val start = (from until limit).firstOrNull { !text[it].isWhitespace() } ?: return false
-        // These start an HTML comment, status fence or the existing dash choice delimiters.
-        return text[start] in "<`-—―─－" || trailerHeadings.any { it.first() == text[start] }
+        // Only a real comment opener can introduce an angle-prefixed trailer across call boundaries.
+        val startsComment = limit - start >= commentOpening.length && text.startsWith(commentOpening, start)
+        return startsComment || text[start] in "`-—―─－" || trailerHeadings.any { it.first() == text[start] }
     }
 
     private fun ReplyLiterals.isVisibleWrapperTag(
@@ -1423,6 +1438,18 @@ object NarrativeHistoryEcho {
 
     private fun ReplyLiterals.isLazyListItemLine(offset: Int): Boolean =
         lineStart(markdown, offset) in lazyListItemLineStarts
+
+    private fun ReplyLiterals.isLazyContainerLine(offset: Int): Boolean {
+        val start = lineStart(markdown, offset)
+        return start in lazyQuoteLineStarts || start in lazyListItemLineStarts
+    }
+
+    private fun ReplyLiterals.isCaptionedLazyListClosing(offset: Int): Boolean {
+        val start = lineStart(markdown, offset)
+        if (start !in lazyListItemLineStarts || markdown.subSequence(start, offset).isNotBlank()) return false
+        val lead = previousVisibleLine(markdown, start) ?: return false
+        return literalClosingTagLead.containsMatchIn(markdown.substring(lead))
+    }
 
     private fun ReplyLiterals.isMarkdownContainerLine(offset: Int, includeStandaloneLazyTags: Boolean = false): Boolean {
         val start = lineStart(markdown, offset)

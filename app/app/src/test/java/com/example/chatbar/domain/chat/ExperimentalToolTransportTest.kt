@@ -471,6 +471,35 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `live lazy list example keeps its literal close while a later outer close is removed`(): Unit = runBlocking {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val closing = "</历史回复>"
+        val stopped = "- A literal closing-tag example:\n$closing"
+        val body = "$stopped\n\nThe explanation continues."
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            assertNarrativeReplyDeltas(
+                listOf("$opening\n$stopped", "\n\nThe explanation continues.\n$closing"),
+                listOf(stopped, body), body, experimental = experimental, toolCall = toolCall,
+            )
+        }
+        assertMultipartNarrativeReply(
+            listOf("$opening\n- A literal closing-tag example:", closing, "\nThe explanation continues.\n$closing"),
+            body,
+        )
+    }
+
+    @Test
+    fun `only an eligible angle trailer can continue a validated closing group`(): Unit = runBlocking {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val close = "</历史回复>"
+        val comment = listOf("$opening\nFirst", "$close\n<!-- note", "continued -->")
+        assertMultipartNarrativeReply(comment, "First\n<!-- note\ncontinued -->")
+        val plain = listOf("$opening\nFirst", "$close\n<widget>ordinary</widget>") +
+            List(10) { "Part $it" }
+        assertMultipartNarrativeReply(plain, (listOf("First") + plain.drop(1)).joinToString("\n"))
+    }
+
+    @Test
     fun `main stream keeps a standalone lazy quote tag before the terminal outer close`() = runBlocking {
         val close = "</历史回复>"
         val body = "> 下面这行是要展示的闭合标记。\n$close\n\n讲完代码后，他们走向码头。"
@@ -1994,6 +2023,21 @@ class ExperimentalToolTransportTest {
                 previousAssistant = previous, currentUserText = "Please copy the XML below verbatim: $literal",
                 experimental = experimental, toolCall = toolCall,
             )
+        }
+    }
+
+    @Test
+    fun `an adjacent exact copy instruction protects a multiline pair with an inline close`() = runBlocking {
+        val literal = "<历史回复 模式=\"推进\">\n例子</历史回复>"
+        val instruction = "请逐字照抄以下文本并保留首尾标签："
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            assertNarrativeReplyDeltas(listOf(literal), listOf(literal), literal,
+                currentUserText = "$instruction\n$literal", experimental = experimental, toolCall = toolCall)
+            val unrelated = literal.replace("例子", "故事")
+            assertNarrativeReplyDeltas(listOf(unrelated), listOf("故事"), "故事",
+                currentUserText = "$instruction\n$literal", experimental = experimental, toolCall = toolCall)
+            assertNarrativeReplyDeltas(listOf(literal), listOf("例子"), "例子",
+                currentUserText = "下面是参考示例。\n$literal", experimental = experimental, toolCall = toolCall)
         }
     }
 
