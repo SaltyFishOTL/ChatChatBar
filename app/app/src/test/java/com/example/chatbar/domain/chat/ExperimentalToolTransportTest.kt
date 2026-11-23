@@ -763,12 +763,78 @@ class ExperimentalToolTransportTest {
         }
     }
 
+    @Test
+    fun `ordinary SSE keeps the history wrapper out when the first headed action arrives`() = runBlocking {
+        val story = "她点亮灯。"
+        val wrapped = PromptTemplates.narrativeModeHistoryReply(story, ChatNarrativeMode.FOCUS)
+        val firstChoice = "\n\n---\n**【行动选项】**\n1. **等到天亮。**"
+        val continuation = "\n2. **出门查看。**\n---"
+        assertNarrativeReplyDeltas(
+            listOf(wrapped, firstChoice, continuation),
+            listOf(story, story + firstChoice, story + firstChoice + continuation),
+            story + firstChoice + continuation,
+            experimental = false,
+        )
+
+        val oneChoice = "$firstChoice\n---"
+        assertNarrativeReplyStates(
+            wrapped + oneChoice,
+            expected = story + oneChoice,
+            formatCard = "只提供一个行动，按下列格式输出。\n" + oneChoice.trimStart(),
+            experimental = false,
+        )
+        for (literal in listOf(
+            "\n\n---\n1. 一条普通列表\n---",
+            "\n\n---\n**【行动选项】**\n2. 缺少第一项\n---",
+            "\n\n```markdown$oneChoice\n```",
+        )) {
+            assertNarrativeReplyStates(wrapped + literal, expected = wrapped + literal, experimental = false)
+        }
+    }
+
+    @Test
+    fun `ordinary SSE keeps an explicitly authored English format`() = runBlocking {
+        val story = "门外亮了起来。"
+        val wrapped = PromptTemplates.narrativeModeHistoryReply(story, ChatNarrativeMode.FOCUS)
+        val example = PromptTemplates.narrativeModeHistoryReply("Example body", ChatNarrativeMode.FOCUS)
+        val label = "Output format:"
+        val instruction = "Keep both tags verbatim in your answer and omit the surrounding code fence."
+        val sample = "```xml\n$example\n```"
+        assertNarrativeReplyStates(
+            wrapped, expected = wrapped, formatCard = "$label\n$sample\n$instruction", experimental = false,
+        )
+        for (card in listOf(
+            "$label\n$sample\n> $instruction",
+            "$label\n$sample\n<!-- $instruction -->",
+            "$label\n$sample\n$instruction (example only)",
+        )) {
+            assertNarrativeReplyStates(wrapped, expected = story, formatCard = card, experimental = false)
+        }
+    }
+
+    @Test
+    fun `ordinary SSE ignores format examples with a visible English prohibition`() = runBlocking {
+        val story = "门外亮了起来。"
+        val wrapped = PromptTemplates.narrativeModeHistoryReply(story, ChatNarrativeMode.FOCUS)
+        val example = PromptTemplates.narrativeModeHistoryReply("Example body", ChatNarrativeMode.FOCUS)
+        val prohibition = "Do not include these metadata tags in replies"
+        val fenced = "Output format:\n```xml\n$example\n```\nKeep both tags verbatim and omit the code fence."
+        for (card in listOf(
+            "$prohibition:\n$example\nContinue with story prose only.",
+            "$example\n$prohibition.",
+            "$prohibition:\n$fenced",
+        )) {
+            assertNarrativeReplyStates(wrapped, expected = story, formatCard = card, experimental = false)
+        }
+    }
+
     private suspend fun assertNarrativeReplyStates(
         raw: String,
         expected: String,
         formatCard: String? = null,
         previousAssistant: ChatMessage? = null,
-    ) = assertNarrativeReplyDeltas(listOf(raw), listOf(expected), expected, formatCard, previousAssistant)
+        experimental: Boolean = true,
+    ) = assertNarrativeReplyDeltas(listOf(raw), listOf(expected), expected, formatCard, previousAssistant, experimental)
 
     private suspend fun assertNarrativeReplyDeltas(
         deltaTexts: List<String>,
@@ -776,6 +842,7 @@ class ExperimentalToolTransportTest {
         expectedCompleted: String,
         formatCard: String? = null,
         previousAssistant: ChatMessage? = null,
+        experimental: Boolean = true,
     ) {
         val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, formatCard)
         val requestMessages = previousAssistant?.let { assistant ->
@@ -798,15 +865,24 @@ class ExperimentalToolTransportTest {
             sse(deltas),
             sse(listOf("""{"choices":[{"delta":{},"finish_reason":"stop"}]}""", "[DONE]")),
         ).use { server ->
+            val previews = mutableListOf<String>()
+            val chatService = StreamingChatService(experimentalApiModeEnabled = { experimental }, allowCleartextHttp = { true })
             val events = withTimeout(5_000) {
-                service().streamChat("narrative-reply-states", requestMessages, model(server.baseUrl)).onEach { event ->
-                    if (event is StreamEvent.ContentPreview && event.text == rawPreviews.last()) {
-                        assertFalse(server.tailSent)
-                        server.releaseTail()
+                chatService.streamChat("narrative-reply-states", requestMessages, model(server.baseUrl)).onEach { event ->
+                    val preview = when {
+                        event is StreamEvent.ContentPreview -> event.text
+                        !experimental && event is StreamEvent.Delta -> previews.lastOrNull().orEmpty() + event.text
+                        else -> null
+                    }
+                    if (preview != null) {
+                        previews += preview
+                        if (preview == rawPreviews.last()) {
+                            assertFalse(server.tailSent)
+                            server.releaseTail()
+                        }
                     }
                 }.toList()
             }
-            val previews = events.filterIsInstance<StreamEvent.ContentPreview>().map { it.text }
             assertEquals(rawPreviews, previews)
             assertEquals(StreamEvent.Done, events.last())
             val completed = events.filterIsInstance<StreamEvent.Delta>().joinToString("") { it.text }

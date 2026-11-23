@@ -321,7 +321,7 @@ private val numberedActionOption = Regex(" {0,3}([1-9][0-9]{0,8})\\.(?:[ \\t]+|(
 private fun matchesNumberedActionOption(line: String, ordinal: Int): Boolean =
     numberedActionOption.matchEntire(line)?.groupValues?.get(1) == ordinal.toString()
 
-/** A plain dash fence also wraps arbitrary prose, so only explicit ordered options identify a reply suffix. */
+/** Plain dashes need ordered choices. The exact action heading makes even one choice explicit. */
 internal fun roleplayListedActionRanges(text: String): Sequence<IntRange> =
     dashFencePattern.findAll(text)
         .filter { marker ->
@@ -332,8 +332,10 @@ internal fun roleplayListedActionRanges(text: String): Sequence<IntRange> =
         .mapNotNull { (opening, closing) ->
             val lines = text.subSequence(opening.range.last + 1, closing.range.first)
                 .lineSequence().filter { it.isNotBlank() }.toList()
-            val options = if (lines.firstOrNull()?.let(actionOptionsHeading::matches) == true) lines.drop(1) else lines
-            val listed = options.size >= 2 && options.withIndex().all { (index, option) ->
+            val hasHeading = lines.firstOrNull()?.let(actionOptionsHeading::matches) == true
+            val options = if (hasHeading) lines.drop(1) else lines
+            val minimumOptions = if (hasHeading) 1 else 2
+            val listed = options.size >= minimumOptions && options.withIndex().all { (index, option) ->
                 matchesNumberedActionOption(option, index + 1)
             }
             if (listed) opening.range.first..closing.range.last else null
@@ -483,8 +485,12 @@ internal fun isPendingRoleplayActionSuffix(text: String): Boolean {
     val hasHeading = lines.getOrNull(1)?.let(actionOptionsHeading::matches) == true
     if (annotated && !hasHeading) return false
 
-    // The annotated delimiter and heading identify the block. Plain dashes need two ordered choices.
-    val minimumOptions = if (annotated) 0 else 2
+    // Without either the annotated delimiter or an exact heading, require two ordered choices.
+    val minimumOptions = when {
+        annotated -> 0
+        hasHeading -> 1
+        else -> 2
+    }
     val options = lines.drop(if (hasHeading) 2 else 1)
     for ((index, line) in options.withIndex()) {
         val ordinal = index + 1

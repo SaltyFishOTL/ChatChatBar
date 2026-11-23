@@ -17,6 +17,7 @@ class NarrativeHistoryEchoAndroidTest {
             "以下标签仅供举例，不要在回复中输出：",
             "The following is a counterexample:",
             "请勿在本轮输出以下任何历史标签：",
+            "Do not include these metadata tags in replies:",
         )) {
             val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, "$label\n$reply")
             assertEquals(story, cleanup.completedBody(reply))
@@ -31,5 +32,10 @@ class NarrativeHistoryEchoAndroidTest {
         val template = "$instruction\n```xml\n$reply\n```"
         val declared = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, template)
         assertEquals(reply, declared.completedBody(reply))
+
+        val english = "Output format:\n```xml\n$reply\n```\n" +
+            "Keep both tags verbatim in your answer and omit the surrounding code fence."
+        val englishDeclared = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, english)
+        assertEquals(reply, englishDeclared.completedBody(reply))
     }
 }

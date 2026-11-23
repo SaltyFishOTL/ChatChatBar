@@ -42,19 +42,30 @@ object NarrativeHistoryEcho {
     private val formatTemplateAffirmation = Regex(
         "[ \\t]*(?:（[ \\t]*标签是固定输出的一部分[ \\t]*）|\\([ \\t]*标签是固定输出的一部分[ \\t]*\\))[ \\t]*[。.]?[ \\t]*",
     )
-    private const val keepTemplateTags = "(?:必须|务必|请)(?:逐字|原样|完整)保留(?:以下)?首尾标签"
-    private const val omitTemplateFence = "(?:不要|不得|禁止)输出代码围栏"
+    private const val keepTemplateTags =
+        "(?:(?:必须|务必|请)(?:逐字|原样|完整)保留(?:以下)?首尾标签|" +
+            "(?:keep|preserve)[ \\t]+(?:both|the)[ \\t]+(?:opening and closing[ \\t]+)?tags[ \\t]+verbatim)"
+    private const val omitTemplateFence =
+        "(?:(?:不要|不得|禁止)输出代码围栏|" +
+            "(?:omit|do not (?:output|include))[ \\t]+(?:the[ \\t]+)?(?:surrounding[ \\t]+)?(?:code[ \\t]+)?fence)"
     private const val forbidTemplateTags =
-        "(?:请勿|不要|不得|禁止|严禁)(?:在(?:本轮|回复中))?输出(?:以下(?:任何)?|下列|这些|上述|上面的)(?:历史)?标签"
+        "(?:(?:请勿|不要|不得|禁止|严禁)(?:在(?:本轮|回复中))?输出(?:以下(?:任何)?|下列|这些|上述|上面的)(?:历史)?标签|" +
+            "(?:do not|never)[ \\t]+(?:output|include|emit)[ \\t]+(?:these|the (?:following|above))[ \\t]+" +
+            "(?:(?:metadata|history|historical)[ \\t]+)?tags" +
+            "(?:[ \\t]+in[ \\t]+(?:your[ \\t]+|the[ \\t]+)?(?:reply|replies|answer|output))?)"
     private val fencedTemplateLabel = Regex(
         " {0,3}请严格按照以下固定模板作答[，,][ \\t]*$keepTemplateTags[，,][ \\t]*$omitTemplateFence[：:][ \\t]*",
+        RegexOption.IGNORE_CASE,
     )
     private val replySampleLabel = Regex(" {0,3}(\\*\\*|)回复样张[ \\t]*[：:]\\1[ \\t]*")
+    private val outputFormatLabel = Regex(" {0,3}(\\*\\*|)output[ \\t]+format[ \\t]*[：:]\\1[ \\t]*", RegexOption.IGNORE_CASE)
     private val keepSampleTags = Regex(
-        "^ {0,3}(?:每次回复[ \\t]*)?$keepTemplateTags(?=$|[，。；,.; \\t])",
+        "^ {0,3}(?:每次回复[ \\t]*)?$keepTemplateTags(?:[ \\t]+in[ \\t]+your[ \\t]+(?:reply|answer))?(?=$|[，。；,.; \\t])",
+        RegexOption.IGNORE_CASE,
     )
     private val omitSampleFence = Regex(
-        "(?:^|[，。；,.;][ \\t]*)$omitTemplateFence[。.]?[ \\t]*$",
+        "(?:^|[，。；,.;][ \\t]*|[ \\t]+and[ \\t]+)$omitTemplateFence[。.]?[ \\t]*$",
+        RegexOption.IGNORE_CASE,
     )
     private val trailingStatusLabel = Regex(
         " {0,3}(?:(?:required[ \\t]+)?trailing[ \\t]+status[ \\t]+(?:panel[ \\t]+)?template[：:]|" +
@@ -77,7 +88,7 @@ object NarrativeHistoryEcho {
         RegexOption.IGNORE_CASE,
     )
     private val formatCounterexampleTail = Regex(
-        " {0,3}(?:$forbidTemplateTags[。.]?|do not output (?:these|the above) tags[.!]?)[ \\t]*",
+        " {0,3}$forbidTemplateTags[。.!]?[ \\t]*",
         RegexOption.IGNORE_CASE,
     )
     private val statusFenceInfo = Regex("(text|status)(?=$|[ \\t(（]).*", RegexOption.IGNORE_CASE)
@@ -181,16 +192,15 @@ object NarrativeHistoryEcho {
                     wrapper, markup.asSequence().drop(index + 1).filter { family.matches(it.value) },
                 ).closing ?: continue
                 matchedEnd = closing.range.last
-                val following = literals.markdown.substring(matchedEnd + 1).lineSequence().iterator()
-                val suffix = following.next()
+                val suffix = literals.markdown.substring(matchedEnd + 1).lineSequence().first()
                 if (!suffix.isBlank() && !(explicitLabel && formatTemplateAffirmation.matches(suffix))) continue
 
                 val lead = if (standaloneLabel == null) before else {
                     previousVisibleLine(literals.markdown, standaloneLabel.first)
                 }
-                val after = following.asSequence().firstOrNull { it.isNotBlank() }
+                val after = nextNonblankLine(literals.markdown, matchedEnd + 1)
                 if (literals.matchesVisibleLine(lead, formatCounterexampleLead) ||
-                    after?.let(formatCounterexampleTail::matches) == true
+                    literals.matchesVisibleLine(after, formatCounterexampleTail)
                 ) continue
                 add(wrapper.opening)
                 if (explicitLabel && lead != null &&
@@ -206,16 +216,13 @@ object NarrativeHistoryEcho {
                     literals.isMarkdownContainerLine(label.first, includeStandaloneLazyTags = true)
                 ) continue
                 val before = previousVisibleLine(literals.markdown, label.first)
-                val after = literals.markdown.substring(fence.range.last + 1).lineSequence().firstOrNull(String::isNotBlank)
+                val after = nextNonblankLine(literals.markdown, fence.range.last + 1)
                 if (literals.matchesVisibleLine(before, formatCounterexampleLead) ||
-                    after?.let(formatCounterexampleTail::matches) == true
+                    literals.matchesVisibleLine(after, formatCounterexampleTail)
                 ) continue
 
                 val labelText = literals.markdown.substring(label)
-                val precedingInstruction = before?.takeIf {
-                    literals.ranges.none { range -> it.first in range } &&
-                        !literals.isMarkdownContainerLine(it.first, includeStandaloneLazyTags = true)
-                }?.let(literals.markdown::substring)
+                val precedingInstruction = literals.visibleLine(before)
                 val isReplySample = replySampleLabel.matches(labelText)
                 val contentStart = literals.markdown.indexOf('\n', fence.range.first) + 1
                 val template = formatCard.substring(contentStart, closingLine).trim()
@@ -226,12 +233,12 @@ object NarrativeHistoryEcho {
                 ) {
                     trailingStatusInfos += statusInfo
                 }
-                val explicitReplySample = isReplySample && precedingInstruction != null &&
-                    keepSampleTags.containsMatchIn(precedingInstruction) &&
-                    omitSampleFence.containsMatchIn(precedingInstruction)
+                val explicitReplySample = isReplySample && requiresUnfencedTags(precedingInstruction)
+                val explicitOutputFormat = outputFormatLabel.matches(labelText) &&
+                    (requiresUnfencedTags(precedingInstruction) || requiresUnfencedTags(literals.visibleLine(after)))
                 if (fence.info.lowercase() !in formatTemplateFenceInfo ||
                     !fencedTemplateLabel.matches(labelText) && !formatTemplateLabel.matches(labelText) &&
-                        !explicitReplySample
+                    !explicitReplySample && !explicitOutputFormat
                 ) continue
                 val wrapper = candidates.firstOrNull {
                     template.startsWith(it.opening) && it.closings.any(template::endsWith)
@@ -249,14 +256,19 @@ object NarrativeHistoryEcho {
                 !literals.matchesVisibleLine(
                     previousVisibleLine(literals.markdown, range.first), formatCounterexampleLead,
                 ) &&
-                literals.markdown.substring(range.last + 1).lineSequence().firstOrNull(String::isNotBlank)
-                    ?.let(formatCounterexampleTail::matches) != true
+                !literals.matchesVisibleLine(nextNonblankLine(literals.markdown, range.last + 1), formatCounterexampleTail)
         }
         return FormatOutput(declaredOpenings, trailingStatusInfos, singlePairOpenings, declaresAnnotatedActions)
     }
 
+    private fun requiresUnfencedTags(instruction: String?): Boolean =
+        instruction != null && keepSampleTags.containsMatchIn(instruction) && omitSampleFence.containsMatchIn(instruction)
+
+    private fun ReplyLiterals.visibleLine(line: IntRange?): String? =
+        line?.takeIf { isUnprotected(it.first) }?.let(markdown::substring)
+
     private fun ReplyLiterals.matchesVisibleLine(line: IntRange?, pattern: Regex): Boolean =
-        line != null && isUnprotected(line.first) && pattern.matches(markdown.substring(line))
+        visibleLine(line)?.let(pattern::matches) == true
 
     private fun ReplyLiterals.isUnprotected(position: Int): Boolean =
         ranges.none { position in it } && !isMarkdownContainerLine(position, includeStandaloneLazyTags = true)
@@ -276,6 +288,18 @@ object NarrativeHistoryEcho {
             val start = lineStart(markdown, end)
             if (markdown.subSequence(start, end).isNotBlank()) return start until end
             end = start
+        }
+        return null
+    }
+
+    private fun nextNonblankLine(markdown: String, after: Int): IntRange? {
+        var start = markdown.indexOf('\n', after) + 1
+        if (start == 0) return null
+        while (start < markdown.length) {
+            val newline = markdown.indexOf('\n', start).takeIf { it >= 0 } ?: markdown.length
+            val end = if (markdown.getOrNull(newline - 1) == '\r') newline - 1 else newline
+            if (markdown.subSequence(start, end).isNotBlank()) return start until end
+            start = newline + 1
         }
         return null
     }
