@@ -299,12 +299,17 @@ class VoiceMessageRepository(
         message: ChatMessage,
         versionId: String?,
         removeFromPlayback: suspend (Set<String>) -> Unit,
+        onlyIfUnvoiced: Boolean = false,
         commit: suspend (suspend () -> List<String>) -> Boolean
     ): Boolean = mutex.withLock {
         ensureInitializedLocked()
-        var targeted = emptyList<GeneratedVoiceMessage>()
+        require(!onlyIfUnvoiced || versionId == null)
+        var targeted = if (onlyIfUnvoiced) persistedReplyVoices(message.sessionId, message.id, versionId) else emptyList()
+        if (onlyIfUnvoiced && targeted.isNotEmpty()) return@withLock false
         val committed = commit {
-            targeted = persistedReplyVoices(message.sessionId, message.id, versionId, includeUnassigned = true)
+            if (!onlyIfUnvoiced) {
+                targeted = persistedReplyVoices(message.sessionId, message.id, versionId, includeUnassigned = true)
+            }
             targeted.filter { versionId == null || it.messageVersionId == versionId && it.versionOwnershipConfirmed }
                 .map(GeneratedVoiceMessage::audioPath).distinct()
         }

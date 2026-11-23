@@ -20,7 +20,11 @@ import java.io.File
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -137,6 +141,48 @@ class VoiceMessageRepositoryTest {
             assertEquals("audio", File(restored.getValue("clip").audioPath).readText())
             assertEquals("share", File(restored.getValue("shared").audioPath).readText())
             assertArrayEquals(raw, input.readBytes())
+        }
+    }
+
+    @Test
+    fun `guarded image removal keeps a concurrent recording and prevents late recreation after a whole delete`() = runBlocking<Unit> {
+        withTimeout(5_000) {
+            val context = TestContext(temp.newFolder())
+            val chats = ChatRepository(JsonFileStorage(context))
+            val voices = VoiceMessageRepository(JsonFileStorage(context), chats::getMessage)
+            val reply = chats.addMessage(ChatMessage.create("session", MessageRole.ASSISTANT, "",
+                images = listOf(File(context.filesDir, "attachment.png").path)))
+            val voice = recording(reply, "clip", "Earlier reply", anchor = null)
+
+            suspend fun removeIfUnvoiced() = voices.prepareReplyRemoval(reply, null, {}, onlyIfUnvoiced = true) { collectAudio ->
+                chats.commitReplyRemoval(reply, null) { assertTrue(collectAudio().isEmpty()) }
+            }
+
+            val committing = CompletableDeferred<Unit>()
+            val finishSave = CompletableDeferred<Unit>()
+            val write = async {
+                voices.saveForExistingVersion(voice) {
+                    committing.complete(Unit)
+                    finishSave.await()
+                    chats.getMessage(reply.id, reply.sessionId)
+                }
+            }
+            committing.await()
+            val pendingRemoval = async(start = CoroutineStart.UNDISPATCHED) { removeIfUnvoiced() }
+            finishSave.complete(Unit)
+            write.await()
+            assertFalse(pendingRemoval.await())
+            assertEquals(reply, chats.getMessage(reply.id, reply.sessionId))
+            assertEquals(voice, voices.get(voice.id))
+
+            voices.delete(voice.id)
+            assertTrue(removeIfUnvoiced())
+            assertNull(chats.getMessage(reply.id, reply.sessionId))
+            val late = runCatching {
+                voices.saveForExistingVersion(voice) { chats.getMessage(reply.id, reply.sessionId) }
+            }
+            assertTrue(late.exceptionOrNull() is IllegalStateException)
+            assertNull(voices.get(voice.id))
         }
     }
 

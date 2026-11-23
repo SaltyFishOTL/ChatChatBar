@@ -43,11 +43,29 @@ internal class ReplyRemovalCoordinator(
 ) {
     private val mutex = Mutex()
 
-    suspend fun remove(expected: ChatMessage, replacement: ChatMessage?, versionId: String?): String? = mutex.withLock {
+    data class RemovalCommit(val cleanupError: String?)
+
+    suspend fun remove(expected: ChatMessage, replacement: ChatMessage?, versionId: String?): String? =
+        checkNotNull(remove(expected, replacement, versionId, onlyIfUnvoiced = false)) {
+            "消息已变化，请重新操作"
+        }.cleanupError
+
+    /** An attachment action can remove the empty row only while it has no stored recording. */
+    suspend fun removeIfUnvoiced(expected: ChatMessage): RemovalCommit? =
+        remove(expected, replacement = null, versionId = null, onlyIfUnvoiced = true)
+
+    private suspend fun remove(
+        expected: ChatMessage,
+        replacement: ChatMessage?,
+        versionId: String?,
+        onlyIfUnvoiced: Boolean
+    ): RemovalCommit? = mutex.withLock {
         require((replacement == null) == (versionId == null))
         LocalDataMaintenance.access {
             var removal: ReplyRemoval? = null
-            check(voices.prepareReplyRemoval(expected, versionId, playback::removeQueuedVoices) { collectAudioPaths ->
+            val committed = voices.prepareReplyRemoval(
+                expected, versionId, playback::removeQueuedVoices, onlyIfUnvoiced
+            ) { collectAudioPaths ->
                 chat.commitReplyRemoval(expected, replacement) {
                     val pending = ReplyRemoval(
                         id = UUID.randomUUID().toString(), sessionId = expected.sessionId, messageId = expected.id,
@@ -63,14 +81,15 @@ internal class ReplyRemovalCoordinator(
                     storage.saveEntityUncached(STORE, pending.id, pending, ReplyRemoval.serializer())
                     removal = pending
                 }
-            }) { "消息已变化，请重新操作" }
+            }
+            if (!committed) return@access null
             try {
                 finish(checkNotNull(removal))
-                null
+                RemovalCommit(cleanupError = null)
             } catch (error: CancellationException) {
                 throw error
             } catch (_: Exception) {
-                "回复已删除，相关索引或附件清理尚未完成，将在重新打开会话时重试"
+                RemovalCommit("回复已删除，相关索引或附件清理尚未完成，将在重新打开会话时重试")
             }
         }
     }

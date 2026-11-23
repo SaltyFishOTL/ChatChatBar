@@ -3660,24 +3660,33 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 _messageActionError.value = error.message ?: if (expected == null) "删除消息失败" else "删除备选失败"
                 return@launch
             }
-            if (!recovered) selectNeighborWindowAnchor(messageId)
-            refreshMessages()
-            if (cleanupError != null) _messageActionError.value = cleanupError
-            if (chatRepository.getMessage(messageId, sessionId) != null) return@launch
-            enqueueLongTermMemoryAfterMessageDeletion()
+            finishMessageDeletion(messageId, expected, recovered, cleanupError)
+        }
+    }
 
-            if (expected == null || ChatMemoryIndexPolicy.contributesToIndex(expected)) {
-                _isDeletingMemory.value = true
-                yield()
-                try {
-                    if (expected == null) {
-                        clearRemovedReplyMemory(messageId, sourceTurnId = null)
-                    } else {
-                        refreshMemoryAfterMessageDeletion(expected)
-                    }
-                } finally {
-                    _isDeletingMemory.value = false
+    private suspend fun finishMessageDeletion(
+        messageId: String,
+        expected: ChatMessage?,
+        recovered: Boolean,
+        cleanupError: String?
+    ) {
+        if (!recovered) selectNeighborWindowAnchor(messageId)
+        refreshMessages()
+        if (cleanupError != null) _messageActionError.value = cleanupError
+        if (chatRepository.getMessage(messageId, sessionId) != null) return
+        enqueueLongTermMemoryAfterMessageDeletion()
+
+        if (expected == null || ChatMemoryIndexPolicy.contributesToIndex(expected)) {
+            _isDeletingMemory.value = true
+            yield()
+            try {
+                if (expected == null) {
+                    clearRemovedReplyMemory(messageId, sourceTurnId = null)
+                } else {
+                    refreshMemoryAfterMessageDeletion(expected)
                 }
+            } finally {
+                _isDeletingMemory.value = false
             }
         }
     }
@@ -3731,23 +3740,33 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             if (remaining.isEmpty() && message.displayContent.isBlank() &&
                 MessageAlternativeVersionPolicy.versions(message).none { it.content.isNotBlank() }
             ) {
-                deleteMessage(messageId, message)
-            } else {
-                val updatedMessage = message.copy(
-                    images = remaining,
-                    generatedImageMetadata = message.generatedImageMetadata
-                        .filter { it.imagePath in remaining }
-                )
-                if (chatRepository.updateMessageIfUnchanged(message, updatedMessage) == null) {
-                    _messageActionError.value = "消息已变化，请重新操作"
+                val removed = try {
+                    withContext(NonCancellable) { replyRemovalCoordinator.removeIfUnvoiced(message) }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    _messageActionError.value = error.message ?: "删除图片失败"
                     return@launch
                 }
-                _messages.value = _messages.value.map { current ->
-                    if (current.id == messageId) updatedMessage else current
+                if (removed != null) {
+                    fishAudioCoordinator.cancelAndJoinForMessage(sessionId, messageId)
+                    finishMessageDeletion(messageId, message, recovered = false, cleanupError = removed.cleanupError)
+                    return@launch
                 }
-                refreshMessages()
-                removeUnreferencedMessageImages(listOf(imagePath))
             }
+            val updatedMessage = message.copy(
+                images = remaining,
+                generatedImageMetadata = message.generatedImageMetadata.filter { it.imagePath in remaining }
+            )
+            if (chatRepository.updateMessageIfUnchanged(message, updatedMessage) == null) {
+                _messageActionError.value = "消息已变化，请重新操作"
+                return@launch
+            }
+            _messages.value = _messages.value.map { current ->
+                if (current.id == messageId) updatedMessage else current
+            }
+            refreshMessages()
+            removeUnreferencedMessageImages(listOf(imagePath))
         }
     }
 

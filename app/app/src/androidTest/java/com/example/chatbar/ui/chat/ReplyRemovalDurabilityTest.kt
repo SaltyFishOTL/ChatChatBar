@@ -158,7 +158,13 @@ class ReplyRemovalDurabilityTest {
         )
         fixture.voices.save(legacy)
         if (openFirst) {
-            assertEquals(removedId, fixture.voices.listForCurrentVersion(reply).single { it.id == legacy.id }.messageVersionId)
+            val otherReply = MessageAlternativeVersionPolicy.select(reply, reply.alternatives.indices.first {
+                it != reply.currentAlternativeIndex
+            })
+            assertTrue(fixture.voices.listForCurrentVersion(reply).none { it.id == legacy.id })
+            assertTrue(fixture.voices.listForCurrentVersion(otherReply).none { it.id == legacy.id })
+            val rawLegacy = VoiceMessageRepository(JsonFileStorage(fixture.context)).get(legacy.id)
+            assertNull(requireNotNull(rawLegacy).messageVersionId)
         }
         val replacement = requireNotNull(MessageAlternativeVersionPolicy.remove(reply, removedId))
         assertNull(fixture.removals.remove(reply, replacement, removedId))
