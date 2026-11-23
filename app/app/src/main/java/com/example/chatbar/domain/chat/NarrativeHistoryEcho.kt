@@ -103,8 +103,19 @@ object NarrativeHistoryEcho {
                 if (start <= matchedEnd) continue
                 val wrapper = candidates.firstOrNull { it.opening == opening.value } ?: continue
                 val prefixStart = lineStart(formatCard, start)
-                val explicitLabel = formatTemplateLabel.matches(literals.markdown.subSequence(prefixStart, start))
-                if (!explicitLabel && !formatCard.subSequence(prefixStart, start).isBlank()) continue
+                val prefix = formatCard.subSequence(prefixStart, start)
+                val before = previousVisibleLine(literals.markdown, prefixStart)
+                val standaloneLabel = before?.takeIf { line ->
+                    formatTemplateLabel.matches(literals.markdown.substring(line)) &&
+                        literals.ranges.none { line.first in it } &&
+                        !literals.isMarkdownContainerLine(line.first, includeStandaloneLazyTags = true) &&
+                        (prefixStart until start).all { offset ->
+                            formatCard[offset].isWhitespace() || literals.commentRanges.any { offset in it }
+                        }
+                }
+                val explicitLabel = standaloneLabel != null ||
+                    formatTemplateLabel.matches(literals.markdown.subSequence(prefixStart, start))
+                if (!explicitLabel && !prefix.isBlank()) continue
                 val family = wrapperFamilyTokens.getValue(wrapper.name)
                 val closing = wrapperBoundary(
                     wrapper, markup.asSequence().drop(index + 1).filter { family.matches(it.value) },
@@ -114,9 +125,11 @@ object NarrativeHistoryEcho {
                 val suffix = following.next()
                 if (!suffix.isBlank() && !(explicitLabel && formatTemplateAffirmation.matches(suffix))) continue
 
-                val before = previousVisibleLine(literals.markdown, prefixStart)
+                val lead = if (standaloneLabel == null) before else {
+                    previousVisibleLine(literals.markdown, standaloneLabel.first)
+                }
                 val after = following.asSequence().firstOrNull { it.isNotBlank() }
-                if (before?.let(formatCounterexampleLead::matches) == true ||
+                if (lead?.let { formatCounterexampleLead.matches(literals.markdown.substring(it)) } == true ||
                     after?.let(formatCounterexampleTail::matches) == true
                 ) continue
                 add(wrapper.opening)
@@ -138,8 +151,17 @@ object NarrativeHistoryEcho {
         }
     }
 
-    private fun previousVisibleLine(markdown: String, before: Int): CharSequence? =
-        markdown.subSequence(0, before).lineSequence().lastOrNull { it.isNotBlank() }
+    private fun previousVisibleLine(markdown: String, before: Int): IntRange? {
+        var end = before
+        while (end > 0) {
+            end--
+            if (markdown[end] == '\n' && end > 0 && markdown[end - 1] == '\r') end--
+            val start = lineStart(markdown, end)
+            if (markdown.subSequence(start, end).isNotBlank()) return start until end
+            end = start
+        }
+        return null
+    }
 
     fun completedBody(
         text: String,
@@ -272,6 +294,16 @@ object NarrativeHistoryEcho {
             }.toList()
             (literals.commentRanges + status + options).sortedBy { it.first }
         }
+        fun bodyBeforeClose(position: Int): String {
+            val trimmed = body.substring(0, position).trimEnd()
+            val trailingLiteral = literals.roleplayLiteralCode.firstOrNull {
+                trimmed.lastIndex in it && trimmed.length in it
+            } ?: return trimmed
+            val limit = minOf(position, trailingLiteral.last + 1)
+            var endOfContent = trimmed.length
+            while (endOfContent < limit && !body[endOfContent].isHistoryLineBreak()) endOfContent++
+            return body.substring(0, endOfContent)
+        }
         fun endsReply(tag: MatchResult): Boolean =
             tag.range.last + 1 == end.length ||
                 hasOnlyReplySuffix(body, tag.range.last + 1, suffixRanges, streaming || interrupted)
@@ -296,7 +328,7 @@ object NarrativeHistoryEcho {
             }
             if (declared) return CleanedReply(text, matchedOuterPair = true)
             if (afterClosing == end.length) {
-                return CleanedReply(leadingContent + end.substring(0, position).trimEnd(), matchedOuterPair = true)
+                return CleanedReply(leadingContent + bodyBeforeClose(position), matchedOuterPair = true)
             }
             val tail = body.substring(afterClosing)
             val markerLineStart = lineStart(body, position)
@@ -305,7 +337,7 @@ object NarrativeHistoryEcho {
             val before = if (markerStartsLine && suffixSharesLine) {
                 body.substring(0, markerLineStart)
             } else {
-                body.substring(0, position).trimEnd()
+                bodyBeforeClose(position)
             }
             return CleanedReply(leadingContent + before + tail, matchedOuterPair = true)
         }
@@ -322,7 +354,7 @@ object NarrativeHistoryEcho {
                 !isEscaped(end, lastTag) && !literals.isMarkdownContainerLine(lastTag) &&
                 literals.ranges.none { lastTag in it } && !literals.hasCodeIndentAt(lastTag) &&
                 isJoinedLiteral?.invoke(bodyStart + lastTag, false) != true
-            ) return CleanedReply(leadingContent + end.substring(0, lastTag).trimEnd())
+            ) return CleanedReply(leadingContent + bodyBeforeClose(lastTag))
         }
         return CleanedReply(if (sameLineContent) text else leadingContent + body)
     }

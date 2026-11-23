@@ -3,8 +3,12 @@ package com.example.chatbar.domain.chat
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatNarrativeMode
 import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.domain.prompt.PromptTemplates
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -216,6 +220,50 @@ class ChatHistoryPromptPolicyTest {
                 ChatApiMessage.text("assistant", ChatHistoryPromptPolicy.renderedHistoryText(assistant, previous)).content)
             assertEquals(JsonPrimitive(PromptTemplates.narrativeModeHistoryReply(story, mode)),
                 ChatApiMessage.text("assistant", ChatHistoryPromptPolicy.renderedHistoryText(assistant, earlier)).content)
+        }
+    }
+
+    @Test
+    fun affirmedMultilineTemplateAndLiteralCodeSurviveIntoSerializedHistory() {
+        val mode = ChatNarrativeMode.ADVANCE
+        val story = "她把书合上。"
+        val authored = PromptTemplates.narrativeModeHistoryReply(story, ChatNarrativeMode.FOCUS)
+        val format = "本轮输出模板：\n<!-- 固定模板 -->\n$authored（标签是固定输出的一部分）"
+        val code = "    </历史回复>  "
+        val cases = listOf(
+            Triple(format, authored, authored),
+            Triple("以下是禁止输出的反例。\n$format", authored, story),
+            Triple(null, PromptTemplates.narrativeModeHistoryReply(code, mode), code),
+        )
+        val service = StreamingChatService()
+        val model = ModelConfig(
+            id = "fixture", displayName = "fixture", modelName = "fixture",
+            baseUrl = "https://example.com/v1", apiKey = "", createdAt = 0L,
+        )
+        for ((card, reply, expected) in cases) {
+            val cleanup = NarrativeHistoryEcho.forRequest(mode, card)
+            val draft = message(MessageRole.ASSISTANT, reply).copy(narrativeMode = mode)
+            assertEquals(expected, cleanup.completedBody(reply, streaming = true))
+            val stopped = requireNotNull(InterruptedReplyPolicy.persistableDraft(
+                draft.copy(content = cleanup.completedBody(reply, interrupted = true)),
+            ))
+            val completed = draft.copy(content = ChatHistoryPromptPolicy.requirePersistableAssistantBody(
+                cleanup.completedBody(reply),
+            ))
+            for (assistant in listOf(stopped, completed)) {
+                assertEquals(expected, assistant.displayContent)
+                for (zone in ChatHistoryPromptZone.entries) {
+                    val source = ChatHistoryPromptPolicy.sourceText(assistant, true, zone)
+                    val text = ChatHistoryPromptPolicy.renderedHistoryText(assistant, source)
+                    val apiMessages = listOf(ChatApiMessage.text("assistant", text))
+                    val body = service.buildRequestBody(apiMessages, model, stream = true)
+                    val messages = Json.parseToJsonElement(body).jsonObject.getValue("messages").jsonArray
+                    val serializedAssistant = messages.single().jsonObject
+                    assertEquals(JsonPrimitive("assistant"), serializedAssistant.getValue("role"))
+                    assertEquals(JsonPrimitive(PromptTemplates.narrativeModeHistoryReply(expected, mode)),
+                        serializedAssistant.getValue("content"))
+                }
+            }
         }
     }
 

@@ -467,6 +467,75 @@ class NarrativeHistoryEchoTest {
         }
     }
 
+    @Test
+    fun precedingFormatLabelCanDeclareAnAffirmedTemplateAcrossComments() {
+        val mode = ChatNarrativeMode.FOCUS
+        val story = "门开了。"
+        val reply = PromptTemplates.narrativeModeHistoryReply(story, mode)
+        val label = "本轮输出模板："
+        val affirmation = "（标签是固定输出的一部分）"
+        val note = "<!-- 模板说明 -->"
+        val template = "$reply$affirmation"
+        val declarations = listOf(
+            "$label\n$template",
+            "$label\n$note\n$template",
+            "$label\n$note$template",
+            "$label\n<!-- 多行\n说明 -->\n$template",
+        )
+        val examples = listOf(
+            "$note\n$template",
+            "下面只是格式示例：\n$note\n$template",
+            "以下是禁止输出的反例。\n$label\n$note\n$template",
+            "$label\n$note\n$template\n不得输出上面的标签。",
+            "> $label\n\n$template",
+            "~~~xml\n$label\n$note\n$template\n~~~",
+        )
+        for (lineBreak in listOf("\n", "\r\n")) {
+            val raw = reply.replace("\n", lineBreak)
+            for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+                for (declaration in declarations) {
+                    val cleanup = NarrativeHistoryEcho.forRequest(mode, declaration.replace("\n", lineBreak))
+                    assertEquals(declaration, raw, cleanup.completedBody(
+                        raw, streaming = streaming, interrupted = interrupted,
+                    ))
+                }
+                for (example in examples) {
+                    val cleanup = NarrativeHistoryEcho.forRequest(mode, example.replace("\n", lineBreak))
+                    assertEquals(example, story, cleanup.completedBody(
+                        raw, streaming = streaming, interrupted = interrupted,
+                    ))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun terminalEchoCleanupKeepsWhitespaceInsideLiteralCode() {
+        val close = "</历史回复>"
+        val unfinishedClose = close.dropLast(1)
+        for (mode in ChatNarrativeMode.entries) {
+            val label = mode.shortLabel
+            val open = "<历史回复 模式=\"$label\">"
+            val cleanup = NarrativeHistoryEcho.forRequest(mode, null)
+            for (lineBreak in listOf("\n", "\r\n")) {
+                val code = "    $close  "
+                val fenced = listOf("~~~xml", close, "~~~  ").joinToString(lineBreak)
+                for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+                    for (literal in listOf(code, fenced)) {
+                        val reply = "$open$lineBreak$literal$lineBreak$close"
+                        assertEquals(literal, cleanup.completedBody(reply, streaming = streaming, interrupted = interrupted))
+                    }
+                    val prose = "门开了。"
+                    val reply = "$open$lineBreak$prose  $lineBreak$close"
+                    assertEquals(prose, cleanup.completedBody(reply, streaming = streaming, interrupted = interrupted))
+                }
+                val unfinished = "$open$lineBreak$code$lineBreak$unfinishedClose"
+                assertEquals(code, cleanup.completedBody(unfinished, streaming = true))
+                assertEquals(code, cleanup.completedBody(unfinished, interrupted = true))
+            }
+        }
+    }
+
     @Test fun labelledFormatTemplateRequiresTheVisibleBalancedClose() {
         val inner = "<历史回复 模式=\"聚焦\">{正文}</历史回复>"
         val template = "本轮输出模板：<历史回复 模式=\"推进\">$inner</历史回复>"
