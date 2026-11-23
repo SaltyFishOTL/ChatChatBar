@@ -353,6 +353,85 @@ class ExperimentalToolTransportTest {
         assertNarrativeReplyStates(raw, expected = "正文", formatCard = "$label$raw（仅为示例，请勿输出）")
     }
 
+    @Test
+    fun `main stream keeps annotated status around the wrapped narrative`() = runBlocking {
+        val label = "（三个点为状态包裹格式，必须完整输出）"
+        val before = "```text$label\n⭐️当前地点:门厅，天气晴朗。\n$label```"
+        val after = "```text$label\n姓名、外貌：她 | 穿搭、动作：大衣\n$label```"
+        val opening = "<历史回复 模式=\"推进\">"
+        val closing = "</历史回复>"
+        val story = "她推开门。"
+        val wrapped = "$opening\n$story\n$closing"
+        val both = "$before\n\n$story\n\n$after"
+        assertNarrativeReplyStates("$before\n\n$wrapped\n\n$after", expected = both)
+        assertNarrativeReplyStates("$before\n\n$wrapped", expected = "$before\n\n$story")
+        assertNarrativeReplyStates("$wrapped\n\n$after", expected = "$story\n\n$after")
+        assertNarrativeReplyStates("$opening\n$both\n$closing", expected = both)
+
+        val code = "```kotlin\nval literal = 1\n```"
+        val ordinaryStatus = "```status\n状态栏\n```"
+        assertNarrativeReplyStates("$before\n\n$opening\n$code\n$closing\n\n$after", expected = "$before\n\n$code\n\n$after")
+        for (literal in listOf(
+            "$code\n\n$before\n\n$wrapped",
+            "$wrapped\n\n$code\n\n$after",
+            "$wrapped\n\n$after\n\n后续示例说明。",
+            "$wrapped\n\n$ordinaryStatus",
+        )) {
+            assertNarrativeReplyStates(literal, expected = literal)
+        }
+    }
+
+    @Test
+    fun `main stream reserves only a complete explicitly mandatory XML template`() = runBlocking {
+        val opening = "<历史回复 模式=\"推进\">"
+        val closing = "</历史回复>"
+        val raw = "$opening\n她推开门。\n$closing"
+        val template = "$opening\n{正文}\n$closing"
+        val lead = "请严格按照以下固定模板作答，必须逐字保留首尾标签，不要输出代码围栏："
+        val fenced = "```xml\n$template\n```"
+        assertNarrativeReplyStates(raw, expected = raw, formatCard = "$lead\n$fenced")
+        for (card in listOf(
+            fenced,
+            "以下内容只是示例，标签不应输出：\n$fenced",
+            "她引用了一个例子：“\n$lead\n$fenced\n引文结束。”",
+            "$lead\n其他说明。\n$fenced",
+            "$lead\n```kotlin\n$template\n```",
+            "$lead\n```xml\n附加说明。\n$template\n```",
+            "$lead\n```xml\n$template\n附加说明。\n```",
+            "$lead\n```xml\n$template\n$template\n```",
+            "$lead\n```xml\n$template",
+        )) {
+            assertNarrativeReplyStates(raw, expected = "她推开门。", formatCard = card)
+        }
+    }
+
+    @Test
+    fun `main stream reserves a mandatory fixed template on its label line`() = runBlocking {
+        val opening = "<历史回复 模式=\"推进\">"
+        val closing = "</历史回复>"
+        val raw = "$opening 她答应。$closing"
+        assertNarrativeReplyStates(raw, expected = raw, formatCard = "每次回复必须使用此固定模板：$opening {正文}$closing")
+    }
+
+    @Test
+    fun `main stream keeps a literal opener used as a sentence subject`() = runBlocking {
+        val opening = "<历史回复 模式=\"推进\">"
+        val closing = "</历史回复>"
+        val literal = "$opening 是本次要解释的标签，下面说明它的用途。"
+        assertNarrativeReplyStates(literal, expected = literal)
+        assertNarrativeReplyStates("$opening 她答应。$closing", expected = " 她答应。")
+        assertNarrativeReplyStates("$opening\n她答应。", expected = "她答应。")
+        assertNarrativeReplyStates(opening, expected = "")
+        assertNarrativeReplyStates(opening.dropLast(1), expected = "")
+    }
+
+    @Test
+    fun `main stream never reserves a template pair below an example-only warning`() = runBlocking {
+        val raw = "<历史回复 模式=\"推进\">\n她推开门。\n</历史回复>"
+        val card = "以下标签仅供举例，不要在回复中输出：\n<历史回复 模式=\"推进\">\n{正文}\n</历史回复>"
+        assertNarrativeReplyStates(raw, expected = "她推开门。", formatCard = card)
+    }
+
     private suspend fun assertNarrativeReplyStates(raw: String, expected: String, formatCard: String? = null) {
         val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, formatCard)
         val delta = buildJsonObject {

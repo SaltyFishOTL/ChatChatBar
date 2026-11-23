@@ -8,15 +8,23 @@ object MarkdownCodeFences {
     private val thematicBreak = Regex(" {0,3}(?:(?:-[ \\t]*){3,}|(?:\\*[ \\t]*){3,}|(?:_[ \\t]*){3,})\\r?")
     private val heading = Regex("^ {0,3}#{1,6}(?:[ \\t]|$)")
     private val setextUnderline = Regex(" {0,3}(?:=+|-+)[ \\t]*")
-    private const val legacyStatusLabel = "（三个点为状态包裹格式，必须完整输出）"
+    internal const val legacyStatusLabel = "（三个点为状态包裹格式，必须完整输出）"
     private val legacyStatusClose = Regex(" {0,3}$legacyStatusLabel``` *")
 
-    data class Block(val range: IntRange, val topLevel: Boolean, val marker: Char, val info: String)
+    data class Block(
+        val range: IntRange,
+        val topLevel: Boolean,
+        val marker: Char,
+        val info: String,
+        internal val closingLineStart: Int? = null,
+        internal val legacyStatus: Boolean = false,
+    )
 
     // A null indent identifies a block quote. A list item continues at its content indent.
     private data class Container(val indent: Int? = null, val awaitingContent: Boolean = false)
     private data class Fence(val start: Int, val marker: String, val topLevel: Boolean, val info: String) {
-        fun to(endExclusive: Int) = Block(start until endExclusive, topLevel, marker[0], info)
+        fun to(endExclusive: Int, closingLineStart: Int? = null, legacyStatus: Boolean = false) =
+            Block(start until endExclusive, topLevel, marker[0], info, closingLineStart, legacyStatus)
     }
 
     internal fun afterQuotePrefixes(text: String, start: Int): Int {
@@ -109,7 +117,7 @@ object MarkdownCodeFences {
             if (existing?.marker == "```" && existing.info == "text$legacyStatusLabel" &&
                 legacyStatusClose.matches(remainder)
             ) {
-                add(existing.to(start + rawLine.length))
+                add(existing.to(start + rawLine.length, closingLineStart = start, legacyStatus = true))
                 open = null
                 continue
             }
@@ -144,7 +152,7 @@ object MarkdownCodeFences {
             } else if (marker[0] == existing.marker[0] &&
                 marker.length >= existing.marker.length && rest.isBlank()
             ) {
-                add(existing.to(start + rawLine.length))
+                add(existing.to(start + rawLine.length, closingLineStart = start))
                 open = null
             }
         }

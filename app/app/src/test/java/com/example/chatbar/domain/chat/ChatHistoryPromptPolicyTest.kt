@@ -115,6 +115,26 @@ class ChatHistoryPromptPolicyTest {
     }
 
     @Test
+    fun replyWithAnnotatedStatusReplaysWithOneHistoryWrapper() {
+        val label = "（三个点为状态包裹格式，必须完整输出）"
+        val before = "```text$label\n当前地点：门厅\n$label```"
+        val after = "```text$label\n穿搭：大衣\n$label```"
+        val opening = "<历史回复 模式=\"推进\">"
+        val closing = "</历史回复>"
+        val story = "她推开门。"
+        val reply = "$before\n\n$opening\n$story\n$closing\n\n$after"
+        val cleaned = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, null).completedBody(reply)
+        val assistant = message(MessageRole.ASSISTANT, cleaned).copy(narrativeMode = ChatNarrativeMode.ADVANCE)
+
+        assertEquals("$before\n\n$story\n\n$after", cleaned)
+        assertEquals(listOf(RoleplaySegmentKind.STATUS, RoleplaySegmentKind.NARRATION, RoleplaySegmentKind.STATUS),
+            parseRoleplayTextSegments(cleaned).map { it.kind })
+        val previous = ChatHistoryPromptPolicy.sourceText(assistant, true, ChatHistoryPromptZone.PREVIOUS_TURN)
+        assertEquals(JsonPrimitive("$opening\n$before\n\n$story\n\n$after\n$closing"),
+            ChatApiMessage.text("assistant", ChatHistoryPromptPolicy.renderedHistoryText(assistant, previous)).content)
+    }
+
+    @Test
     fun statusOnlyPreviousAssistantRemainsAvailableWhileEarlierHistoryCanBeOmitted() {
         val statusOnly = """
             ```status

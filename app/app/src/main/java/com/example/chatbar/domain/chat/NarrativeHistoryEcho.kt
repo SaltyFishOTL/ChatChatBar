@@ -14,6 +14,7 @@ object NarrativeHistoryEcho {
         val listItemLineStarts: Set<Int>,
         val markdown: String,
         val commentRanges: List<IntRange>,
+        val fences: List<MarkdownCodeFences.Block>,
     )
 
     private val legacyWrapper = Wrapper("聚焦模式", "<聚焦模式=\"沉浸\">", listOf("</聚焦模式>", "</聚焦模式=\"沉浸\">"))
@@ -28,12 +29,19 @@ object NarrativeHistoryEcho {
     private const val commentOpening = "<!--"
     private val commentDelimiters = Regex("<!--|-->")
     private val formatTemplateLabel = Regex(
-        " {0,3}(\\*\\*|)(?:(?:本轮)?输出(?:模板|格式)|本轮的固定输出模板|请按以下格式输出)[ \\t]*[:：]\\1[ \\t]*",
+        " {0,3}(\\*\\*|)(?:(?:本轮)?输出(?:模板|格式)|本轮的固定输出模板|请按以下格式输出|" +
+            "每次回复必须使用此固定模板)[ \\t]*[:：]\\1[ \\t]*",
     )
     private val formatTemplateAffirmation = Regex(
         "[ \\t]*(?:（[ \\t]*标签是固定输出的一部分[ \\t]*）|\\([ \\t]*标签是固定输出的一部分[ \\t]*\\))[ \\t]*[。.]?[ \\t]*",
     )
-    private val formatCounterexampleLead = Regex(" {0,3}以下是禁止输出的反例[。.:：]?[ \\t]*")
+    private val fencedTemplateLead = Regex(
+        "(?m)^ {0,3}请严格按照以下固定模板作答，必须逐字保留首尾标签，不要输出代码围栏[:：]" +
+            "[ \\t]*(?:\\r?\\n[ \\t]*)+\\z",
+    )
+    private val formatCounterexampleLead = Regex(
+        " {0,3}(?:以下是禁止输出的反例[。.:：]?|以下标签仅供举例，不要在回复中输出[:：])[ \\t]*",
+    )
     private val formatCounterexampleTail = Regex(" {0,3}不得输出上面的标签[。.]?[ \\t]*")
     private val statusFenceInfo = Regex("(?:text|status)(?=$|[ \\t(（]).*", RegexOption.IGNORE_CASE)
     private val paragraphBreak = Regex("\\r?\\n[ \\t]*\\r?\\n")
@@ -101,15 +109,32 @@ object NarrativeHistoryEcho {
                 val suffix = following.next()
                 if (!suffix.isBlank() && !(explicitLabel && formatTemplateAffirmation.matches(suffix))) continue
 
-                val before = literals.markdown.subSequence(0, prefixStart).lineSequence().lastOrNull { it.isNotBlank() }
+                val before = previousVisibleLine(literals.markdown, prefixStart)
                 val after = following.asSequence().firstOrNull { it.isNotBlank() }
                 if (before?.let(formatCounterexampleLead::matches) == true ||
                     after?.let(formatCounterexampleTail::matches) == true
                 ) continue
                 add(wrapper.opening)
             }
+            for (fence in literals.fences) {
+                val closingLine = fence.closingLineStart ?: continue
+                if (!fence.topLevel || !fence.info.equals("xml", ignoreCase = true)) continue
+                val lead = fencedTemplateLead.find(literals.markdown.subSequence(0, fence.range.first)) ?: continue
+                if (literals.ranges.any { lead.range.first in it }) continue
+                val contentStart = literals.markdown.indexOf('\n', fence.range.first) + 1
+                val template = formatCard.substring(contentStart, closingLine).trim()
+                val wrapper = candidates.firstOrNull {
+                    template.startsWith(it.opening) && it.closings.any(template::endsWith)
+                } ?: continue
+                if (cleanReply(template, streaming = false, interrupted = false, requirePair = true).matchedOuterPair) {
+                    add(wrapper.opening)
+                }
+            }
         }
     }
+
+    private fun previousVisibleLine(markdown: String, before: Int): CharSequence? =
+        markdown.subSequence(0, before).lineSequence().lastOrNull { it.isNotBlank() }
 
     fun completedBody(
         text: String,
@@ -189,13 +214,25 @@ object NarrativeHistoryEcho {
     ): CleanedReply {
         val first = text.indexOfFirst { !it.isWhitespace() }
         if (first < 0) return CleanedReply(text)
+        val leadingStatus by lazy(LazyThreadSafetyMode.NONE) {
+            classifyLiterals(text, interpretProseQuotes = false).fences.filter { it.topLevel && it.legacyStatus }
+        }
         var openingStart = first
-        while (text.startsWith(commentOpening, openingStart) && !isIndentedCodeLine(text, openingStart)) {
-            openingStart = closedCommentEnd(text, openingStart) ?: return CleanedReply(text)
+        while (openingStart < text.length) {
+            openingStart = when {
+                text.startsWith(commentOpening, openingStart) && !isIndentedCodeLine(text, openingStart) ->
+                    closedCommentEnd(text, openingStart) ?: return CleanedReply(text)
+                text.startsWith("```", openingStart) && MarkdownCodeFences.legacyStatusLabel in text -> {
+                    val line = lineStart(text, openingStart)
+                    val status = leadingStatus.firstOrNull { it.range.first == line } ?: break
+                    status.range.last + 1
+                }
+                else -> break
+            }
             while (openingStart < text.length && text[openingStart].isWhitespace()) openingStart++
         }
         if (openingStart == text.length || isIndentedCodeLine(text, openingStart)) return CleanedReply(text)
-        val leadingComments = if (openingStart == first) "" else text.substring(0, openingStart)
+        val leadingContent = if (openingStart == first) "" else text.substring(0, openingStart)
         val start = text.substring(openingStart)
         val wrapper = wrappers.firstOrNull { start.startsWith(it.opening) }
         if (wrapper == null) {
@@ -203,13 +240,14 @@ object NarrativeHistoryEcho {
             if (!requirePair && (streaming || identifiable || interrupted && start.length > 1) &&
                 wrappers.any { it.opening.startsWith(start) } && declaredOpenings.none { it.startsWith(start) } &&
                 isJoinedLiteral?.invoke(openingStart, true) != true
-            ) return CleanedReply(leadingComments)
+            ) return CleanedReply(leadingContent)
             return CleanedReply(text)
         }
         if (isJoinedLiteral?.invoke(openingStart, true) == true) return CleanedReply(text)
         val declared = wrapper.opening in declaredOpenings
 
-        val body = start.removePrefix(wrapper.opening).trimStart('\r', '\n')
+        val afterOpening = start.substring(wrapper.opening.length)
+        val body = afterOpening.trimStart('\r', '\n')
         val bodyStart = text.length - body.length
         val end = body.trimEnd()
         val familyTags = wrapperFamilyTokens.getValue(wrapper.name).findAll(end).toList()
@@ -219,9 +257,13 @@ object NarrativeHistoryEcho {
         val visibleTags = familyTags.filter { tag ->
             literals.isVisibleWrapperTag(end, tag) && isJoinedLiteral?.invoke(bodyStart + tag.range.first, false) != true
         }
+        val suffixRanges by lazy(LazyThreadSafetyMode.NONE) {
+            val status = literals.fences.filter { it.topLevel && it.legacyStatus }.map { it.range }
+            (literals.commentRanges + status).sortedBy { it.first }
+        }
         fun endsReply(tag: MatchResult): Boolean =
             tag.range.last + 1 == end.length ||
-                onlyCommentsAfter(end, tag.range.last + 1, literals.commentRanges, streaming || interrupted)
+                hasOnlyReplySuffix(end, tag.range.last + 1, suffixRanges, streaming || interrupted)
 
         val terminal = visibleTags.lastOrNull()?.takeIf { tag ->
             tag.value in wrapper.closings && !literals.isLazyQuoteLine(tag.range.first) && endsReply(tag)
@@ -243,23 +285,24 @@ object NarrativeHistoryEcho {
             }
             if (declared) return CleanedReply(text, matchedOuterPair = true)
             if (afterClosing == end.length) {
-                return CleanedReply(leadingComments + end.substring(0, position).trimEnd(), matchedOuterPair = true)
+                return CleanedReply(leadingContent + end.substring(0, position).trimEnd(), matchedOuterPair = true)
             }
             val tail = body.substring(afterClosing)
             val markerLineStart = lineStart(body, position)
             val markerStartsLine = body.subSequence(markerLineStart, position).isBlank()
-            val commentSharesLine = tail.lineSequence().first().isNotBlank()
-            val before = if (markerStartsLine && commentSharesLine) {
+            val suffixSharesLine = tail.lineSequence().first().isNotBlank()
+            val before = if (markerStartsLine && suffixSharesLine) {
                 body.substring(0, markerLineStart)
             } else {
                 body.substring(0, position).trimEnd()
             }
-            return CleanedReply(leadingComments + before + tail, matchedOuterPair = true)
+            return CleanedReply(leadingContent + before + tail, matchedOuterPair = true)
         }
 
         if (declared || requirePair) return CleanedReply(text)
+        val sameLineContent = end.isNotEmpty() && !afterOpening.firstOrNull().isHistoryLineBreak()
         val lastTag = end.lastIndexOf('<')
-        if (lastTag >= 0 && boundary.canEndWithPartialClose) {
+        if (lastTag >= 0 && (!sameLineContent || lastTag == 0) && boundary.canEndWithPartialClose) {
             val suffix = end.substring(lastTag)
             val identifiable = suffix.startsWith("</历史回复") || suffix.startsWith("</聚焦模式")
             val aloneOnLine = end.substring(0, lastTag).substringAfterLast('\n').substringAfterLast('\r').isBlank()
@@ -268,9 +311,9 @@ object NarrativeHistoryEcho {
                 !isEscaped(end, lastTag) && !literals.isMarkdownContainerLine(lastTag) &&
                 literals.ranges.none { lastTag in it } && !isIndentedCodeLine(literals.markdown, lastTag) &&
                 isJoinedLiteral?.invoke(bodyStart + lastTag, false) != true
-            ) return CleanedReply(leadingComments + end.substring(0, lastTag).trimEnd())
+            ) return CleanedReply(leadingContent + end.substring(0, lastTag).trimEnd())
         }
-        return CleanedReply(leadingComments + body)
+        return CleanedReply(if (sameLineContent) text else leadingContent + body)
     }
 
     private fun wrapperBoundary(wrapper: Wrapper, tags: Sequence<MatchResult>): WrapperBoundary {
@@ -314,14 +357,14 @@ object NarrativeHistoryEcho {
         }
     }
 
-    private fun onlyCommentsAfter(
-        text: String, start: Int, comments: List<IntRange>, provisional: Boolean,
+    private fun hasOnlyReplySuffix(
+        text: String, start: Int, suffixRanges: List<IntRange>, provisional: Boolean,
     ): Boolean {
         var next = start
-        for (comment in comments) {
-            if (comment.first < start) continue
-            if (!text.subSequence(next, comment.first).isBlank()) return false
-            next = comment.last + 1
+        for (range in suffixRanges) {
+            if (range.first < start) continue
+            if (!text.subSequence(next, range.first).isBlank()) return false
+            next = range.last + 1
         }
         val remainder = text.substring(next).trimStart()
         return remainder.isEmpty() || provisional && commentOpening.startsWith(remainder)
@@ -402,7 +445,7 @@ object NarrativeHistoryEcho {
                 interpretProseQuotes,
             )
             return ReplyLiterals(
-                ranges + quotes, roleplayLiteralCode, lazyQuoteLineStarts, listItemLineStarts, source, comments,
+                ranges + quotes, roleplayLiteralCode, lazyQuoteLineStarts, listItemLineStarts, source, comments, fences,
             )
         }
 
