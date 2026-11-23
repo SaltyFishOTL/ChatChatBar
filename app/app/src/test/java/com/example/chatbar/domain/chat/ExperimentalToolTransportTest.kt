@@ -1371,7 +1371,11 @@ class ExperimentalToolTransportTest {
         val original = PromptTemplates.narrativeModeHistoryReply(story, mode)
         val previous = ChatMessage.create("fixture", MessageRole.ASSISTANT, original).copy(narrativeMode = mode)
         val echoed = PromptTemplates.narrativeModeHistoryReply(original, mode)
-        assertNarrativeReplyStates(echoed, expected = story, previousAssistant = previous, experimental = false)
+        assertNarrativeReplyStates(echoed, expected = original, previousAssistant = previous, experimental = false)
+        val novel = story.replace("有人来了。", "天开始下雨。")
+        val novelInner = PromptTemplates.narrativeModeHistoryReply(novel, mode)
+        val novelEcho = PromptTemplates.narrativeModeHistoryReply(novelInner, mode)
+        assertNarrativeReplyStates(novelEcho, expected = novel, previousAssistant = previous, experimental = false)
         assertNarrativeReplyStates(echoed, expected = original, experimental = false)
         assertEquals(original, previous.displayContent)
     }
@@ -2558,28 +2562,39 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
-    fun `a witnessed nested history projection can contain different modes`() = runBlocking {
-        val previous = ChatMessage.create(
-            "fixture", MessageRole.ASSISTANT,
-            PromptTemplates.narrativeModeHistoryReply("旧故事。", ChatNarrativeMode.FOCUS),
-        ).copy(narrativeMode = ChatNarrativeMode.ADVANCE)
-        val story = "她推开窗。"
-        val inner = PromptTemplates.narrativeModeHistoryReply(story, ChatNarrativeMode.FOCUS)
-        val outer = PromptTemplates.narrativeModeHistoryReply(inner, ChatNarrativeMode.ADVANCE)
-        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
-            assertNarrativeReplyDeltas(
-                listOf(outer), listOf(story), story,
-                previousAssistant = previous, experimental = experimental, toolCall = toolCall,
-            )
-            assertNarrativeReplyDeltas(
-                listOf(outer), listOf(inner), inner,
-                experimental = experimental, toolCall = toolCall,
-            )
-            assertNarrativeReplyDeltas(
-                listOf(outer), listOf(inner), inner,
-                previousAssistant = previous, experimental = experimental, toolCall = toolCall,
-                formatCard = "本轮输出模板：\n$inner",
-            )
+    fun `a raw inner wrapper in actual history does not inherit transport authority`() = runBlocking {
+        val story = "风吹过长廊。"
+        for (outerMode in ChatNarrativeMode.entries) {
+            val innerMode = ChatNarrativeMode.entries.first { it != outerMode }
+            val oldLiteral = PromptTemplates.narrativeModeHistoryReply("旧的字面样例。", innerMode)
+            val literalInHistory = ChatMessage.create("fixture", MessageRole.ASSISTANT, oldLiteral).copy(narrativeMode = outerMode)
+            val independentInner = ChatMessage.create("fixture", MessageRole.ASSISTANT, "另一段历史。").copy(narrativeMode = innerMode)
+            val inner = PromptTemplates.narrativeModeHistoryReply(story, innerMode)
+            val outer = PromptTemplates.narrativeModeHistoryReply(inner, outerMode)
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                assertNarrativeReplyDeltas(
+                    listOf(outer), listOf(inner), inner,
+                    previousAssistant = literalInHistory, experimental = experimental, toolCall = toolCall,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(outer), listOf(inner), inner,
+                    experimental = experimental, toolCall = toolCall,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(inner), listOf(story), story,
+                    previousAssistant = independentInner, experimental = experimental, toolCall = toolCall,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(outer), listOf(outer), outer,
+                    previousAssistant = literalInHistory, experimental = experimental, toolCall = toolCall,
+                    currentUserText = "Copy this text verbatim:\n$outer",
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(outer), listOf(inner), inner,
+                    previousAssistant = literalInHistory, experimental = experimental, toolCall = toolCall,
+                    formatCard = "本轮输出模板：\n$inner",
+                )
+            }
         }
     }
 
@@ -3831,6 +3846,60 @@ class ExperimentalToolTransportTest {
                     previousUserText = template, currentUserText = noXml, characterPostHistoryInstructions = template,
                 )
             }
+        }
+    }
+
+    @Test
+    fun `validated call boundaries do not resolve a still continuing lazy Markdown list close`() = runBlocking {
+        val closing = "</历史回复>"
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "旧正文。").copy(narrativeMode = mode)
+            val opening = PromptTemplates.narrativeModeHistoryReply("Body", mode).substringBefore('\n')
+            val lazyParts = listOf(opening, "- Here is the example", closing, "  It is an example.", closing)
+            val lazyRaw = lazyParts.joinToString("\n")
+            assertNarrativeReplyDeltas(
+                listOf(lazyRaw), listOf(lazyRaw), lazyRaw, previousAssistant = prior, experimental = false,
+            )
+            assertMultipartNarrativeReply(lazyParts, lazyRaw)
+            // Match the native fixture's visible first call without changing the joined Markdown.
+            assertMultipartNarrativeReply(listOf(lazyParts.take(2).joinToString("\n")) + lazyParts.drop(2), lazyRaw)
+            val explicit = listOf(opening, "- Here is a tag example:", "  $closing", "  It is an example.", closing)
+            assertMultipartNarrativeReply(explicit, explicit.subList(1, 4).joinToString("\n"))
+            val first = PromptTemplates.narrativeModeHistoryReply("First complete scene.", mode)
+            val second = PromptTemplates.narrativeModeHistoryReply("Second complete scene.", mode)
+            assertMultipartNarrativeReply(listOf(first, second), "First complete scene.\nSecond complete scene.")
+        }
+    }
+
+    @Test
+    fun `an exact emitted history projection keeps every original body byte`() = runBlocking {
+        for (mode in ChatNarrativeMode.entries) {
+            for (body in listOf(
+                "风吹过长廊。  ",
+                "A hard break  \r\n    An indented line.  ",
+                "\n    val key = 1\n",
+                "\r\n    An indented line.  \r\n",
+                "    An indented line.",
+            )) {
+                val historical = ChatMessage.create("fixture", MessageRole.ASSISTANT, body).copy(narrativeMode = mode)
+                val frame = PromptTemplates.narrativeModeHistoryReply(body, mode)
+                for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                    assertNarrativeReplyDeltas(
+                        listOf(frame), listOf(body), body,
+                        previousAssistant = historical, experimental = experimental, toolCall = toolCall,
+                    )
+                    val authored = "Copy this text verbatim:\n$frame"
+                    assertNarrativeReplyDeltas(
+                        listOf(frame), listOf(frame), frame,
+                        previousAssistant = historical, experimental = experimental, toolCall = toolCall,
+                        currentUserText = authored,
+                    )
+                }
+            }
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Different previous prose.").copy(narrativeMode = mode)
+            val plain = "A new sentence."
+            val novel = PromptTemplates.narrativeModeHistoryReply("$plain  ", mode)
+            assertNarrativeReplyDeltas(listOf(novel), listOf(plain), plain, previousAssistant = prior, experimental = false)
         }
     }
 

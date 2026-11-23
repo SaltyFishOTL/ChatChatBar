@@ -293,9 +293,9 @@ object NarrativeHistoryEcho {
     ) {
         private val projectedOpenings = mutableSetOf<String>()
         private val projectedDuplicateOpenings = mutableSetOf<String>()
-        private val projectedInnerOpenings = mutableMapOf<String, MutableSet<String>>()
+        private val projectedLegacyInners = mutableSetOf<String>()
         private val projectedClosings = mutableSetOf<String>()
-        private val projectedPaddedFrames = mutableSetOf<String>()
+        private val projectedBodies = mutableMapOf<String, String>()
         private val narrativeHeadings = mutableSetOf<String>()
         private val authoredSources = mutableMapOf<String, UserOutput>()
         private val authoredPairs = mutableSetOf<String>()
@@ -395,27 +395,18 @@ object NarrativeHistoryEcho {
                 if (projection != "${wrapper.opening}\n$body\n${wrapper.closings.first()}") continue
                 projectedOpenings += wrapper.opening
                 projectedClosings += wrapper.closings.first()
-                if (wrapper != legacyWrapper && (body.firstOrNull().isHistoryLineBreak() || body.lastOrNull().isHistoryLineBreak())) {
-                    projectedPaddedFrames += projection
-                }
+                projectedBodies[projection] = body
                 if (legacyWrapper.isStandalonePair(body) && isStandaloneLegacyHistoryWrapper(body)) {
                     authoredPairs += body
-                }
-                if (wrapper.opening !in formatOutput.declaredOpenings) {
-                    for (inner in wrappers) {
-                        if (inner == wrapper || inner.opening in formatOutput.declaredOpenings ||
-                            projectedInnerOpenings[wrapper.opening]?.contains(inner.opening) == true
-                        ) continue
-                        if (inner.isStandalonePair(body) && inner.hasExactlyOneVisiblePair(body)) {
-                            projectedInnerOpenings.getOrPut(wrapper.opening, ::mutableSetOf).add(inner.opening)
-                        }
-                    }
+                    if (wrapper != legacyWrapper && wrapper.opening !in formatOutput.declaredOpenings &&
+                        legacyWrapper.opening !in formatOutput.declaredOpenings && legacyWrapper.hasExactlyOneVisiblePair(body)
+                    ) projectedLegacyInners += wrapper.opening
                 }
                 if (wrapper.opening in projectedDuplicateOpenings) continue
-                val undeclaredTransportPair = wrapper != legacyWrapper &&
+                val undeclaredDuplicate = wrapper != legacyWrapper &&
                     wrapper.opening !in formatOutput.declaredOpenings && wrapper.isStandalonePair(body)
                 if (declaredSinglePair && wrapper.hasExactlyOnePair(body) ||
-                    undeclaredTransportPair && wrapper.hasExactlyOneVisiblePair(body)
+                    undeclaredDuplicate && wrapper.hasExactlyOneVisiblePair(body)
                 ) projectedDuplicateOpenings += wrapper.opening
             }
         }
@@ -509,6 +500,9 @@ object NarrativeHistoryEcho {
             val replyFormat = if (activeTemplates.isEmpty()) formatOutput else {
                 formatOutput.copy(declaredOpenings = formatOutput.declaredOpenings + activeTemplates)
             }
+            if (text !in authoredPairs && replyFormat.declaredOpenings.none(text::startsWith)) {
+                projectedBodies[text]?.let { return it }
+            }
             val reply = withoutEchoedHeading(text, headings, provisional, ::isAuthoredHeading)
             val body = text.substring(reply.body)
             val preservedPrefix = text.substring(0, reply.prefixEnd)
@@ -521,8 +515,7 @@ object NarrativeHistoryEcho {
             }
             val cleaned = cleanCompletedBody(
                 body, replyFormat, interrupted, lengths, streaming, projectedDuplicateOpenings,
-                projectedInnerOpenings = projectedInnerOpenings,
-                projectedPaddedFrames = projectedPaddedFrames,
+                projectedLegacyInners = projectedLegacyInners, projectedBodies = projectedBodies,
                 allowedOpenings = projectedOpenings + formatOutput.counterexampleOpenings + supersededOpenings,
                 literalOutput = currentLiteralOutput.copy(pairs = authoredPairs),
                 trailerHeadings = headings,
@@ -1351,8 +1344,8 @@ object NarrativeHistoryEcho {
         partLengths: List<Int>,
         streaming: Boolean,
         projectedDuplicateOpenings: Set<String> = emptySet(),
-        projectedInnerOpenings: Map<String, Set<String>> = emptyMap(),
-        projectedPaddedFrames: Set<String> = emptySet(),
+        projectedLegacyInners: Set<String> = emptySet(),
+        projectedBodies: Map<String, String> = emptyMap(),
         allowedOpenings: Set<String>? = null,
         repairProtectedClosings: Map<String, Set<String>> = emptyMap(),
         literalOutput: LiteralOutput = LiteralOutput(),
@@ -1364,8 +1357,7 @@ object NarrativeHistoryEcho {
         fun clean(part: String, requirePair: Boolean = false) = cleanReply(
             part, streaming, interrupted, requirePair = requirePair, formatOutput = formatOutput,
             projectedDuplicateOpenings = projectedDuplicateOpenings,
-            projectedInnerOpenings = projectedInnerOpenings,
-            projectedPaddedFrames = projectedPaddedFrames,
+            projectedLegacyInners = projectedLegacyInners, projectedBodies = projectedBodies,
             allowedOpenings = allowedOpenings, repairProtectedClosings = repairProtectedClosings,
             literalOutput = literalOutput, trailerHeadings = trailerHeadings,
             cleanExposedBody = cleanExposedBody,
@@ -1384,8 +1376,8 @@ object NarrativeHistoryEcho {
             // including when the format card reserves the matching outer wrapper.
             val wholeReply = cleanReply(
                 text, streaming, interrupted, requirePair = true, formatOutput = formatOutput,
-                projectedDuplicateOpenings = projectedDuplicateOpenings, projectedInnerOpenings = projectedInnerOpenings,
-                projectedPaddedFrames = projectedPaddedFrames,
+                projectedDuplicateOpenings = projectedDuplicateOpenings,
+                projectedLegacyInners = projectedLegacyInners, projectedBodies = projectedBodies,
                 allowedOpenings = allowedOpenings, repairProtectedClosings = repairProtectedClosings,
                 literalOutput = literalOutput, trailerHeadings = trailerHeadings,
                 cleanExposedBody = cleanExposedBody,
@@ -1440,8 +1432,7 @@ object NarrativeHistoryEcho {
                         section, streaming, interrupted,
                         requirePair = requireSectionPair, formatOutput = formatOutput,
                         projectedDuplicateOpenings = projectedDuplicateOpenings,
-                        projectedInnerOpenings = projectedInnerOpenings,
-                        projectedPaddedFrames = projectedPaddedFrames,
+                        projectedLegacyInners = projectedLegacyInners, projectedBodies = projectedBodies,
                         allowedOpenings = allowedOpenings,
                         repairProtectedClosings = repairProtectedClosings,
                         literalOutput = literalOutput, trailerHeadings = trailerHeadings,
@@ -1509,10 +1500,17 @@ object NarrativeHistoryEcho {
                             val explicitExample = followsExampleLead || explainsPreviousExample(last + 1) ||
                                 isBoundedLogQuotation(first, last)
                             val ambiguousContinuation = if (!explicitExample && last < parts.lastIndex) {
-                                // A standalone marker at the end of a call establishes the boundary.
-                                val following = cleanParts(last + 1, last + 1, followsClosedWrapper = true)
-                                !following.matchedOuterPair && !following.couldSpanToolCalls &&
-                                    !endsWithStandaloneClosing(text.substring(parts[last]))
+                                val closingOffset = standaloneClosingOffset(text.substring(parts[last]))
+                                if (closingOffset == null) {
+                                    val following = cleanParts(last + 1, last + 1, followsClosedWrapper = true)
+                                    !following.matchedOuterPair && !following.couldSpanToolCalls
+                                } else {
+                                    // A tool boundary supplies no evidence that the joined list has ended.
+                                    val nextLine = parts[last + 1].first
+                                    joinedLiterals.isLazyListItemLine(parts[last].first + closingOffset) &&
+                                        nextLine in joinedLiterals.listItemLineStarts &&
+                                        text.getOrNull(nextLine)?.isHorizontalPadding() == true
+                                }
                             } else false
                             cleaned = if (explicitExample || ambiguousContinuation || grouped.preservedLiteralExample) {
                                 CleanedReply(text.substring(parts[first].first, parts[last].last + 1))
@@ -1647,8 +1645,8 @@ object NarrativeHistoryEcho {
         requirePair: Boolean = false,
         formatOutput: FormatOutput = FormatOutput(),
         projectedDuplicateOpenings: Set<String> = emptySet(),
-        projectedInnerOpenings: Map<String, Set<String>> = emptyMap(),
-        projectedPaddedFrames: Set<String> = emptySet(),
+        projectedLegacyInners: Set<String> = emptySet(),
+        projectedBodies: Map<String, String> = emptyMap(),
         isJoinedLiteral: ((index: Int, opening: Boolean) -> Boolean)? = null,
         allowedOpenings: Set<String>? = null,
         repairProtectedClosings: Map<String, Set<String>> = emptyMap(),
@@ -1691,6 +1689,9 @@ object NarrativeHistoryEcho {
             return CleanedReply(text)
         }
         if (isJoinedLiteral?.invoke(openingStart, true) == true) return CleanedReply(text)
+        if (wrapper.opening !in formatOutput.declaredOpenings && text !in literalOutput.pairs) {
+            projectedBodies[text]?.let { return CleanedReply(it, matchedOuterPair = true) }
+        }
         val afterOpening = start.substring(wrapper.opening.length)
         val openingLineBreak = afterOpening.wrapperLineBreak(0)
         val openerOnOwnLine = openingLineBreak != null
@@ -1802,7 +1803,7 @@ object NarrativeHistoryEcho {
 
         fun removeInnerTransport(inner: String, requireInnerPair: Boolean): String {
             val witnessedInner = if (witnessedDoubleTransport) wrapper else wrappers.firstOrNull {
-                it.opening in projectedInnerOpenings[wrapper.opening].orEmpty() &&
+                it == legacyWrapper && wrapper.opening in projectedLegacyInners &&
                     it.opening !in formatOutput.declaredOpenings &&
                     openerOnOwnLine &&
                     (if (requireInnerPair) it.isStandalonePair(inner) else
@@ -1844,15 +1845,9 @@ object NarrativeHistoryEcho {
                 }
             ) return CleanedReply(text)
             if (afterClosing == end.length) {
-                // The exact sent projection identifies its two framing LF bytes. Its original
-                // body padding, including line breaks or Markdown hard-break spaces, is content.
-                val before = if (text in projectedPaddedFrames) {
-                    text.substring(openingStart + wrapper.opening.length + 1, bodyStart + position - 1)
-                } else bodyBeforeClose(position)
-                return CleanedReply(
-                    leadingContent + cleanExposedBody(removeInnerTransport(before, requireInnerPair = true)),
-                    matchedOuterPair = true,
-                )
+                val content = projectedBodies[text] ?:
+                    cleanExposedBody(removeInnerTransport(bodyBeforeClose(position), requireInnerPair = true))
+                return CleanedReply(leadingContent + content, matchedOuterPair = true)
             }
             val tail = headingAfterClose(afterClosing)?.let { heading ->
                 body.substring(afterClosing, heading.first).trimEnd('\r', '\n') + body.substring(heading.last + 1)
@@ -2164,10 +2159,10 @@ object NarrativeHistoryEcho {
         return position - start <= 3 && (start until position).all { text[it] == ' ' }
     }
 
-    private fun endsWithStandaloneClosing(text: String): Boolean {
+    private fun standaloneClosingOffset(text: String): Int? {
         val end = text.trimEnd()
         val offset = end.lastIndexOf('<')
-        return hasMarkerPadding(end, offset) && end.substring(offset) in wrapperClosings
+        return offset.takeIf { hasMarkerPadding(end, it) && end.substring(it) in wrapperClosings }
     }
 
     /** Closed comments hidden in the bubble. Code and escaped comment openers are literal. */

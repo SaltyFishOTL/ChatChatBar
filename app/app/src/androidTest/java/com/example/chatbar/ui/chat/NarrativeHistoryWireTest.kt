@@ -69,6 +69,7 @@ class NarrativeHistoryWireTest {
         DOCUMENTARY_FORMAT, BOUNDED_LOG_QUOTATION, BRACE_SLOT_TEMPLATE, QUOTED_POSSESSIVE,
         SUPPLEMENTARY_TEMPLATE, UNSENT_GREETING_CARD, PARAGRAPH_QUOTE, GERMAN_QUOTE, PLAYER_TEMPLATE, PARTIAL_OUTER_CLOSE,
         COMMON_OUTPUT_TEMPLATE, AUTHOR_SUPPLEMENTARY_TITLE, OLD_TEMPLATE_NO_XML,
+        PROJECTED_RAW_INNER, PROJECTED_EXACT_BYTES, AMBIGUOUS_TOOL_LIST,
     }
     private enum class RepairSecondCall { COMPLETE, INCOMPLETE, MALFORMED, GAP }
     private enum class RepairOrphan {
@@ -306,6 +307,18 @@ class NarrativeHistoryWireTest {
         verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = LiteralCase.OLD_TEMPLATE_NO_XML)
     }
 
+    @Test fun generatedProjectionPreservesRawInnerAndExactOriginalWhitespaceOnDisk() = runBlocking {
+        for (literal in listOf(LiteralCase.PROJECTED_RAW_INNER, LiteralCase.PROJECTED_EXACT_BYTES)) {
+            verifyReply(Transport.ORDINARY, stop = true, literal = literal)
+            verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = literal)
+        }
+    }
+
+    @Test fun ambiguousListStaysIntactOnActualToolStopAndDone() = runBlocking {
+        verifyReply(Transport.EXPERIMENTAL_TOOL, stop = true, literal = LiteralCase.AMBIGUOUS_TOOL_LIST)
+        verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = LiteralCase.AMBIGUOUS_TOOL_LIST)
+    }
+
     @Test fun stopPersistsTwoCompleteToolCallsWhileTheProviderTerminalIsHeld() = runBlocking {
         verifyReply(Transport.EXPERIMENTAL_TOOL, stop = true, stopAfterCompleteToolCalls = true)
     }
@@ -394,7 +407,13 @@ class NarrativeHistoryWireTest {
     ): ReplyFixture {
         val cardName = "Synthetic narrative wire"
         val mode = if (stop && legacyFirst == null) ChatNarrativeMode.FOCUS else ChatNarrativeMode.ADVANCE
-        val prior = if (literal == LiteralCase.ADJACENT_AUTHORED) "旧文。" else "Previous synthetic scene."
+        val otherMode = ChatNarrativeMode.entries.first { it != mode }
+        val prior = when (literal) {
+            LiteralCase.ADJACENT_AUTHORED -> "旧文。"
+            LiteralCase.PROJECTED_RAW_INNER -> PromptTemplates.narrativeModeHistoryReply("Earlier literal example.", otherMode)
+            LiteralCase.PROJECTED_EXACT_BYTES -> "A hard break  \r\n    An indented line.  "
+            else -> "Previous synthetic scene."
+        }
         val rebuildInitial = literal == LiteralCase.UNSENT_GREETING_CARD
         val includePrior = literal != LiteralCase.CARD_ORPHAN_NO_HISTORY && !rebuildInitial
         val prose = when (literal) {
@@ -404,8 +423,11 @@ class NarrativeHistoryWireTest {
         }
         val template = PromptTemplates.narrativeModeHistoryReply("[story]", mode).prependIndent("> ")
         val framedReply = PromptTemplates.narrativeModeHistoryReply(prose, mode)
+        val projectedInner = PromptTemplates.narrativeModeHistoryReply(prose, otherMode)
         val opener = framedReply.substringBefore('\n')
         val closing = framedReply.substringAfterLast('\n')
+        val lazyListIntro = "- Here is the example"
+        val lazyListParts = listOf("$opener\n$lazyListIntro", closing, "  It is an example.", closing)
         val exactInlineCopy = "$opener\n例子$closing"
         val exactCopyWithInlineCode = "$opener\nThe closing-tag token is `$closing`.\n$closing"
         val sameLineCopyWithInlineCode = "${opener}Use `$closing` here$closing"
@@ -529,6 +551,9 @@ class NarrativeHistoryWireTest {
             LiteralCase.SUPPLEMENTARY_TEMPLATE, LiteralCase.UNSENT_GREETING_CARD, LiteralCase.PLAYER_TEMPLATE,
             LiteralCase.COMMON_OUTPUT_TEMPLATE, LiteralCase.OLD_TEMPLATE_NO_XML -> framedReply
             LiteralCase.AUTHOR_SUPPLEMENTARY_TITLE -> "$modeHeading\n$prose"
+            LiteralCase.PROJECTED_RAW_INNER -> PromptTemplates.narrativeModeHistoryReply(projectedInner, mode)
+            LiteralCase.PROJECTED_EXACT_BYTES -> PromptTemplates.narrativeModeHistoryReply(prior, mode)
+            LiteralCase.AMBIGUOUS_TOOL_LIST -> lazyListParts.joinToString("\n")
             LiteralCase.PARTIAL_OUTER_CLOSE -> "$opener\n$prose\n</历史回"
             LiteralCase.PARAGRAPH_QUOTE -> PromptTemplates.narrativeModeHistoryReply(paragraphQuote(closing), mode)
             LiteralCase.GERMAN_QUOTE -> PromptTemplates.narrativeModeHistoryReply(germanQuote(closing), mode)
@@ -549,6 +574,7 @@ class NarrativeHistoryWireTest {
             toolIndexes != null -> toolIndexes.map { if (it == 0) prose else disconnectedText }
             literal == LiteralCase.TOOL_SPLIT_CAPTION -> listOf(splitCaption, closing)
             literal == LiteralCase.BOUNDED_LOG_QUOTATION -> listOf(quoteLead, framedReply, quoteTail)
+            literal == LiteralCase.AMBIGUOUS_TOOL_LIST -> lazyListParts
             stopAfterCompleteToolCalls -> listOf("$opener\n$prose", "$secondScene\n$closing")
             continuation != null -> listOf(
                 reply.substringBeforeLast('\n'), "$secondScene\n${reply.substringAfterLast('\n')}", continuation,
@@ -562,6 +588,8 @@ class NarrativeHistoryWireTest {
             literal == LiteralCase.CAPTIONED_CLOSE || literal == LiteralCase.CHARACTER_TAIL_CLOSE -> captionedExample
             literal == LiteralCase.LAZY_QUOTE_CLOSE -> lazyQuoteExample
             literal == LiteralCase.ORDINARY_CAPTIONED_CLOSE -> ordinaryCaptionedBody
+            literal == LiteralCase.PROJECTED_RAW_INNER -> projectedInner
+            literal == LiteralCase.PROJECTED_EXACT_BYTES -> prior
             literal == LiteralCase.QUOTED_POSSESSIVE -> possessiveBody
             literal == LiteralCase.PARAGRAPH_QUOTE -> paragraphQuote(closing)
             literal == LiteralCase.GERMAN_QUOTE -> germanQuote(closing)
@@ -578,13 +606,15 @@ class NarrativeHistoryWireTest {
         }
         val modelName = "Synthetic narrative wire ${transport.name}"
         val reasoningWitness = "Provider has sent every synthetic call.".takeIf {
-            stopAfterCompleteToolCalls || literal == LiteralCase.TOOL_SPLIT_CAPTION || literal == LiteralCase.BOUNDED_LOG_QUOTATION
+            stopAfterCompleteToolCalls || literal == LiteralCase.TOOL_SPLIT_CAPTION ||
+                literal == LiteralCase.BOUNDED_LOG_QUOTATION || literal == LiteralCase.AMBIGUOUS_TOOL_LIST
         }
         // Experimental live preview initially carries the first tool call only.
         val preview = when {
             toolIndexes != null -> prose
             literal == LiteralCase.TOOL_SPLIT_CAPTION -> splitCaption
             literal == LiteralCase.BOUNDED_LOG_QUOTATION -> quoteLead
+            literal == LiteralCase.AMBIGUOUS_TOOL_LIST -> lazyListIntro
             continuation != null || stopAfterCompleteToolCalls -> prose
             else -> expected
         }
