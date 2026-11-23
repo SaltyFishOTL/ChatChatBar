@@ -295,6 +295,7 @@ class ExperimentalToolTransportTest {
         previousAssistant: ChatMessage? = null,
         narrativeModesEnabled: Boolean = true,
         issueRoutineHistoryHeading: Boolean = false,
+        checkHeldStop: Boolean = false,
     ): String {
         val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.FOCUS.takeIf { narrativeModesEnabled }, formatCard)
         val request = messages.toMutableList()
@@ -318,9 +319,32 @@ class ExperimentalToolTransportTest {
         formatCard?.let {
             request.add(1, ChatApiMessage.text("system", PromptTemplates.currentTurnOutputRequirementsSystemPrompt(it, 300)))
         }
-        val response = sse(parts.mapIndexed { index, part ->
+        val frames = parts.mapIndexed { index, part ->
             chunk(buildJsonObject { put("content", part) }.toString(), "game_content", index = index)
-        } + listOf(chunk(reason = "tool_calls"), "[DONE]"))
+        }
+        val terminal = listOf(chunk(reason = "tool_calls"), "[DONE]")
+        if (checkHeldStop) {
+            val witness = """{"choices":[{"delta":{"reasoning_content":"All calls sent."}}]}"""
+            GatedExperimentalResponse(sse(frames + witness), sse(terminal)).use { server ->
+                var reader: (() -> List<String>)? = null
+                val visible = StringBuilder()
+                val last = withTimeout(5_000) {
+                    service().streamChat("grouped-tool-echo-stop", request, model(server.baseUrl),
+                        onToolReplyPrefixReader = { reader = it },
+                    ).onEach { if (it is StreamEvent.Delta) visible.append(it.text) }.first { it is StreamEvent.ReasoningDelta }
+                }
+                assertEquals(StreamEvent.ReasoningDelta("All calls sent."), last)
+                assertEquals(parts.first(), visible.toString())
+                assertFalse(server.tailSent)
+                val buffered = requireNotNull(reader).invoke()
+                assertEquals(parts, buffered)
+                val joined = buffered.joinToString("\n")
+                val lengths = buffered.map(String::length)
+                assertEquals("Joined incremental Preview", expected, cleanup.streamingPreview().appendedBody(joined, 0, lengths))
+                assertEquals("Held Stop", expected, cleanup.completedBody(joined, interrupted = true, partLengths = lengths))
+            }
+        }
+        val response = sse(frames + terminal)
         return TaskResponseServer(response, "text/event-stream").use { server ->
             var completion: ChatReplyCompletion? = null
             val events = withTimeout(5_000) {
@@ -4517,6 +4541,109 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `a complete mode block split across buffered calls disappears without shifting the prose parts`() = runBlocking {
+        val first = "The old sail caught the wind.  \r\n    A dark bow."
+        val next = "    The boat stayed close to shore."
+        val expected = "$first\n$next"
+        for (mode in ChatNarrativeMode.entries) {
+            val other = ChatNarrativeMode.entries.first { it != mode }
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Earlier it was snowing.").copy(narrativeMode = mode)
+            val issued = listOf(
+                PromptTemplates.narrativeModeSystemPrompt(mode),
+                PromptTemplates.narrativeModeTailSystemPrompt(mode, other),
+            )
+            for (modeBlock in issued) {
+                val lines = modeBlock.lines()
+                val head = lines.take(2).joinToString("\n")
+                val tail = lines.drop(2).joinToString("\n")
+                val parts = listOf("$first\n$head", "$tail\n$next")
+                val done = assertMultipartNarrativeReply(
+                    parts, expected, narrativePrompt = modeBlock, previousAssistant = prior, checkHeldStop = true,
+                )
+                val third = "A last independent scene followed."
+                val secondProse = "The crew lowered the sail."
+                val separatelyFramed = PromptTemplates.narrativeModeHistoryReply(third, mode)
+                assertMultipartNarrativeReply(
+                    listOf(parts.first(), "$tail\n$secondProse", separatelyFramed), "$first\n$secondProse\n$third",
+                    narrativePrompt = modeBlock, previousAssistant = prior,
+                )
+                for (literal in listOf(
+                    listOf("$first\n~~~text\n$head", "$tail\n~~~\n$next"),
+                    listOf("$first\n" + head.prependIndent("> "), tail.prependIndent("> ") + "\n\n$next"),
+                    listOf("$first\nThe plaque quoted these rules:\n$head", "$tail\n$next"),
+                )) {
+                    assertMultipartNarrativeReply(
+                        literal, literal.joinToString("\n"), narrativePrompt = modeBlock, previousAssistant = prior,
+                    )
+                }
+                val raw = parts.joinToString("\n")
+                assertMultipartNarrativeReply(
+                    parts, raw, narrativePrompt = modeBlock, previousAssistant = prior,
+                    userText = "Copy this text verbatim:\n$raw",
+                )
+                val variant = "A genuine line that differs from the dispatched instruction."
+                assertMultipartNarrativeReply(
+                    listOf("$first\n$head", "$variant\n$next"), "$first\n$variant\n$next",
+                    narrativePrompt = modeBlock, previousAssistant = prior,
+                )
+                val message = ChatMessage.create("fixture", MessageRole.ASSISTANT, done).copy(narrativeMode = mode)
+                val reloaded = Json.decodeFromString(ChatMessage.serializer(), Json.encodeToString(ChatMessage.serializer(), message))
+                assertEquals(expected, reloaded.displayContent)
+                val following = "The sailor tightened the knot."
+                assertNarrativeReplyDeltas(
+                    listOf(following), listOf(following), following, previousAssistant = reloaded,
+                    currentUserText = "Continue.", experimental = true, toolCall = true,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `a dispatched explicit WorldBook XML copy is protected without granting RAG wrapper authority`() = runBlocking {
+        val copyBody = "The copied inscription reads: do not ring twice."
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "They passed the first watchtower.").copy(narrativeMode = mode)
+            val pair = PromptTemplates.narrativeModeHistoryReply(copyBody, mode)
+            val directive = "Copy the following XML exactly:\n$pair"
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                for ((entry, rag, user) in listOf(
+                    Triple(directive, null, "Continue without the keyword."),
+                    Triple("The log quotes a sample below:\n$pair", null, "Check the sigil."),
+                    Triple(null, directive, "Check the sigil."),
+                )) {
+                    assertNarrativeReplyDeltas(
+                        listOf(pair), listOf(copyBody), copyBody, previousAssistant = prior, currentUserText = user,
+                        worldBookEntry = entry, ragReferenceText = rag, experimental = experimental, toolCall = toolCall,
+                        requestNarrativeMode = mode,
+                    )
+                }
+                for ((core, player) in listOf(directive to null, null to directive)) {
+                    assertNarrativeReplyDeltas(
+                        listOf(pair), listOf(pair), pair, previousAssistant = prior, currentUserText = "Continue.",
+                        characterCoreInstructions = core, playerOverride = player, experimental = experimental, toolCall = toolCall,
+                        requestNarrativeMode = mode,
+                    )
+                }
+                val prefix = pair.substringBeforeLast('\n')
+                assertNarrativeReplyDeltas(
+                    listOf(prefix, pair.removePrefix(prefix)), listOf(prefix, pair), pair,
+                    previousAssistant = prior, currentUserText = "Check the sigil.",
+                    worldBookEntry = directive, experimental = experimental, toolCall = toolCall, requestNarrativeMode = mode,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(pair), listOf(pair), pair, previousAssistant = prior.copy(content = copyBody),
+                    currentUserText = "Check the sigil.", worldBookEntry = directive, experimental = experimental,
+                    toolCall = toolCall, requestNarrativeMode = mode,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(pair), listOf(pair), pair, fixtureHistory = false, currentUserText = "Continue.",
+                    experimental = experimental, toolCall = toolCall, requestNarrativeMode = mode,
+                )
+            }
+        }
+    }
+
+    @Test
     fun `text array SSE preserves a separate newline after the issued mode title`() = runBlocking {
         val prompt = PromptTemplates.narrativeModeSystemPrompt(ChatNarrativeMode.FOCUS)
         val title = prompt.lineSequence().first()
@@ -4777,8 +4904,9 @@ class ExperimentalToolTransportTest {
         issueRoutineHistoryHeading: Boolean = false,
         worldBookEntry: String? = null,
         ragReferenceText: String? = null,
+        requestNarrativeMode: ChatNarrativeMode = ChatNarrativeMode.ADVANCE,
     ) {
-        val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE.takeIf { narrativeModesEnabled }, formatCard)
+        val cleanup = NarrativeHistoryEcho.forRequest(requestNarrativeMode.takeIf { narrativeModesEnabled }, formatCard)
         previousUserText?.let { cleanup.recordNarrativePrompt("", it) }
         val playerSetting = playerOverride?.takeIf(String::isNotBlank) ?: globalPersona
         val card = CharacterCard.create("Gatekeeper").copy(
@@ -5384,6 +5512,35 @@ class ExperimentalToolTransportTest {
             val authored = "$first\n$withAuthoredMarker\n$last"
             assertRepairBoundaryReply(withAuthoredMarker, null, null, listOf(authored), authored, experimental, toolCall)
         }
+    }
+
+    @Test
+    fun `repair removes a split issued preamble while keeping the original authored or altered lines`() = runBlocking {
+        val original = "The door was open."
+        val first = "The ancient door stood open.  "
+        val next = "    She entered the hall."
+        val heading = "{待修复消息}"
+        val systemFirst = PromptTemplates.MESSAGE_FORMAT_REPAIR_SYSTEM_PROMPT.trim().substringBefore('。') + "。"
+        val parts = listOf("$first\n$heading", "$systemFirst\n$next")
+        val literal = "$heading\n$systemFirst"
+        assertRepairBoundaryReply(
+            "$original\n$literal", null, null, parts, parts.joinToString("\n"), experimental = true, tool = true,
+            expectedFirstPreview = parts.first(),
+        )
+        val protected = listOf("$first\n~~~text\n$heading", "$systemFirst\n~~~\n$next")
+        assertRepairBoundaryReply(
+            original, null, null, protected, protected.joinToString("\n"), experimental = true, tool = true,
+            expectedFirstPreview = protected.first(),
+        )
+        val altered = "你在日志里看到了这句校对说明。"
+        assertRepairBoundaryReply(
+            original, null, null, listOf(parts.first(), "$altered\n$next"), "$first\n$altered\n$next",
+            experimental = true, tool = true, expectedFirstPreview = first,
+        )
+        assertRepairBoundaryReply(
+            original, null, null, parts, "$first\n$next", experimental = true, tool = true,
+            expectedFirstPreview = first,
+        )
     }
 
     private suspend fun assertRepairBoundaryReply(

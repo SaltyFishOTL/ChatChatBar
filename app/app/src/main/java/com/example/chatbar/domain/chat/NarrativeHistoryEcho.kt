@@ -19,6 +19,13 @@ object NarrativeHistoryEcho {
     private data class HeadingSelection(val body: IntRange, val prefixEnd: Int = 0) {
         fun content(text: String): String = text.substring(0, prefixEnd) + text.substring(body)
     }
+    private data class DispatchReply(
+        val text: String,
+        val partLengths: List<Int>,
+        val quotedBlocks: List<IntRange> = emptyList(),
+    ) {
+        fun isQuoted(offset: Int): Boolean = quotedBlocks.any { offset in it }
+    }
     private data class LiteralMarkup(val range: IntRange, val isComment: Boolean)
     private data class LiteralOutput(
         val pairs: Set<String> = emptySet(),
@@ -382,8 +389,11 @@ object NarrativeHistoryEcho {
         fun recordDispatchedPlayerSettings(renderedSettings: String) =
             recordDispatchedEditableOutput(renderedSettings)
 
-        fun recordDispatchedWorldBookHeadings(renderedWorldBook: String) =
+        fun recordDispatchedWorldBookHeadings(renderedWorldBook: String) {
             recordAuthoredHeadingDeclarations(renderedWorldBook)
+            // A WorldBook exact-copy instruction protects the specified sample, independent of format templates.
+            if (enabled) authoredPairs += declaredUserOutput(renderedWorldBook, requireExplicitCopy = true).literal.pairs
+        }
 
         private fun recordDispatchedEditableOutput(renderedSource: String, hasCustomInstructions: Boolean = true) {
             if (!hasCustomInstructions || renderedSource.isBlank()) return
@@ -564,9 +574,13 @@ object NarrativeHistoryEcho {
                         allowPartialHeading = false,
                     )
                 }
-                val reply = removeRepairBoundary(text)
-                val body = text.substring(reply.body)
-                val lengths = if (reply.body == text.indices) partLengths else partLengths.trimTo(reply.body, text.length)
+                val prepared = if (partLengths.size > 1) {
+                    DispatchReply(text, partLengths).withoutRanges(interiorRepairEchoRanges(text, repairDispatch, provisional))
+                } else DispatchReply(text, partLengths)
+                val reply = removeRepairBoundary(prepared.text)
+                val body = prepared.text.substring(reply.body)
+                val lengths = if (reply.body == prepared.text.indices) prepared.partLengths
+                    else prepared.partLengths.trimTo(reply.body, prepared.text.length)
                 val cleaned = cleanCompletedBody(
                     body, formatOutput, interrupted, lengths, streaming, allowedOpenings = repairOpenings,
                     repairProtectedClosings = repairProtectedClosings,
@@ -576,8 +590,10 @@ object NarrativeHistoryEcho {
                     protectCaptionedPartHeading = true,
                 )
                 val repaired = if (cleaned != body) cleaned else withoutRepairOrphan(body)
-                val result = if (partLengths.size <= 1) withoutInteriorRepairEcho(repaired, repairDispatch, provisional) else repaired
-                return text.substring(0, reply.prefixEnd) + result
+                val result = if (partLengths.size <= 1) {
+                    DispatchReply(repaired, emptyList()).withoutRanges(interiorRepairEchoRanges(repaired, repairDispatch, provisional)).text
+                } else repaired
+                return prepared.text.substring(0, reply.prefixEnd) + result
             }
 
             val headings = narrativeHeadings.filterNot(::isAuthoredHeading)
@@ -600,9 +616,8 @@ object NarrativeHistoryEcho {
                 )
                 return text.substring(0, selection.prefixEnd) + removeDispatchEchoBeforeTrailer(cleaned)
             }
-            fun removeCompleteModeEchoes(body: String): String {
-                if (partLengths.size > 1) return body
-                return withoutCompleteModeEchoes(body, narrativeHeadingContinuations, provisional, ::isAuthoredHeading) { block ->
+            fun removeCompleteModeEchoes(body: String, lengths: List<Int>): DispatchReply {
+                return withoutCompleteModeEchoes(DispatchReply(body, lengths), narrativeHeadingContinuations, provisional, ::isAuthoredHeading) { block ->
                     sequenceOf(formatCard).filterNotNull().plus(authoredSources.keys.asSequence())
                         .plus(authoredModeBlockSources.asSequence()).any { source -> block in source.replace("\r\n", "\n") }
                 }
@@ -610,9 +625,9 @@ object NarrativeHistoryEcho {
             fun cleanNewSuffix(separatorAndBody: String): String {
                 val separator = paragraphBreak.matchAt(separatorAndBody, 0) ?: return separatorAndBody
                 val firstLine = separator.range.last + 1
-                val body = removeCompleteModeEchoes(separatorAndBody.substring(firstLine))
+                val body = removeCompleteModeEchoes(separatorAndBody.substring(firstLine), emptyList())
                 return separatorAndBody.substring(0, firstLine) +
-                    removeDispatchEchoBeforeTrailer(removeDispatchEcho(body).content(body))
+                    removeDispatchEchoBeforeTrailer(removeDispatchEcho(body.text, body::isQuoted).content(body.text))
             }
             if (citeLatestProjectionVerbatim) {
                 latestHistoryProjection?.let { citation ->
@@ -637,11 +652,12 @@ object NarrativeHistoryEcho {
                     }
                 }
             }
-            val input = removeCompleteModeEchoes(text)
-            val reply = removeDispatchEcho(input)
-            val body = input.substring(reply.body)
-            val preservedPrefix = input.substring(0, reply.prefixEnd)
-            val lengths = if (reply.body == input.indices) partLengths else partLengths.trimTo(reply.body, input.length)
+            val input = removeCompleteModeEchoes(text, partLengths)
+            val reply = removeDispatchEcho(input.text, input::isQuoted)
+            val body = input.text.substring(reply.body)
+            val preservedPrefix = input.text.substring(0, reply.prefixEnd)
+            val lengths = if (reply.body == input.text.indices) input.partLengths
+                else input.partLengths.trimTo(reply.body, input.text.length)
             val closings by lazy(LazyThreadSafetyMode.NONE) {
                 val cardClosings = formatCard?.let { card ->
                     wrapperClosings.filter { token -> formatOutput.counterexampleClosingStarts.any { card.startsWith(token, it) } }
@@ -662,6 +678,7 @@ object NarrativeHistoryEcho {
                 cleanPartHeading = { part: String, isJoinedLiteral: (Int) -> Boolean ->
                     removeDispatchEcho(part, isJoinedLiteral)
                 }.takeIf { headings.isNotEmpty() },
+                isQuotedModeBlock = { input.isQuoted(reply.body.first + it) },
                 cleanPartOrphan = { part, isJoinedLiteral ->
                     withoutOrphanClosing(part, closings, provisional, formatOutput, ::authoredClosingEvidence, isJoinedLiteral)
                 },
@@ -679,10 +696,11 @@ object NarrativeHistoryEcho {
     }
 
     private fun withoutCompleteModeEchoes(
-        text: String, continuations: Map<String, Set<List<String>>>, provisional: Boolean,
+        reply: DispatchReply, continuations: Map<String, Set<List<String>>>, provisional: Boolean,
         isAuthoredHeading: (String) -> Boolean, isAuthoredBlock: (String) -> Boolean,
-    ): String {
-        if (continuations.keys.none { it in text }) return text
+    ): DispatchReply {
+        val text = reply.text
+        if (continuations.keys.none { it in text }) return reply
         val literals = classifyLiterals(text, includeUnclosed = provisional)
         val removals = mutableListOf<IntRange>()
         val quotedBlocks = mutableListOf<IntRange>()
@@ -721,30 +739,23 @@ object NarrativeHistoryEcho {
                 }
             }
         }
-        if (removals.isEmpty()) return text
-        return buildString {
-            var copiedThrough = 0
-            for (range in removals.sortedBy { it.first }) {
-                if (range.first < copiedThrough || quotedBlocks.any { range.first in it }) continue
-                append(text, copiedThrough, range.first)
-                copiedThrough = range.last + 1
-            }
-            append(text, copiedThrough, text.length)
+        val unquotedEchoes = removals.filterNot { echo ->
+            quotedBlocks.any { quoted -> echo.first <= quoted.last && quoted.first <= echo.last }
         }
+        return reply.copy(quotedBlocks = quotedBlocks).withoutRanges(unquotedEchoes)
     }
 
-    private fun withoutInteriorRepairEcho(text: String, dispatch: RepairDispatch, provisional: Boolean): String {
-        val (heading, continuations) = dispatch.continuations.entries.singleOrNull() ?: return text
+    private fun interiorRepairEchoRanges(text: String, dispatch: RepairDispatch, provisional: Boolean): List<IntRange> {
+        val (heading, continuations) = dispatch.continuations.entries.singleOrNull() ?: return emptyList()
         var occurrence = text.indexOf(heading)
-        if (occurrence < 0) return text
+        if (occurrence < 0) return emptyList()
         val literals = classifyLiterals(text, includeUnclosed = provisional)
-        return buildString {
-            var copiedThrough = 0
+        return buildList {
             while (occurrence >= 0) {
                 val start = lineStart(text, occurrence)
                 val end = lineEnd(text, occurrence)
                 occurrence = text.indexOf(heading, occurrence + heading.length)
-                if (start < copiedThrough || headingText(text.substring(start, end)) != heading ||
+                if (headingText(text.substring(start, end)) != heading ||
                     !literals.isUnprotected(start) || hasOrphanClosingCaption(text, start)
                 ) continue
                 val before = previousVisibleLine(literals.markdown, start) ?: continue
@@ -760,10 +771,59 @@ object NarrativeHistoryEcho {
                 if (literals.matchesVisibleLine(after, logQuotationTail) ||
                     literals.matchesVisibleLine(after, historyExampleExplanation)
                 ) continue
-                append(text, copiedThrough, start)
-                copiedThrough = afterBlock
+                add(start until afterBlock)
+            }
+        }
+    }
+
+    private fun DispatchReply.withoutRanges(removals: List<IntRange>): DispatchReply {
+        if (removals.isEmpty()) return this
+        val originalSeparators = validatedReplyPartSeparators(text, partLengths) ?: return this
+        val cuts = mutableListOf<IntRange>()
+        for (range in removals.sortedBy { it.first }) {
+            val prior = cuts.lastOrNull()
+            if (prior != null && range.first <= prior.last + 1) {
+                cuts[cuts.lastIndex] = prior.first..maxOf(prior.last, range.last)
+            } else cuts += range
+        }
+        fun mappedOffset(offset: Int): Int = offset - cuts.sumOf { if (it.last < offset) it.last - it.first + 1 else 0 }
+        val body = buildString {
+            var copiedThrough = 0
+            for (cut in cuts) {
+                append(text, copiedThrough, cut.first)
+                copiedThrough = cut.last + 1
             }
             append(text, copiedThrough, text.length)
+        }
+        val separators = originalSeparators.toMutableSet()
+        for (cut in cuts) {
+            // If an echo consumes the join between calls, use the surviving line break before
+            // the echo as the join. Preserve that break's bytes, including a preceding CR.
+            if (originalSeparators.any { it in cut } && text.getOrNull(cut.first - 1) == '\n') {
+                separators += cut.first - 1
+            }
+        }
+        val retainedSeparators = separators.filterNot { offset -> cuts.any { offset in it } }.sorted().map(::mappedOffset)
+        val lengths = if (retainedSeparators.isEmpty()) emptyList() else {
+            (listOf(-1) + retainedSeparators + body.length).zipWithNext { start, end -> end - start - 1 }
+        }
+        return DispatchReply(body, lengths, quotedBlocks.map { mappedOffset(it.first)..mappedOffset(it.last) })
+    }
+
+    private fun validatedReplyPartSeparators(text: String, lengths: List<Int>): List<Int>? {
+        if (lengths.size <= 1) return emptyList()
+        var offset = 0
+        return buildList {
+            for ((index, length) in lengths.withIndex()) {
+                if (length < 0 || length > text.length - offset) return null
+                offset += length
+                if (index == lengths.lastIndex) {
+                    if (offset != text.length) return null
+                } else {
+                    if (text.getOrNull(offset) != '\n') return null
+                    add(offset++)
+                }
+            }
         }
     }
 
@@ -1694,6 +1754,7 @@ object NarrativeHistoryEcho {
         cleanExposedBody: (String) -> String = { it },
         cleanPartHeading: ((String, (Int) -> Boolean) -> HeadingSelection)? = null,
         protectCaptionedPartHeading: Boolean = false,
+        isQuotedModeBlock: (Int) -> Boolean = { false },
         cleanPartOrphan: ((String, (Int) -> Boolean) -> String)? = null,
     ): String {
         fun clean(part: String, requirePair: Boolean = false) = cleanReply(
@@ -1795,7 +1856,7 @@ object NarrativeHistoryEcho {
                 }
                 if (first == last && !requirePair && cleaned.body == part) {
                     val selection = cleanPartHeading?.invoke(part) {
-                        isJoinedLiteral(it, true) || joinedLiterals.followsLiteralHeadingLead(start + it) ||
+                        isQuotedModeBlock(start + it) || isJoinedLiteral(it, true) || joinedLiterals.followsLiteralHeadingLead(start + it) ||
                             protectCaptionedPartHeading && hasOrphanClosingCaption(text, start + it, before = start)
                     } ?: HeadingSelection(part.indices)
                     val body = part.substring(selection.body)

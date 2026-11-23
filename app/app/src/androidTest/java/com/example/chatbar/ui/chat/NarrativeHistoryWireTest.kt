@@ -78,12 +78,14 @@ class NarrativeHistoryWireTest {
         DISABLED_HISTORY_HEADING, DISABLED_UNSENT_HEADING, DISABLED_AUTHORED_HEADING, DISABLED_LITERAL_XML, REQUESTED_CITATION_TAGS_LAST,
         DISABLED_MIDDLE_TOOL_HEADING, WORLDBOOK_AUTHORED_HEADING, WORLDBOOK_INCIDENTAL_HEADING,
         FULL_MODE_BLOCK_INTERIOR, FULL_MODE_BLOCK_THEN_AUTHORED_TITLE,
+        SPLIT_MODE_BLOCK, WORLDBOOK_EXACT_XML,
     }
     private enum class RepairSecondCall { COMPLETE, INCOMPLETE, MALFORMED, GAP }
     private enum class RepairOrphan {
         FIRST, SECOND_AFTER_FULL_FRAME, SPLIT_CAPTION, VISIBLE_INPUT_LITERAL, VISIBLE_INPUT_BLOCKQUOTE, AUTHORED_CLOSE_EXTRA,
         EXPLICIT_STANDALONE_PROHIBITION, QUOTED_POSSESSIVE, PARAGRAPH_QUOTE, GERMAN_QUOTE, INDENTED_REPAIR_CARD,
         DISPATCHED_BOUNDARIES, AUTHORED_BOUNDARY, SYSTEM_PREAMBLE, AUTHORED_SYSTEM_PREAMBLE, INTERIOR_SYSTEM_PREAMBLE,
+        SPLIT_SYSTEM_PREAMBLE,
     }
 
     @Before fun prepareSyntheticApplication() = runBlocking {
@@ -395,6 +397,13 @@ class NarrativeHistoryWireTest {
         }
     }
 
+    @Test fun validatedCallsAndAuthoredWorldBookXmlPreserveTheColdReply() = runBlocking {
+        verifyReply(Transport.EXPERIMENTAL_TOOL, stop = true, literal = LiteralCase.SPLIT_MODE_BLOCK)
+        verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = LiteralCase.SPLIT_MODE_BLOCK)
+        verifyReply(Transport.ORDINARY, stop = true, literal = LiteralCase.WORLDBOOK_EXACT_XML)
+        verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = LiteralCase.WORLDBOOK_EXACT_XML)
+    }
+
     @Test fun stopPersistsTwoCompleteToolCallsWhileTheProviderTerminalIsHeld() = runBlocking {
         verifyReply(Transport.EXPERIMENTAL_TOOL, stop = true, stopAfterCompleteToolCalls = true)
     }
@@ -424,6 +433,11 @@ class NarrativeHistoryWireTest {
     @Test fun actualSinglePartRepairKeepsRevisedProseOnEachSideOfAnInteriorEcho() = runBlocking {
         verifyRepair(Transport.ORDINARY, stop = true, orphan = RepairOrphan.INTERIOR_SYSTEM_PREAMBLE)
         verifyRepair(Transport.EXPERIMENTAL_TOOL, stop = false, orphan = RepairOrphan.INTERIOR_SYSTEM_PREAMBLE)
+    }
+
+    @Test fun splitRepairPreambleLeavesBothValidatedProsePartsInColdStorage() = runBlocking {
+        verifyRepair(Transport.EXPERIMENTAL_TOOL, stop = true, orphan = RepairOrphan.SPLIT_SYSTEM_PREAMBLE)
+        verifyRepair(Transport.EXPERIMENTAL_TOOL, stop = false, orphan = RepairOrphan.SPLIT_SYSTEM_PREAMBLE)
     }
 
     @Test fun actualRepairStopKeepsInvalidOrNoncontiguousSecondCallsOutOfColdStorage() = runBlocking {
@@ -557,18 +571,20 @@ class NarrativeHistoryWireTest {
         val sentModeBlock = when (literal) {
             LiteralCase.SENT_CORE_ECHO, LiteralCase.NEGATIVE_MODE_HEADING -> modePrompt
             LiteralCase.SENT_SWITCH_ECHO, LiteralCase.SENT_COMPLETE_MODE_SWITCH, LiteralCase.FULL_MODE_BLOCK_INTERIOR,
-            LiteralCase.FULL_MODE_BLOCK_THEN_AUTHORED_TITLE,
+            LiteralCase.FULL_MODE_BLOCK_THEN_AUTHORED_TITLE, LiteralCase.SPLIT_MODE_BLOCK,
             LiteralCase.SENT_MODE_SUFFIX, LiteralCase.SENT_SWITCH_SUFFIX -> modeTail
             else -> null
         }?.let {
             if (literal in setOf(LiteralCase.SENT_COMPLETE_MODE_SWITCH, LiteralCase.FULL_MODE_BLOCK_INTERIOR,
-                    LiteralCase.FULL_MODE_BLOCK_THEN_AUTHORED_TITLE)) it else it.lineSequence().take(2).joinToString("\n")
+                    LiteralCase.FULL_MODE_BLOCK_THEN_AUTHORED_TITLE, LiteralCase.SPLIT_MODE_BLOCK)) it
+            else it.lineSequence().take(2).joinToString("\n")
         }
         val modeTailTitle = modeTail.lineSequence().first()
         val routineHistoryHeading = PromptTemplates.sectionHeading(PromptTemplates.SECTION_PREVIOUS_TURN)
         val worldBookEntryText = when (literal) {
             LiteralCase.WORLDBOOK_AUTHORED_HEADING -> "Please start each reply with this literal heading verbatim:\n$routineHistoryHeading"
             LiteralCase.WORLDBOOK_INCIDENTAL_HEADING -> "The archive labels its earliest shelf $routineHistoryHeading."
+            LiteralCase.WORLDBOOK_EXACT_XML -> "Copy the following XML exactly:\n$framedReply"
             else -> null
         }
         val sentRoutineHistoryHeading = when (literal) {
@@ -731,6 +747,8 @@ class NarrativeHistoryWireTest {
             LiteralCase.DISABLED_LITERAL_XML -> framedReply
             LiteralCase.FULL_MODE_BLOCK_INTERIOR -> "$prose\n$sentModeBlock\nShe took a lantern."
             LiteralCase.FULL_MODE_BLOCK_THEN_AUTHORED_TITLE -> "$sentModeBlock\n\n$modeTailTitle\n$prose"
+            LiteralCase.SPLIT_MODE_BLOCK -> "$prose\n$sentModeBlock"
+            LiteralCase.WORLDBOOK_EXACT_XML -> framedReply
             LiteralCase.PROJECTED_SUFFIX_HEADING -> historyCitation + newStorySuffix + "\n" + modeTail.lineSequence().first()
             LiteralCase.NEGATIVE_MODE_HEADING -> "$modeHeading\n$prose"
             LiteralCase.EXACT_FORMAT_BOUNDARIES -> framedReply
@@ -752,6 +770,13 @@ class NarrativeHistoryWireTest {
         val secondScene = "A bird flies past the entrance."
         val disconnectedText = "This disconnected tool part must never be saved."
         val parts = when {
+            literal == LiteralCase.SPLIT_MODE_BLOCK -> {
+                val lines = checkNotNull(sentModeBlock).lines()
+                listOf(
+                    "$prose\n" + lines.take(2).joinToString("\n"),
+                    lines.drop(2).joinToString("\n") + "\n$secondScene",
+                )
+            }
             literal == LiteralCase.DISABLED_MIDDLE_TOOL_HEADING -> listOf(prose, routineHistoryHeading, secondScene)
             toolIndexes != null -> toolIndexes.map { if (it == 0) prose else disconnectedText }
             literal == LiteralCase.TOOL_SPLIT_CAPTION -> listOf(splitCaption, closing)
@@ -766,6 +791,7 @@ class NarrativeHistoryWireTest {
             else -> listOf(reply)
         }
         val expected = when {
+            literal == LiteralCase.SPLIT_MODE_BLOCK -> "$prose\n$secondScene"
             literal == LiteralCase.DISABLED_MIDDLE_TOOL_HEADING -> "$prose\n$secondScene"
             literal == LiteralCase.FULL_MODE_BLOCK_INTERIOR -> "$prose\nShe took a lantern."
             literal == LiteralCase.FULL_MODE_BLOCK_THEN_AUTHORED_TITLE -> "$modeTailTitle\n$prose"
@@ -802,10 +828,12 @@ class NarrativeHistoryWireTest {
         val reasoningWitness = "Provider has sent every synthetic call.".takeIf {
             stopAfterCompleteToolCalls || literal == LiteralCase.TOOL_SPLIT_CAPTION ||
                 literal == LiteralCase.BOUNDED_LOG_QUOTATION || literal == LiteralCase.AMBIGUOUS_TOOL_LIST ||
+                literal == LiteralCase.SPLIT_MODE_BLOCK ||
                 literal == LiteralCase.PROJECTED_PREFIX_NEW_STORY && transport == Transport.EXPERIMENTAL_TOOL
         }
         // Experimental live preview initially carries the first tool call only.
         val preview = when {
+            literal == LiteralCase.SPLIT_MODE_BLOCK -> prose
             literal == LiteralCase.DISABLED_MIDDLE_TOOL_HEADING -> prose
             toolIndexes != null -> prose
             literal == LiteralCase.TOOL_SPLIT_CAPTION -> splitCaption
@@ -1180,6 +1208,7 @@ class NarrativeHistoryWireTest {
             RepairOrphan.AUTHORED_SYSTEM_PREAMBLE -> listOf("$messageBoundary\n$first")
             RepairOrphan.INTERIOR_SYSTEM_PREAMBLE ->
                 listOf("A repaired first line.\n$messageBoundary\n$repairSentence\n$repairSecondProse")
+            RepairOrphan.SPLIT_SYSTEM_PREAMBLE -> listOf("$first\n$messageBoundary", "$repairSentence\n$second")
             null -> if (tool) listOf(first, second) else listOf(first)
         }
         val formatCard = orphan?.let {
@@ -1191,7 +1220,7 @@ class NarrativeHistoryWireTest {
                 RepairOrphan.INDENTED_REPAIR_CARD -> "    以下是禁止输出的反例：\n$sample  \n"
                 RepairOrphan.DISPATCHED_BOUNDARIES, RepairOrphan.AUTHORED_BOUNDARY,
                 RepairOrphan.SYSTEM_PREAMBLE, RepairOrphan.AUTHORED_SYSTEM_PREAMBLE,
-                RepairOrphan.INTERIOR_SYSTEM_PREAMBLE -> "Keep all prose."
+                RepairOrphan.INTERIOR_SYSTEM_PREAMBLE, RepairOrphan.SPLIT_SYSTEM_PREAMBLE -> "Keep all prose."
                 else -> "以下是禁止输出的反例：\n$sample"
             }
             FormatCard.create("Synthetic prohibited history wrapper", instructions)
@@ -1236,7 +1265,9 @@ class NarrativeHistoryWireTest {
                 if (orphan == RepairOrphan.DISPATCHED_BOUNDARIES) {
                     assertTrue(listOf(cardBoundary, bubbleBoundary, messageBoundary).all { it in repairUser.lines() })
                 }
-                if (orphan in setOf(RepairOrphan.SYSTEM_PREAMBLE, RepairOrphan.AUTHORED_SYSTEM_PREAMBLE, RepairOrphan.INTERIOR_SYSTEM_PREAMBLE)) {
+                if (orphan in setOf(RepairOrphan.SYSTEM_PREAMBLE, RepairOrphan.AUTHORED_SYSTEM_PREAMBLE,
+                        RepairOrphan.INTERIOR_SYSTEM_PREAMBLE, RepairOrphan.SPLIT_SYSTEM_PREAMBLE)
+                ) {
                     assertTrue(messageBoundary in repairUser.lines())
                     val system = Json.parseToJsonElement(request).jsonObject.getValue("messages").jsonArray.first().jsonObject
                     assertEquals("system", system.getValue("role").jsonPrimitive.content)
