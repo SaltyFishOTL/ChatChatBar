@@ -62,10 +62,13 @@ class NarrativeHistoryWireTest {
     private enum class LiteralCase {
         OPENING, INLINE_CLOSE, INLINE_CODE_CLOSE, SAME_LINE_INLINE_CODE_CLOSE, ADJACENT_AUTHORED,
         SAME_LINE_DIRECTIVE_MULTILINE, TOOL_SPLIT_CAPTION, CARD_ORPHAN_NO_HISTORY, STRONG_SUFFIX_OPEN,
+        PADDED_OPENER, AUTHORED_CLOSE_EXTRA, HISTORICAL_TEMPLATE_PROHIBITED,
         LAZY_LIST_CLOSE, CAPTIONED_CLOSE, LAZY_QUOTE_CLOSE,
     }
     private enum class RepairSecondCall { COMPLETE, INCOMPLETE, MALFORMED, GAP }
-    private enum class RepairOrphan { FIRST, SECOND_AFTER_FULL_FRAME, SPLIT_CAPTION, VISIBLE_INPUT_LITERAL, VISIBLE_INPUT_BLOCKQUOTE }
+    private enum class RepairOrphan {
+        FIRST, SECOND_AFTER_FULL_FRAME, SPLIT_CAPTION, VISIBLE_INPUT_LITERAL, VISIBLE_INPUT_BLOCKQUOTE, AUTHORED_CLOSE_EXTRA,
+    }
 
     @Before fun prepareSyntheticApplication() = runBlocking {
         assumeTrue("Use the repository-supported isolated Android test build", BuildConfig.ISOLATED_ANDROID_TEST)
@@ -150,6 +153,21 @@ class NarrativeHistoryWireTest {
     @Test fun repairPreservesBlockquotedSourceCloserThroughStopAndColdCompletion() = runBlocking {
         verifyRepair(Transport.ORDINARY, stop = true, orphan = RepairOrphan.VISIBLE_INPUT_BLOCKQUOTE, repairMode = ChatNarrativeMode.FOCUS)
         verifyRepair(Transport.EXPERIMENTAL_TOOL, stop = false, orphan = RepairOrphan.VISIBLE_INPUT_BLOCKQUOTE, repairMode = ChatNarrativeMode.ADVANCE)
+    }
+
+    @Test fun paddedOwnLineOpenerStaysOutOfExplicitStopAndLengthColdSave() = runBlocking {
+        verifyReply(Transport.ORDINARY, stop = true, literal = LiteralCase.PADDED_OPENER)
+        verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = LiteralCase.PADDED_OPENER)
+    }
+
+    @Test fun authoredClosingOccurrenceSurvivesWhileTheExtraOrphanIsRemovedOnDisk() = runBlocking {
+        verifyReply(Transport.ORDINARY, stop = false, literal = LiteralCase.AUTHORED_CLOSE_EXTRA)
+        verifyRepair(Transport.EXPERIMENTAL_TOOL, stop = true, orphan = RepairOrphan.AUTHORED_CLOSE_EXTRA)
+    }
+
+    @Test fun currentProhibitionOverridesTheActualHistoricalUserTemplateOnDisk() = runBlocking {
+        verifyReply(Transport.ORDINARY, stop = true, literal = LiteralCase.HISTORICAL_TEMPLATE_PROHIBITED)
+        verifyReply(Transport.EXPERIMENTAL_TEXT, stop = false, literal = LiteralCase.HISTORICAL_TEMPLATE_PROHIBITED)
     }
 
     @Test fun disconnectedTerminalToolIndexesNeverPersistASuccessfulChatOrRepair() = runBlocking {
@@ -241,6 +259,11 @@ class NarrativeHistoryWireTest {
         val adjacentAuthored = "$opener\n须保留。\n$closing"
         val multilineCopy = "$opener\nKeep this exactly.\n$closing"
         val splitCaption = "The literal closing tag is:"
+        val bodyWithClosingLiteral = "屏幕显示 `$closing`。新句。"
+        val historicalTemplate = PromptTemplates.narrativeModeHistoryReply("[story]", mode)
+        val historicalUser = if (literal == LiteralCase.HISTORICAL_TEMPLATE_PROHIBITED) {
+            "Use exactly this XML shape, replace [story] with new prose and keep both tags:\n$historicalTemplate"
+        } else null
         val selectedFormatCard = when (literal) {
             LiteralCase.CARD_ORPHAN_NO_HISTORY -> {
                 val sample = PromptTemplates.narrativeModeHistoryReply("wrong", mode)
@@ -267,6 +290,8 @@ class NarrativeHistoryWireTest {
             literal == LiteralCase.ADJACENT_AUTHORED -> "Copy this verbatim:\n$adjacentAuthored"
             literal == LiteralCase.SAME_LINE_DIRECTIVE_MULTILINE -> "Copy the following text verbatim: $multilineCopy"
             literal == LiteralCase.CAPTIONED_CLOSE -> "Please show the literal closing tag only on its own line:\n$closing"
+            literal == LiteralCase.AUTHORED_CLOSE_EXTRA -> "Please preserve the literal token `$closing`."
+            literal == LiteralCase.HISTORICAL_TEMPLATE_PROHIBITED -> "Do not output the following history tags:\n$historicalTemplate"
             authorsTemplate -> "Use exactly this XML shape, replace [story] with new prose and keep both tags:\n$template"
             else -> "Continue the scene."
         }
@@ -285,6 +310,9 @@ class NarrativeHistoryWireTest {
             LiteralCase.SAME_LINE_DIRECTIVE_MULTILINE -> multilineCopy
             LiteralCase.TOOL_SPLIT_CAPTION -> "$splitCaption\n$closing"
             LiteralCase.CARD_ORPHAN_NO_HISTORY -> "$prose\n$closing"
+            LiteralCase.PADDED_OPENER -> "$opener \t\r\n$prose"
+            LiteralCase.AUTHORED_CLOSE_EXTRA -> "$bodyWithClosingLiteral\n$closing"
+            LiteralCase.HISTORICAL_TEMPLATE_PROHIBITED -> framedReply
             LiteralCase.CAPTIONED_CLOSE -> if (stop) "$opener\n$captionedExample" else "$opener\n$captionedExample\n$closing"
             LiteralCase.LAZY_QUOTE_CLOSE -> if (stop) "$opener\n$lazyQuoteExample" else "$opener\n$lazyQuoteExample\n$closing"
             LiteralCase.LAZY_LIST_CLOSE -> if (stop) "$opener\n$listBody" else PromptTemplates.narrativeModeHistoryReply(listBody, mode)
@@ -313,6 +341,8 @@ class NarrativeHistoryWireTest {
             literal == LiteralCase.LAZY_QUOTE_CLOSE -> lazyQuoteExample
             literal == LiteralCase.ADJACENT_AUTHORED -> "$prose\n$adjacentAuthored"
             literal == LiteralCase.CARD_ORPHAN_NO_HISTORY -> prose
+            literal == LiteralCase.PADDED_OPENER || literal == LiteralCase.HISTORICAL_TEMPLATE_PROHIBITED -> prose
+            literal == LiteralCase.AUTHORED_CLOSE_EXTRA -> bodyWithClosingLiteral
             legacyFirst == true -> "$legacyScene\n$prose"
             legacyFirst == false -> "$prose\n$legacyScene"
             authorsTemplate || literal != null -> reply
@@ -323,7 +353,7 @@ class NarrativeHistoryWireTest {
             stopAfterCompleteToolCalls || literal == LiteralCase.TOOL_SPLIT_CAPTION
         }
         HeldNarrativeReplyServer(parts, tool = transport == Transport.EXPERIMENTAL_TOOL, reasoningWitness = reasoningWitness,
-            toolIndexes = toolIndexes).use { server ->
+            toolIndexes = toolIndexes, finishReason = "length".takeIf { literal == LiteralCase.PADDED_OPENER }).use { server ->
             val model = ModelConfig.create(modelName, server.baseUrl, "fixture-key", "fixture-model")
             val session = ChatSession.create(card.id, modelName).copy(
                 modelId = model.id, narrativeMode = mode, longTermMemoryEnabled = false,
@@ -336,6 +366,7 @@ class NarrativeHistoryWireTest {
                 app.characterRepository.save(card)
                 selectedFormatCard?.let { app.formatCardRepository.save(it) }
                 app.chatRepository.createSession(session)
+                historicalUser?.let { app.chatRepository.addMessage(ChatMessage.create(session.id, MessageRole.USER, it)) }
                 priorLegacy?.let {
                     app.chatRepository.addMessage(ChatMessage.create(session.id, MessageRole.ASSISTANT, it).copy(narrativeMode = ChatNarrativeMode.FOCUS))
                 }
@@ -350,7 +381,7 @@ class NarrativeHistoryWireTest {
                 val vm = rule.runOnIdle {
                     ViewModelProvider(store, ChatViewModelFactory(session.id))[ChatViewModel::class.java]
                 }.also { editor = it }
-                val priorBodies = listOfNotNull(priorLegacy, prior.takeIf { includePrior })
+                val priorBodies = listOfNotNull(priorLegacy, historicalUser, prior.takeIf { includePrior })
                 rule.waitUntil(20_000) {
                     vm.isModelUsable.value && priorBodies.all { body -> vm.messages.value.any { it.displayContent == body } }
                 }
@@ -359,6 +390,7 @@ class NarrativeHistoryWireTest {
                 val messages = sentMessages(request, transport)
                 assertEquals(includePrior, messages.any { it.hasMessage("assistant", PromptTemplates.narrativeModeHistoryReply(prior, mode)) })
                 priorLegacy?.let { body -> assertTrue(messages.any { it.hasMessage("assistant", body) }) }
+                historicalUser?.let { body -> assertTrue(messages.any { it.hasMessage("user", body) }) }
                 selectedFormatCard?.let { format ->
                     assertTrue(messages.any { entry ->
                         (entry.jsonObject["content"] as? JsonPrimitive)?.content?.contains(format.content) == true
@@ -396,7 +428,11 @@ class NarrativeHistoryWireTest {
                     assertTrue(newMessages.last().startsWith("错误:"))
                     assertFalse(newMessages.last().contains(disconnectedText))
                 }
-                assertEquals(List(priorBodies.size) { MessageRole.ASSISTANT } + listOf(MessageRole.USER, MessageRole.ASSISTANT), saved.map(ChatMessage::role))
+                val savedPriorRoles = saved.take(priorBodies.size).map(ChatMessage::role)
+                val historicalUserCount = if (historicalUser == null) 0 else 1
+                assertEquals(historicalUserCount, savedPriorRoles.count { it == MessageRole.USER })
+                assertEquals(priorBodies.size - historicalUserCount, savedPriorRoles.count { it == MessageRole.ASSISTANT })
+                assertEquals(listOf(MessageRole.USER, MessageRole.ASSISTANT), saved.drop(priorBodies.size).map(ChatMessage::role))
             } finally {
                 try {
                     // The generating job, like memory maintenance, can outlive its ViewModel.
@@ -436,12 +472,14 @@ class NarrativeHistoryWireTest {
             RepairOrphan.SPLIT_CAPTION -> "End tag: &lt;/历史回复&gt;."
             RepairOrphan.VISIBLE_INPUT_LITERAL -> "结束标签示例：\n$close\n她关上门。"
             RepairOrphan.VISIBLE_INPUT_BLOCKQUOTE -> "The closing-tag example is $close."
+            RepairOrphan.AUTHORED_CLOSE_EXTRA -> "屏幕显示 `$close`。旧句。"
             else -> "旧。"
         }
         val first = when (orphan) {
             RepairOrphan.SPLIT_CAPTION -> "The literal closing tag is:"
             RepairOrphan.VISIBLE_INPUT_LITERAL -> "结束标签示例：\n`$close`\n她关上门。"
             RepairOrphan.VISIBLE_INPUT_BLOCKQUOTE -> "Closing-tag example:\n\n> $close"
+            RepairOrphan.AUTHORED_CLOSE_EXTRA -> "屏幕显示 `$close`。新句。"
             else -> "A repaired first line."
         }
         val second = if (splitCaption) close else "A repaired second line."
@@ -452,6 +490,7 @@ class NarrativeHistoryWireTest {
             RepairOrphan.SPLIT_CAPTION -> listOf(first, second)
             RepairOrphan.VISIBLE_INPUT_LITERAL -> listOf(PromptTemplates.narrativeModeHistoryReply(first, repairMode))
             RepairOrphan.VISIBLE_INPUT_BLOCKQUOTE -> listOf(PromptTemplates.narrativeModeHistoryReply("$first\n", repairMode))
+            RepairOrphan.AUTHORED_CLOSE_EXTRA -> listOf("$first\n$close")
             null -> if (tool) listOf(first, second) else listOf(first)
         }
         val formatCard = orphan?.let {
@@ -562,6 +601,7 @@ class NarrativeHistoryWireTest {
     private class HeldNarrativeReplyServer(
         parts: List<String>, tool: Boolean, reasoningWitness: String?, secondCall: RepairSecondCall = RepairSecondCall.COMPLETE,
         toolIndexes: List<Int>? = null,
+        finishReason: String? = null,
     ) : AutoCloseable {
         private val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
         private val terminal = CountDownLatch(1)
@@ -579,7 +619,7 @@ class NarrativeHistoryWireTest {
                     val bytes = ByteArray(length) { input.read().also { check(it >= 0) }.toByte() }
                     requestBody.complete(bytes.toString(Charsets.UTF_8))
                     val first = "data: ${delta(parts, tool, reasoningWitness, secondCall, toolIndexes)}\n\n".toByteArray(Charsets.UTF_8)
-                    val reason = if (tool) "tool_calls" else "stop"
+                    val reason = finishReason ?: if (tool) "tool_calls" else "stop"
                     val last = ("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"$reason\"}]}\n\n" +
                         "data: [DONE]\n\n").toByteArray(Charsets.UTF_8)
                     val response = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n" +

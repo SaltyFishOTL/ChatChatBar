@@ -2425,6 +2425,115 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `padding before a real newline keeps the witnessed opener on its own line`(): Unit = runBlocking {
+        for (mode in listOf(ChatNarrativeMode.FOCUS, ChatNarrativeMode.ADVANCE)) {
+            val open = "<历史回复 模式=\"${mode.shortLabel}\">"
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Earlier scene.").copy(narrativeMode = mode)
+            val body = "A new scene begins."
+            for (newline in listOf("\n", "\r\n")) {
+                val framed = "$open \t$newline$body"
+                for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                    assertNarrativeReplyDeltas(listOf(framed), listOf(body), body, previousAssistant = prior,
+                        experimental = experimental, toolCall = toolCall, finishReason = "length")
+                }
+                assertNarrativeReplyStates(framed, framed, previousAssistant = prior, experimental = false,
+                    currentUserText = "Show the literal opening tag only on its own line, then explain it:\n$open")
+            }
+            val inline = "$open \t$body"
+            assertNarrativeReplyStates(inline, inline, previousAssistant = prior, experimental = false)
+        }
+    }
+
+    @Test
+    fun `current explicit counterexample supersedes only the matching historical user template`(): Unit = runBlocking {
+        for ((mode, other) in listOf(ChatNarrativeMode.FOCUS to ChatNarrativeMode.ADVANCE, ChatNarrativeMode.ADVANCE to ChatNarrativeMode.FOCUS)) {
+            val sample = PromptTemplates.narrativeModeHistoryReply("[story]", mode)
+            val earlier = "Use exactly this XML shape, replace [story] with new prose and keep both tags:\n$sample"
+            val negative = "Do not output the following history tags:\n$sample"
+            val body = "A new scene begins."
+            val framed = PromptTemplates.narrativeModeHistoryReply(body, mode)
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Earlier scene.").copy(narrativeMode = mode)
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                for ((reply, expected) in listOf(framed to body, sample to "[story]")) {
+                    assertNarrativeReplyDeltas(listOf(reply), listOf(expected), expected,
+                        previousAssistant = prior, previousUserText = earlier, currentUserText = negative,
+                        experimental = experimental, toolCall = toolCall)
+                }
+            }
+            for (current in listOf(null, "Continue the scene.", "Prefer natural prose.",
+                "Do not output the following history tags:\n${PromptTemplates.narrativeModeHistoryReply("Wrong mode", other)}")) {
+                assertNarrativeReplyDeltas(listOf(framed), listOf(framed), framed, previousAssistant = prior,
+                    previousUserText = earlier, currentUserText = current, experimental = false)
+            }
+            assertNarrativeReplyDeltas(listOf(framed), listOf(framed), framed, previousAssistant = prior,
+                previousUserText = earlier, currentUserText = negative, formatCard = "Output template:\n$sample", experimental = false)
+        }
+    }
+
+    @Test
+    fun `a main chat literal closing occurrence does not reserve a separate witnessed orphan`() = runBlocking {
+        assertSeparateLiteralAndOrphan(repair = false)
+    }
+
+    @Test
+    fun `a format repair literal closing occurrence does not reserve a separate witnessed orphan`() = runBlocking {
+        assertSeparateLiteralAndOrphan(repair = true)
+    }
+
+    private suspend fun assertSeparateLiteralAndOrphan(repair: Boolean) {
+        val close = "</历史回复>"
+        val original = "屏幕显示 `$close`。旧句。"
+        val improved = "屏幕显示 `$close`。新句。"
+        for (mode in listOf(ChatNarrativeMode.FOCUS, ChatNarrativeMode.ADVANCE)) {
+            val sample = PromptTemplates.narrativeModeHistoryReply("示例正文", mode)
+            val card = "以下是禁止输出的反例：\n$sample"
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Earlier scene.").copy(narrativeMode = mode)
+            val cases = listOf(
+                "$improved\n$close" to improved,
+                "新句。\n$close" to "新句。\n$close",
+                "$improved 又显示 `$close`。\n$close" to "$improved 又显示 `$close`。\n$close",
+            )
+            if (!repair) {
+                val repeatedInput = "Please preserve both examples `$close` and `$close`."
+                val raw = "$improved\n$close"
+                assertNarrativeReplyDeltas(listOf(raw), listOf(raw), raw, previousAssistant = prior,
+                    currentUserText = repeatedInput, experimental = false)
+            }
+            for ((raw, expected) in cases) {
+                for (tool in listOf(false, true)) {
+                    if (!repair) {
+                        assertNarrativeReplyDeltas(listOf(raw), listOf(expected), expected, previousAssistant = prior,
+                            currentUserText = "Please preserve the literal token `$close`.", experimental = tool, toolCall = tool)
+                        continue
+                    }
+                    val sseHead = if (tool) chunk(buildJsonObject { put("content", raw) }.toString(), "game_content") else ordinaryDelta(raw)
+                    val tail = sse(listOf(chunk(reason = if (tool) "tool_calls" else "stop"), "[DONE]"))
+                    GatedExperimentalResponse(sse(listOf(sseHead)), tail).use { server ->
+                        val transport = StreamingChatService(experimentalApiModeEnabled = { tool }, allowCleartextHttp = { true })
+                        val events = withTimeout(5_000) {
+                            MessageFormatRepairService(transport).streamRepair(original, card, null, model(server.baseUrl)).onEach {
+                                if (it == StreamEvent.Delta(raw)) {
+                                    assertFalse(server.tailSent)
+                                    server.releaseTail()
+                                }
+                            }.toList()
+                        }
+                        assertEquals(StreamEvent.Done, events.last())
+                        val received = events.filterIsInstance<StreamEvent.Delta>().joinToString("") { it.text }
+                        assertEquals(raw, received)
+                        val cleanup = NarrativeHistoryEcho.forFormatRepair(card, original)
+                        assertEquals(expected, cleanup.completedBody(received, streaming = true))
+                        assertEquals(expected, cleanup.completedBody(received, interrupted = true))
+                        assertEquals(expected, cleanup.completedBody(received))
+                        val repeatedSource = NarrativeHistoryEcho.forFormatRepair(card, "$original 再显示 `$close`。")
+                        assertEquals(raw, repeatedSource.completedBody(received))
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
     fun `projected orphan padding is distinct from Markdown code indentation`(): Unit = runBlocking {
         val previous = ChatMessage.create("fixture", MessageRole.ASSISTANT, "旧故事。")
         val closing = "</历史回复>"
