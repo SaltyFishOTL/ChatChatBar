@@ -80,6 +80,7 @@ class NarrativeHistoryWireTest {
         FULL_MODE_BLOCK_INTERIOR, FULL_MODE_BLOCK_THEN_AUTHORED_TITLE,
         SPLIT_MODE_BLOCK, WORLDBOOK_EXACT_XML,
         WORLDBOOK_EXACT_CLOSE, DISPLAY_CAPTION_TITLE, UNLABELLED_MODE_SWITCH, FRESH_FRAME_WHITESPACE,
+        WORLDBOOK_EXACT_OPEN, CHARACTER_EXAMPLE_HEADING, FIRST_ADVANCE_SWITCH,
     }
     private enum class RepairSecondCall { COMPLETE, INCOMPLETE, MALFORMED, GAP }
     private enum class RepairOrphan {
@@ -88,6 +89,7 @@ class NarrativeHistoryWireTest {
         DISPATCHED_BOUNDARIES, AUTHORED_BOUNDARY, SYSTEM_PREAMBLE, AUTHORED_SYSTEM_PREAMBLE, INTERIOR_SYSTEM_PREAMBLE,
         SPLIT_SYSTEM_PREAMBLE,
         UNLABELLED_SYSTEM_INTRODUCTION,
+        WHOLE_REPAIR_SYSTEM_BLOCK,
     }
 
     @Before fun prepareSyntheticApplication() = runBlocking {
@@ -413,6 +415,18 @@ class NarrativeHistoryWireTest {
         }
     }
 
+    @Test fun genuineAppFirstSwitchAndExplicitStableAuthorsSurviveTheColdPaths() = runBlocking {
+        for (literal in listOf(LiteralCase.WORLDBOOK_EXACT_OPEN, LiteralCase.CHARACTER_EXAMPLE_HEADING, LiteralCase.FIRST_ADVANCE_SWITCH)) {
+            verifyReply(Transport.ORDINARY, stop = true, literal = literal)
+            verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = literal)
+        }
+    }
+
+    @Test fun fullIssuedRepairRulesStayOutOfColdStorage() = runBlocking {
+        verifyRepair(Transport.ORDINARY, stop = true, orphan = RepairOrphan.WHOLE_REPAIR_SYSTEM_BLOCK)
+        verifyRepair(Transport.EXPERIMENTAL_TOOL, stop = false, orphan = RepairOrphan.WHOLE_REPAIR_SYSTEM_BLOCK)
+    }
+
     @Test fun exactUnlabelledInstructionsAndEnvelopeWhitespaceUseTheActualColdPaths() = runBlocking {
         for (literal in listOf(LiteralCase.UNLABELLED_MODE_SWITCH, LiteralCase.FRESH_FRAME_WHITESPACE)) {
             verifyReply(Transport.ORDINARY, stop = true, literal = literal)
@@ -538,16 +552,20 @@ class NarrativeHistoryWireTest {
         useGlobalPersona: Boolean,
     ): ReplyFixture {
         val cardName = "Synthetic narrative wire"
-        val mode = if (stop && legacyFirst == null) ChatNarrativeMode.FOCUS else ChatNarrativeMode.ADVANCE
+        val mode = if (stop && legacyFirst == null && literal != LiteralCase.FIRST_ADVANCE_SWITCH) {
+            ChatNarrativeMode.FOCUS
+        } else ChatNarrativeMode.ADVANCE
         val narrativeModesDisabled = literal in setOf(
             LiteralCase.DISABLED_HISTORY_HEADING, LiteralCase.DISABLED_UNSENT_HEADING,
             LiteralCase.DISABLED_AUTHORED_HEADING, LiteralCase.DISABLED_LITERAL_XML,
             LiteralCase.DISABLED_MIDDLE_TOOL_HEADING, LiteralCase.WORLDBOOK_AUTHORED_HEADING,
             LiteralCase.WORLDBOOK_INCIDENTAL_HEADING,
+            LiteralCase.CHARACTER_EXAMPLE_HEADING,
         )
         val otherMode = ChatNarrativeMode.entries.first { it != mode }
         val isModeSwitch = literal == LiteralCase.SENT_SWITCH_ECHO || literal == LiteralCase.SENT_COMPLETE_MODE_SWITCH ||
-            literal == LiteralCase.SENT_SWITCH_SUFFIX || literal == LiteralCase.UNLABELLED_MODE_SWITCH
+            literal == LiteralCase.SENT_SWITCH_SUFFIX || literal == LiteralCase.UNLABELLED_MODE_SWITCH ||
+            literal == LiteralCase.FIRST_ADVANCE_SWITCH
         val priorMode = if (isModeSwitch) otherMode else mode
         val olderSameModeHistory = "Earlier story in the currently selected mode.".takeIf {
             literal == LiteralCase.SENT_SWITCH_SUFFIX
@@ -562,7 +580,8 @@ class NarrativeHistoryWireTest {
         }
         val rebuildInitial = literal == LiteralCase.UNSENT_GREETING_CARD
         val includePrior = literal != LiteralCase.CARD_ORPHAN_NO_HISTORY &&
-            literal != LiteralCase.UNSENT_HISTORY_HEADING && literal != LiteralCase.DISABLED_UNSENT_HEADING && !rebuildInitial
+            literal != LiteralCase.UNSENT_HISTORY_HEADING && literal != LiteralCase.DISABLED_UNSENT_HEADING &&
+            literal != LiteralCase.FIRST_ADVANCE_SWITCH && !rebuildInitial
         val prose = when (literal) {
             LiteralCase.ADJACENT_AUTHORED -> prior
             LiteralCase.CHARACTER_POST_HISTORY -> "$cardName turned the page."
@@ -590,7 +609,8 @@ class NarrativeHistoryWireTest {
             LiteralCase.SENT_CORE_ECHO, LiteralCase.NEGATIVE_MODE_HEADING, LiteralCase.DISPLAY_CAPTION_TITLE -> modePrompt
             LiteralCase.SENT_SWITCH_ECHO, LiteralCase.SENT_COMPLETE_MODE_SWITCH, LiteralCase.FULL_MODE_BLOCK_INTERIOR,
             LiteralCase.FULL_MODE_BLOCK_THEN_AUTHORED_TITLE, LiteralCase.SPLIT_MODE_BLOCK,
-            LiteralCase.SENT_MODE_SUFFIX, LiteralCase.SENT_SWITCH_SUFFIX, LiteralCase.UNLABELLED_MODE_SWITCH -> modeTail
+            LiteralCase.SENT_MODE_SUFFIX, LiteralCase.SENT_SWITCH_SUFFIX, LiteralCase.UNLABELLED_MODE_SWITCH,
+            LiteralCase.FIRST_ADVANCE_SWITCH -> modeTail
             else -> null
         }?.let {
             if (literal in setOf(LiteralCase.SENT_COMPLETE_MODE_SWITCH, LiteralCase.FULL_MODE_BLOCK_INTERIOR,
@@ -604,13 +624,14 @@ class NarrativeHistoryWireTest {
             LiteralCase.WORLDBOOK_INCIDENTAL_HEADING -> "The archive labels its earliest shelf $routineHistoryHeading."
             LiteralCase.WORLDBOOK_EXACT_XML -> "Copy the following XML exactly:\n$framedReply"
             LiteralCase.WORLDBOOK_EXACT_CLOSE -> "Print the literal closing tag only on its own line:\n$closing"
+            LiteralCase.WORLDBOOK_EXACT_OPEN -> "Please show the literal opening tag only on its own line, then explain it:\n$opener"
             else -> null
         }
         val sentRoutineHistoryHeading = when (literal) {
             LiteralCase.SENT_HISTORY_HEADING, LiteralCase.DISABLED_HISTORY_HEADING,
             LiteralCase.DISABLED_AUTHORED_HEADING, LiteralCase.DISABLED_LITERAL_XML,
             LiteralCase.DISABLED_MIDDLE_TOOL_HEADING, LiteralCase.WORLDBOOK_AUTHORED_HEADING,
-            LiteralCase.WORLDBOOK_INCIDENTAL_HEADING -> true
+            LiteralCase.WORLDBOOK_INCIDENTAL_HEADING, LiteralCase.CHARACTER_EXAMPLE_HEADING -> true
             LiteralCase.UNSENT_HISTORY_HEADING, LiteralCase.DISABLED_UNSENT_HEADING -> false
             else -> null
         }
@@ -642,6 +663,8 @@ class NarrativeHistoryWireTest {
         }
         val card = CharacterCard.create(cardName).copy(
             systemPrompt = customCore, postHistoryInstructions = customTail, characterBook = inlineWorldBook,
+            mesExample = "Please start each reply with this literal heading verbatim:\n$routineHistoryHeading"
+                .takeIf { literal == LiteralCase.CHARACTER_EXAMPLE_HEADING }.orEmpty(),
         )
         val historicalUser = when {
             narrativeModesDisabled && includePrior -> "Begin the previous synthetic scene."
@@ -770,8 +793,10 @@ class NarrativeHistoryWireTest {
             LiteralCase.SPLIT_MODE_BLOCK -> "$prose\n$sentModeBlock"
             LiteralCase.WORLDBOOK_EXACT_XML -> framedReply
             LiteralCase.WORLDBOOK_EXACT_CLOSE -> "$prose\n$closing"
+            LiteralCase.WORLDBOOK_EXACT_OPEN -> "$opener\n$prose"
+            LiteralCase.CHARACTER_EXAMPLE_HEADING -> "$routineHistoryHeading\n$prose"
             LiteralCase.DISPLAY_CAPTION_TITLE -> "The screen displays only this title:\n$modeHeading"
-            LiteralCase.UNLABELLED_MODE_SWITCH -> modeTail.lineSequence().drop(1).first() + "\n$prose"
+            LiteralCase.UNLABELLED_MODE_SWITCH, LiteralCase.FIRST_ADVANCE_SWITCH -> modeTail.lineSequence().drop(1).first() + "\n$prose"
             LiteralCase.FRESH_FRAME_WHITESPACE -> PromptTemplates.narrativeModeHistoryReply(newBodyWithBreaks, mode)
             LiteralCase.PROJECTED_SUFFIX_HEADING -> historyCitation + newStorySuffix + "\n" + modeTail.lineSequence().first()
             LiteralCase.NEGATIVE_MODE_HEADING -> "$modeHeading\n$prose"
@@ -815,7 +840,7 @@ class NarrativeHistoryWireTest {
             else -> listOf(reply)
         }
         val expected = when {
-            literal == LiteralCase.UNLABELLED_MODE_SWITCH -> prose
+            literal == LiteralCase.UNLABELLED_MODE_SWITCH || literal == LiteralCase.FIRST_ADVANCE_SWITCH -> prose
             literal == LiteralCase.FRESH_FRAME_WHITESPACE -> newBodyWithBreaks
             literal == LiteralCase.SPLIT_MODE_BLOCK -> "$prose\n$secondScene"
             literal == LiteralCase.DISABLED_MIDDLE_TOOL_HEADING -> "$prose\n$secondScene"
@@ -1021,6 +1046,9 @@ class NarrativeHistoryWireTest {
         fixture.worldBookEntryText?.let { declaration ->
             assertTrue(messages.any { (it.jsonObject["content"] as? JsonPrimitive)?.content?.contains(declaration) == true })
         }
+        if (fixture.card.mesExample.isNotBlank()) {
+            assertTrue(messages.any { (it.jsonObject["content"] as? JsonPrimitive)?.content?.contains(fixture.card.mesExample) == true })
+        }
         fixture.priorLegacy?.let { body -> assertTrue(messages.any { it.hasMessage("assistant", body) }) }
         fixture.historicalUser?.let { body -> assertTrue(messages.any { it.hasMessage("user", body) }) }
         if (fixture.customCore.isNotEmpty()) {
@@ -1187,7 +1215,8 @@ class NarrativeHistoryWireTest {
         val messageBoundary = "{待修复消息}"
         val bubbleBoundary = "{分段气泡格式}"
         val cardBoundary = "{格式卡要求}（禁止覆盖应用格式卡中的占位文本，如对选项的描述）"
-        val repairIntroduction = PromptTemplates.MESSAGE_FORMAT_REPAIR_SYSTEM_PROMPT.trim().lineSequence().first()
+        val repairSystem = PromptTemplates.MESSAGE_FORMAT_REPAIR_SYSTEM_PROMPT.trim()
+        val repairIntroduction = repairSystem.lineSequence().first()
         val repairSentence = repairIntroduction.substringBefore('。') + "。"
         val repairSecondProse = "She found the key again."
         val original = when (orphan) {
@@ -1237,6 +1266,7 @@ class NarrativeHistoryWireTest {
                 listOf("A repaired first line.\n$messageBoundary\n$repairSentence\n$repairSecondProse")
             RepairOrphan.SPLIT_SYSTEM_PREAMBLE -> listOf("$first\n$messageBoundary", "$repairSentence\n$second")
             RepairOrphan.UNLABELLED_SYSTEM_INTRODUCTION -> listOf("$repairIntroduction\n$first")
+            RepairOrphan.WHOLE_REPAIR_SYSTEM_BLOCK -> listOf("$repairSystem\n\n$first")
             null -> if (tool) listOf(first, second) else listOf(first)
         }
         val formatCard = orphan?.let {
@@ -1249,7 +1279,7 @@ class NarrativeHistoryWireTest {
                 RepairOrphan.DISPATCHED_BOUNDARIES, RepairOrphan.AUTHORED_BOUNDARY,
                 RepairOrphan.SYSTEM_PREAMBLE, RepairOrphan.AUTHORED_SYSTEM_PREAMBLE,
                 RepairOrphan.INTERIOR_SYSTEM_PREAMBLE, RepairOrphan.SPLIT_SYSTEM_PREAMBLE,
-                RepairOrphan.UNLABELLED_SYSTEM_INTRODUCTION -> "Keep all prose."
+                RepairOrphan.UNLABELLED_SYSTEM_INTRODUCTION, RepairOrphan.WHOLE_REPAIR_SYSTEM_BLOCK -> "Keep all prose."
                 else -> "以下是禁止输出的反例：\n$sample"
             }
             FormatCard.create("Synthetic prohibited history wrapper", instructions)
@@ -1296,7 +1326,7 @@ class NarrativeHistoryWireTest {
                 }
                 if (orphan in setOf(RepairOrphan.SYSTEM_PREAMBLE, RepairOrphan.AUTHORED_SYSTEM_PREAMBLE,
                         RepairOrphan.INTERIOR_SYSTEM_PREAMBLE, RepairOrphan.SPLIT_SYSTEM_PREAMBLE,
-                        RepairOrphan.UNLABELLED_SYSTEM_INTRODUCTION)
+                        RepairOrphan.UNLABELLED_SYSTEM_INTRODUCTION, RepairOrphan.WHOLE_REPAIR_SYSTEM_BLOCK)
                 ) {
                     assertTrue(messageBoundary in repairUser.lines())
                     val system = Json.parseToJsonElement(request).jsonObject.getValue("messages").jsonArray.first().jsonObject

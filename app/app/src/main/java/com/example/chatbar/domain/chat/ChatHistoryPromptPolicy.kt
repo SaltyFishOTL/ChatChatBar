@@ -12,6 +12,14 @@ internal enum class ChatHistoryPromptZone {
 
 object ChatHistoryPromptPolicy {
     internal data class RenderedHistory(val text: String, val retainsLegacyFraming: Boolean = false)
+    internal data class NarrativeTailDispatch(
+        val text: String,
+        private val independentlyWitnessedPrevious: ChatNarrativeMode?,
+    ) {
+        fun record(cleanup: NarrativeHistoryEcho.RequestCleanup, userText: String?) {
+            cleanup.recordNarrativePrompt(text, userText, independentlyWitnessedPrevious)
+        }
+    }
 
     fun renderedHistoryText(
         message: ChatMessage,
@@ -43,11 +51,27 @@ object ChatHistoryPromptPolicy {
         history: List<ChatMessage>,
         regenerationTarget: ChatMessage? = null
     ): ChatNarrativeMode? {
-        val previous = regenerationTarget ?: history.lastOrNull {
-            it.role == MessageRole.ASSISTANT && it.displayContent.isNotBlank() &&
-                it.generatedFromMessageId == null
-        } ?: return ChatNarrativeMode.FOCUS
+        val previous = regenerationTarget ?: lastNarrativeReply(history) ?: return ChatNarrativeMode.FOCUS
         return MessageAlternativeVersionPolicy.activeVersion(previous).narrativeMode
+    }
+
+    private fun lastNarrativeReply(history: List<ChatMessage>): ChatMessage? = history.lastOrNull {
+        it.role == MessageRole.ASSISTANT && it.displayContent.isNotBlank() && it.generatedFromMessageId == null
+    }
+
+    internal fun narrativeTailDispatch(
+        requestMode: ChatNarrativeMode?,
+        history: List<ChatMessage>,
+        regenerationTarget: ChatMessage?,
+    ): NarrativeTailDispatch {
+        val previous = previousNarrativeMode(history, regenerationTarget)
+        val isActualRegeneration = regenerationTarget?.role == MessageRole.ASSISTANT &&
+            regenerationTarget.displayContent.isNotBlank()
+        val usesFirstReplyDefault = regenerationTarget == null && lastNarrativeReply(history) == null
+        return NarrativeTailDispatch(
+            PromptTemplates.narrativeModeTailSystemPrompt(requestMode, previous),
+            previous.takeIf { isActualRegeneration || usesFirstReplyDefault },
+        )
     }
 
     internal fun sourceText(

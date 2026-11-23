@@ -65,6 +65,7 @@ object NarrativeHistoryEcho {
     private val narrativeTailHeading = PromptTemplates.narrativeModeTailSystemPrompt(
         ChatNarrativeMode.FOCUS, previousMode = null,
     ).lineSequence().first()
+    private val narrativeStableHeading = PromptTemplates.sectionHeading(PromptTemplates.SECTION_NARRATIVE_MODE)
     private val previousModeOpeningBySwitchLine = ChatNarrativeMode.entries.flatMap { mode ->
         ChatNarrativeMode.entries.filter { it != mode }.map { previous ->
             val switch = PromptTemplates.narrativeModeTailSystemPrompt(mode, previous).lineSequence().drop(1).first()
@@ -334,6 +335,7 @@ object NarrativeHistoryEcho {
         val authoredSections: List<String> = emptyList(),
         val continuations: Map<String, Set<List<String>>> = emptyMap(),
         val unlabelledIntroduction: String? = null,
+        val unlabelledSystemBlock: String? = null,
     ) {
         fun uniquelyIdentifiesUnfinishedBoundary(prefix: String): Boolean =
             prefix.length >= 4 && prefix.startsWith('{') && '}' !in prefix &&
@@ -360,6 +362,7 @@ object NarrativeHistoryEcho {
         private val narrativeHeadings = mutableSetOf<String>()
         private val narrativeHeadingContinuations = mutableMapOf<String, MutableSet<List<String>>>()
         private val issuedSwitchLines = mutableSetOf<String>()
+        private val independentlyWitnessedSwitchLines = mutableSetOf<String>()
         private val authoredSources = mutableMapOf<String, UserOutput>()
         private val authoredPairs = mutableSetOf<String>()
         private val authoredTemplateOpenings = mutableSetOf<String>()
@@ -370,15 +373,30 @@ object NarrativeHistoryEcho {
         private var omitInheritedXmlTemplates = false
         private var currentLiteralOutput = LiteralOutput()
 
-        fun recordNarrativePrompt(prompt: String, userText: String?) {
+        fun recordNarrativePrompt(
+            prompt: String,
+            userText: String?,
+            independentlyWitnessedPrevious: ChatNarrativeMode? = null,
+        ) {
             userText?.let(::rememberAuthoredOutput)
             if (!enabled) return
             val lines = prompt.lines()
             if (lines.firstOrNull() == narrativeTailHeading) {
-                lines.getOrNull(1)?.takeIf { it in previousModeOpeningBySwitchLine }?.let(issuedSwitchLines::add)
+                val switchLine = lines.getOrNull(1)?.takeIf { it in previousModeOpeningBySwitchLine }
+                if (switchLine != null) {
+                    issuedSwitchLines += switchLine
+                    val witnessedOpening = independentlyWitnessedPrevious?.let {
+                        PromptTemplates.narrativeModeHistoryReply("", it).substringBefore('\n')
+                    }
+                    if (witnessedOpening == previousModeOpeningBySwitchLine.getValue(switchLine)) {
+                        independentlyWitnessedSwitchLines += switchLine
+                    }
+                }
             }
             for ((index, line) in lines.withIndex()) {
-                val knownHeading = line in narrativeModeHeadings || line == narrativeTailHeading
+                val knownStableSection = index == 0 && line == narrativeStableHeading &&
+                    lines.drop(1).firstOrNull { it.isNotBlank() } in narrativeModeHeadings
+                val knownHeading = line in narrativeModeHeadings || line == narrativeTailHeading || knownStableSection
                 if (line.isNotBlank() && (index == 0 || knownHeading)) narrativeHeadings += line
                 if (knownHeading) {
                     val continuation = lines.drop(index + 1).dropLastWhile(String::isBlank)
@@ -403,6 +421,9 @@ object NarrativeHistoryEcho {
         fun recordDispatchedCharacterCore(renderedCore: String, hasCustomInstructions: Boolean) =
             recordDispatchedEditableOutput(renderedCore, hasCustomInstructions)
 
+        fun recordDispatchedCharacterSettingsHeadings(renderedSettings: String) =
+            recordAuthoredHeadingDeclarations(renderedSettings)
+
         fun recordDispatchedPostHistory(renderedTail: String, hasCustomInstructions: Boolean) =
             recordDispatchedEditableOutput(renderedTail, hasCustomInstructions)
 
@@ -417,7 +438,10 @@ object NarrativeHistoryEcho {
             if (enabled) {
                 val literal = declaredUserOutput(renderedWorldBook, requireExplicitCopy = true).literal
                 authoredPairs += literal.pairs
-                currentLiteralOutput = currentLiteralOutput.copy(closings = currentLiteralOutput.closings + literal.closings)
+                currentLiteralOutput = currentLiteralOutput.copy(
+                    openings = currentLiteralOutput.openings + literal.openings,
+                    closings = currentLiteralOutput.closings + literal.closings,
+                )
             }
         }
 
@@ -613,7 +637,10 @@ object NarrativeHistoryEcho {
                         allowPartialHeading = false,
                     )
                 }
-                val intro = exactLeadingDirective(text, setOfNotNull(repairDispatch.unlabelledIntroduction))
+                fun unlabelledRepairRange(part: String): IntRange? =
+                    exactLeadingDirectiveBlock(part, repairDispatch.unlabelledSystemBlock)
+                        ?: exactLeadingDirective(part, setOfNotNull(repairDispatch.unlabelledIntroduction))
+                val intro = unlabelledRepairRange(text)
                 val interior = if (partLengths.size > 1) interiorRepairEchoRanges(text, repairDispatch, provisional) else emptyList()
                 val prepared = DispatchReply(text, partLengths).withoutRanges(listOfNotNull(intro) + interior)
                 val reply = removeRepairBoundary(prepared.text)
@@ -626,7 +653,7 @@ object NarrativeHistoryEcho {
                     cleanPartOrphan = ::withoutRepairOrphan,
                     cleanExposedBody = { part ->
                         val exposed = removeRepairBoundary(part).content(part)
-                        val issued = exactLeadingDirective(exposed, setOfNotNull(repairDispatch.unlabelledIntroduction))
+                        val issued = unlabelledRepairRange(exposed)
                         DispatchReply(exposed, emptyList()).withoutRanges(listOfNotNull(issued)).text
                     },
                     cleanPartHeading = ::removeRepairBoundary.takeIf { repairDispatch.boundaries.isNotEmpty() },
@@ -661,7 +688,8 @@ object NarrativeHistoryEcho {
             }
             fun removeCompleteModeEchoes(body: String, lengths: List<Int>): DispatchReply {
                 val witnessedSwitchLines = issuedSwitchLines.filterTo(mutableSetOf()) { line ->
-                    latestHistoryProjection?.startsWith(previousModeOpeningBySwitchLine.getValue(line)) == true
+                    line in independentlyWitnessedSwitchLines ||
+                        latestHistoryProjection?.startsWith(previousModeOpeningBySwitchLine.getValue(line)) == true
                 }
                 val switch = exactLeadingDirective(body, witnessedSwitchLines)
                     ?.takeUnless { isAuthoredModeText(body.substring(it).trimEnd('\r', '\n')) }
@@ -753,7 +781,7 @@ object NarrativeHistoryEcho {
         if (continuations.keys.none { it in text }) return reply
         val literals = classifyLiterals(text, includeUnclosed = provisional)
         val removals = mutableListOf<IntRange>()
-        val quotedBlocks = mutableListOf<IntRange>()
+        val quotedBlocks = loggedModeQuoteRanges(text, literals, continuations).toMutableList()
         for ((heading, issuedVariants) in continuations) {
             val variants = issuedVariants.filterTo(mutableSetOf()) {
                 !isAuthoredBlock((listOf(heading) + it).joinToString("\n"))
@@ -813,6 +841,38 @@ object NarrativeHistoryEcho {
         if (end == text.length || text.substring(0, end) !in issuedLines) return null
         val following = end + if (text.startsWith("\r\n", end)) 2 else 1
         return (0 until following).takeIf { text.subSequence(following, text.length).isNotBlank() }
+    }
+
+    private fun exactLeadingDirectiveBlock(text: String, issuedBlock: String?): IntRange? {
+        if (issuedBlock == null) return null
+        var offset = 0
+        for (line in issuedBlock.lineSequence()) {
+            val end = lineEnd(text, offset)
+            if (end == text.length || text.subSequence(offset, end) != line) return null
+            offset = end + if (text.startsWith("\r\n", end)) 2 else 1
+        }
+        while (text.getOrNull(offset).isHistoryLineBreak()) offset++
+        return (0 until offset).takeIf { text.subSequence(offset, text.length).isNotBlank() }
+    }
+
+    private fun loggedModeQuoteRanges(
+        text: String, literals: ReplyLiterals, continuations: Map<String, Set<List<String>>>,
+    ): List<IntRange> = buildList {
+        for ((heading, variants) in continuations) {
+            var offset = text.indexOf(heading)
+            while (offset >= 0) {
+                val start = lineStart(text, offset)
+                val headingEnd = lineEnd(text, offset)
+                offset = text.indexOf(heading, offset + heading.length)
+                if (headingText(text.substring(start, headingEnd)) != heading ||
+                    !literals.matchesVisibleLine(previousVisibleLine(literals.markdown, start), logQuotationLead)
+                ) continue
+                val end = matchedDispatchContinuationEnd(
+                    text, headingEnd, variants, provisional = false, requireCompleteBlock = true,
+                ) { literals.ranges.containsOffset(it) }
+                if (end > headingEnd) add(start until end)
+            }
+        }
     }
 
     private fun interiorRepairEchoRanges(text: String, dispatch: RepairDispatch, provisional: Boolean): List<IntRange> {
@@ -934,6 +994,7 @@ object NarrativeHistoryEcho {
         continuations: Map<String, Set<List<String>>>,
         isJoinedLiteral: (Int) -> Boolean = { false },
     ): IntRange? {
+        val loggedBlocks = loggedModeQuoteRanges(text, literals, continuations)
         var cursor = text.length
         var removeFrom = -1
         var preserveFrom = -1
@@ -943,7 +1004,7 @@ object NarrativeHistoryEcho {
             cursor = start
             val heading = headingText(text.substring(start, end))
             if (heading !in headings || !literals.isUnprotected(start) ||
-                isJoinedLiteral(start) || literals.followsLiteralHeadingLead(start)
+                isJoinedLiteral(start) || loggedBlocks.any { start in it } || literals.followsLiteralHeadingLead(start)
             ) {
                 if (removeFrom >= 0) break
                 continue

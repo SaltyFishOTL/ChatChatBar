@@ -3158,6 +3158,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         promptLayers.coreSystemPrompt,
                         hasCustomInstructions = charCard.systemPrompt.isNotBlank(),
                     )
+                    narrativeEcho.recordDispatchedCharacterSettingsHeadings(promptLayers.stableContextSystemPrompt)
                     narrativeEcho.recordDispatchedSupplementarySettings(promptLayers.supplementarySystemPrompt)
                     narrativeEcho.recordDispatchedPlayerSettings(promptLayers.playerSystemPrompt)
                     promptLayers.recordDispatchedWorldBookHeadings(narrativeEcho)
@@ -3264,23 +3265,19 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         val strongPromptSystemSuffix = FormatCardUserToolPolicy.strongPromptSystemSuffix(
                             activeFormatCard?.userTools.orEmpty()
                         )
-                        val narrativeModeTail = PromptTemplates.narrativeModeTailSystemPrompt(
+                        val narrativeModeTail = ChatHistoryPromptPolicy.narrativeTailDispatch(
                             requestNarrativeMode,
-                            ChatHistoryPromptPolicy.previousNarrativeMode(
-                                contextMsgs,
-                                alternativeTargetMessageId?.let {
-                                    chatRepository.getMessage(it, sessionId)
-                                }
-                            )
+                            contextMsgs,
+                            alternativeTargetMessageId?.let { chatRepository.getMessage(it, sessionId) },
                         )
                         appendCurrentUserAndCcbTailMessages(
                             messages = apiMessages,
                             userMessage = currentUserApiMessage,
                             strongPromptSystemSuffix = strongPromptSystemSuffix,
                             postUserSystemPrompt = postUserSystemPrompt,
-                            narrativeModeSystemPrompt = narrativeModeTail
+                            narrativeModeSystemPrompt = narrativeModeTail.text
                         )
-                        narrativeEcho.recordNarrativePrompt(narrativeModeTail, requestUserContent)
+                        narrativeModeTail.record(narrativeEcho, requestUserContent)
                         narrativeEcho.recordCurrentLiteralTags(currentUserContent)
                         narrativeEcho.recordDispatchedPostHistory(
                             promptLayers.tailSystemPrompt,

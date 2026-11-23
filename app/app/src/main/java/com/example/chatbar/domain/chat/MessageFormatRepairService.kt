@@ -55,7 +55,10 @@ class MessageFormatRepairService(
                 mapOf(messageBoundary to setOf(listOf(firstSentence), listOf(preamble)))
             } else emptyMap()
             val fullUnlabelledIntroduction = preamble.takeIf { it != firstSentence && !hasAuthoredIntroduction }
-            return NarrativeHistoryEcho.RepairDispatch(boundaries, authoredSections, continuations, fullUnlabelledIntroduction)
+            return NarrativeHistoryEcho.RepairDispatch(
+                boundaries, authoredSections, continuations, fullUnlabelledIntroduction,
+                unlabelledSystemBlock = systemPrompt.takeUnless { hasAuthoredIntroduction },
+            )
         }
     }
 
