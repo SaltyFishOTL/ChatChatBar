@@ -17,6 +17,7 @@ import com.example.chatbar.data.local.entity.MessageFormatRepairNoticeKind
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.repository.ChatRepository
+import com.example.chatbar.domain.chat.MessageFormatRepairPolicy
 import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.ChatBarTheme
@@ -64,7 +65,7 @@ class NarrativeHistoryWireTest {
         LAZY_LIST_CLOSE, CAPTIONED_CLOSE, LAZY_QUOTE_CLOSE,
     }
     private enum class RepairSecondCall { COMPLETE, INCOMPLETE, MALFORMED, GAP }
-    private enum class RepairOrphan { FIRST, SECOND_AFTER_FULL_FRAME, SPLIT_CAPTION, VISIBLE_INPUT_LITERAL }
+    private enum class RepairOrphan { FIRST, SECOND_AFTER_FULL_FRAME, SPLIT_CAPTION, VISIBLE_INPUT_LITERAL, VISIBLE_INPUT_BLOCKQUOTE }
 
     @Before fun prepareSyntheticApplication() = runBlocking {
         assumeTrue("Use the repository-supported isolated Android test build", BuildConfig.ISOLATED_ANDROID_TEST)
@@ -144,6 +145,11 @@ class NarrativeHistoryWireTest {
     @Test fun repairPreservesOriginalMarkerAsLiteralInsideTheFreshOuterPair() = runBlocking {
         verifyRepair(Transport.ORDINARY, stop = true, orphan = RepairOrphan.VISIBLE_INPUT_LITERAL)
         verifyRepair(Transport.EXPERIMENTAL_TOOL, stop = false, orphan = RepairOrphan.VISIBLE_INPUT_LITERAL)
+    }
+
+    @Test fun repairPreservesBlockquotedSourceCloserThroughStopAndColdCompletion() = runBlocking {
+        verifyRepair(Transport.ORDINARY, stop = true, orphan = RepairOrphan.VISIBLE_INPUT_BLOCKQUOTE, repairMode = ChatNarrativeMode.FOCUS)
+        verifyRepair(Transport.EXPERIMENTAL_TOOL, stop = false, orphan = RepairOrphan.VISIBLE_INPUT_BLOCKQUOTE, repairMode = ChatNarrativeMode.ADVANCE)
     }
 
     @Test fun disconnectedTerminalToolIndexesNeverPersistASuccessfulChatOrRepair() = runBlocking {
@@ -418,6 +424,7 @@ class NarrativeHistoryWireTest {
         transport: Transport, stop: Boolean, secondCall: RepairSecondCall = RepairSecondCall.COMPLETE,
         orphan: RepairOrphan? = null,
         toolIndexes: List<Int>? = null,
+        repairMode: ChatNarrativeMode = ChatNarrativeMode.FOCUS,
     ) {
         val app = ChatBarApp.instance
         val settings = app.settingsRepository.getAppSettings()
@@ -428,37 +435,43 @@ class NarrativeHistoryWireTest {
         val original = when (orphan) {
             RepairOrphan.SPLIT_CAPTION -> "End tag: &lt;/历史回复&gt;."
             RepairOrphan.VISIBLE_INPUT_LITERAL -> "结束标签示例：\n$close\n她关上门。"
+            RepairOrphan.VISIBLE_INPUT_BLOCKQUOTE -> "The closing-tag example is $close."
             else -> "旧。"
         }
         val first = when (orphan) {
             RepairOrphan.SPLIT_CAPTION -> "The literal closing tag is:"
             RepairOrphan.VISIBLE_INPUT_LITERAL -> "结束标签示例：\n`$close`\n她关上门。"
+            RepairOrphan.VISIBLE_INPUT_BLOCKQUOTE -> "Closing-tag example:\n\n> $close"
             else -> "A repaired first line."
         }
         val second = if (splitCaption) close else "A repaired second line."
         val tool = transport == Transport.EXPERIMENTAL_TOOL
         val parts = if (toolIndexes != null) toolIndexes.map { if (it == 0) first else second } else when (orphan) {
             RepairOrphan.FIRST -> listOf("$first\n$close", second)
-            RepairOrphan.SECOND_AFTER_FULL_FRAME -> listOf(PromptTemplates.narrativeModeHistoryReply(first, ChatNarrativeMode.FOCUS), "$second\n$close")
+            RepairOrphan.SECOND_AFTER_FULL_FRAME -> listOf(PromptTemplates.narrativeModeHistoryReply(first, repairMode), "$second\n$close")
             RepairOrphan.SPLIT_CAPTION -> listOf(first, second)
-            RepairOrphan.VISIBLE_INPUT_LITERAL -> listOf(PromptTemplates.narrativeModeHistoryReply(first, ChatNarrativeMode.FOCUS))
+            RepairOrphan.VISIBLE_INPUT_LITERAL -> listOf(PromptTemplates.narrativeModeHistoryReply(first, repairMode))
+            RepairOrphan.VISIBLE_INPUT_BLOCKQUOTE -> listOf(PromptTemplates.narrativeModeHistoryReply("$first\n", repairMode))
             null -> if (tool) listOf(first, second) else listOf(first)
         }
         val formatCard = orphan?.let {
-            val sample = PromptTemplates.narrativeModeHistoryReply("旧示例", ChatNarrativeMode.FOCUS)
+            val example = if (orphan == RepairOrphan.VISIBLE_INPUT_BLOCKQUOTE) "示例正文" else "旧示例"
+            val sample = PromptTemplates.narrativeModeHistoryReply(example, repairMode)
             val instructions = if (splitCaption) "Decode written entities in literal examples.\n\nThe following is a counterexample:\n$sample"
                 else "以下是禁止输出的反例：\n$sample"
             FormatCard.create("Synthetic prohibited history wrapper", instructions)
         }
+        val firstPreview = MessageFormatRepairPolicy.progressiveOverlay(original, first)
         val expected = when {
             toolIndexes != null -> original
             tool && parts.size > 1 && secondCall == RepairSecondCall.COMPLETE -> "$first\n$second"
+            stop -> firstPreview
             else -> first
         }
         HeldNarrativeReplyServer(parts, tool, reasoningWitness = null, secondCall = secondCall, toolIndexes = toolIndexes).use { server ->
             val model = ModelConfig.create("Synthetic repair ${transport.name}", server.baseUrl, "fixture-key", "fixture-model")
             val session = ChatSession.create(card.id, model.displayName).copy(
-                modelId = model.id, longTermMemoryEnabled = false, formatCardId = formatCard?.id,
+                modelId = model.id, longTermMemoryEnabled = false, formatCardId = formatCard?.id, narrativeMode = repairMode,
             )
             val message = ChatMessage.create(session.id, MessageRole.ASSISTANT, original)
             var editor: ChatViewModel? = null
@@ -491,7 +504,7 @@ class NarrativeHistoryWireTest {
                     })
                 }
                 if (toolIndexes == null || 0 in toolIndexes) {
-                    rule.waitUntil(20_000) { vm.messageFormatRepairState.value?.previewContent == first }
+                    rule.waitUntil(20_000) { vm.messageFormatRepairState.value?.previewContent == firstPreview }
                 }
                 assertFalse("The provider terminal must be held while both calls are already received", server.terminalSent.get())
                 assertTrue(vm.isResponding.value)

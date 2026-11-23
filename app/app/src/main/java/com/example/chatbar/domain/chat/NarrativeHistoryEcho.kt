@@ -1623,7 +1623,10 @@ object NarrativeHistoryEcho {
             // A visible input delimiter reserves its role. Only remove an independently matched
             // outer repair pair when the same token demonstrably survives inside a body literal.
             if (protectedRepairTokens.any { token ->
-                    familyTags.none { it.value == token && it.range.last < position && literals.ranges.containsOffset(it.range.first) }
+                    familyTags.none { tag ->
+                        tag.value == token && tag.range.last < position &&
+                            !literals.isVisibleWrapperTag(end, tag, allowIndentedParagraphTag = true)
+                    }
                 }
             ) return CleanedReply(text)
             if (afterClosing == end.length) {

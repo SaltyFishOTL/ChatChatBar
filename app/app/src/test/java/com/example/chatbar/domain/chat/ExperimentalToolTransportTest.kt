@@ -3535,6 +3535,69 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `repair uses normal literal visibility to keep a protected source close inside the new pair`() = runBlocking {
+        val close = "</历史回复>"
+        val original = "The closing-tag example is $close."
+        val literalLines = linkedMapOf(
+            "blockquote" to "> $close",
+            "list" to "- $close",
+            "escaped" to "\\$close",
+            "ascii quote" to "\"$close\"",
+            "prose quote" to "“$close”",
+            "fence" to "~~~xml\n$close\n~~~",
+            "inline code" to "`$close`",
+        )
+        val expected = mutableMapOf<String, List<String>>()
+        val observed = mutableMapOf<String, List<String>>()
+        for (mode in listOf(ChatNarrativeMode.FOCUS, ChatNarrativeMode.ADVANCE)) {
+            val sample = PromptTemplates.narrativeModeHistoryReply("示例正文", mode)
+            val card = "以下是禁止输出的反例：\n$sample"
+            val cleanup = NarrativeHistoryEcho.forFormatRepair(card, original)
+            for ((kind, literal) in literalLines) {
+                val body = "Closing-tag example:\n\n$literal"
+                val raw = PromptTemplates.narrativeModeHistoryReply("$body\n", mode)
+                for (tool in listOf(false, true)) {
+                    val key = "$mode $kind ${if (tool) "tool" else "ordinary"}"
+                    val first = if (tool) chunk(buildJsonObject { put("content", raw) }.toString(), "game_content") else ordinaryDelta(raw)
+                    val tail = sse(listOf(chunk(reason = if (tool) "tool_calls" else "stop"), "[DONE]"))
+                    GatedExperimentalResponse(sse(listOf(first)), tail).use { server ->
+                        val wire = StreamingChatService(experimentalApiModeEnabled = { tool }, allowCleartextHttp = { true })
+                        var sawBody = false
+                        val events = withTimeout(5_000) {
+                            MessageFormatRepairService(wire).streamRepair(original, card, null, model(server.baseUrl)).onEach {
+                                if (it == StreamEvent.Delta(raw)) {
+                                    assertFalse(server.tailSent)
+                                    sawBody = true
+                                    server.releaseTail()
+                                }
+                            }.toList()
+                        }
+                        assertTrue(sawBody)
+                        assertEquals(StreamEvent.Done, events.last())
+                        val received = events.filterIsInstance<StreamEvent.Delta>().joinToString("") { it.text }
+                        assertEquals(raw, received)
+                        expected[key] = listOf(body, body, body)
+                        observed[key] = listOf(
+                            cleanup.completedBody(received, streaming = true),
+                            cleanup.completedBody(received, interrupted = true),
+                            cleanup.completedBody(received),
+                        )
+                    }
+                }
+            }
+            val nestedQuote = PromptTemplates.narrativeModeHistoryReply("Closing-tag example:\n\n> $close\n", mode)
+            assertEquals(original, cleanup.completedBody(original))
+            val unwitnessed = PromptTemplates.narrativeModeHistoryReply("Now a different example.", mode)
+            assertEquals(unwitnessed, cleanup.completedBody(unwitnessed))
+            val unresolved = PromptTemplates.narrativeModeHistoryReply("Closing-tag example:\n$close\nThen prose.", mode)
+            assertEquals(unresolved, cleanup.completedBody(unresolved))
+            assertEquals(nestedQuote, NarrativeHistoryEcho.forFormatRepair(card, sample).completedBody(nestedQuote))
+            assertEquals(nestedQuote, NarrativeHistoryEcho.forFormatRepair(card, "$original\n$close").completedBody(nestedQuote))
+        }
+        assertEquals(expected, observed)
+    }
+
+    @Test
     fun `terminal Done rejects disconnected game content indexes in chat and repair`() = runBlocking {
         data class Reply(val raw: String, val done: Boolean, val error: Boolean, val toolReplyCompleted: Boolean?)
         val first = "First scene."
