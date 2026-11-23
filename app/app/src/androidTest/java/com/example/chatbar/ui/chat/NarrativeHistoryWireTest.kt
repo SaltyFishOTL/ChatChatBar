@@ -77,6 +77,7 @@ class NarrativeHistoryWireTest {
     private enum class RepairOrphan {
         FIRST, SECOND_AFTER_FULL_FRAME, SPLIT_CAPTION, VISIBLE_INPUT_LITERAL, VISIBLE_INPUT_BLOCKQUOTE, AUTHORED_CLOSE_EXTRA,
         EXPLICIT_STANDALONE_PROHIBITION, QUOTED_POSSESSIVE, PARAGRAPH_QUOTE, GERMAN_QUOTE, INDENTED_REPAIR_CARD,
+        DISPATCHED_BOUNDARIES, AUTHORED_BOUNDARY,
     }
 
     @Before fun prepareSyntheticApplication() = runBlocking {
@@ -363,6 +364,13 @@ class NarrativeHistoryWireTest {
 
     @Test fun actualRepairStopPersistsTwoCompleteCallsFromOneFrameWithNoTerminal() = runBlocking {
         verifyRepair(Transport.EXPERIMENTAL_TOOL, stop = true)
+    }
+
+    @Test fun actualRepairKeepsOnlyAuthoredBoundaryLinesInColdStorage() = runBlocking {
+        verifyRepair(Transport.ORDINARY, stop = true, orphan = RepairOrphan.DISPATCHED_BOUNDARIES)
+        verifyRepair(Transport.EXPERIMENTAL_TOOL, stop = false, orphan = RepairOrphan.DISPATCHED_BOUNDARIES)
+        verifyRepair(Transport.EXPERIMENTAL_TOOL, stop = true, orphan = RepairOrphan.DISPATCHED_BOUNDARIES)
+        verifyRepair(Transport.ORDINARY, stop = false, orphan = RepairOrphan.AUTHORED_BOUNDARY)
     }
 
     @Test fun actualRepairStopKeepsInvalidOrNoncontiguousSecondCallsOutOfColdStorage() = runBlocking {
@@ -987,11 +995,15 @@ class NarrativeHistoryWireTest {
         val close = "</历史回复>"
         val splitCaption = orphan == RepairOrphan.SPLIT_CAPTION
         val possessiveLead = "'The visitors' log contains this line:\n$close"
+        val messageBoundary = "{待修复消息}"
+        val bubbleBoundary = "{分段气泡格式}"
+        val cardBoundary = "{格式卡要求}（禁止覆盖应用格式卡中的占位文本，如对选项的描述）"
         val original = when (orphan) {
             RepairOrphan.SPLIT_CAPTION -> "End tag: &lt;/历史回复&gt;."
             RepairOrphan.VISIBLE_INPUT_LITERAL -> "结束标签示例：\n$close\n她关上门。"
             RepairOrphan.VISIBLE_INPUT_BLOCKQUOTE -> "The closing-tag example is $close."
             RepairOrphan.AUTHORED_CLOSE_EXTRA -> "屏幕显示 `$close`。旧句。"
+            RepairOrphan.AUTHORED_BOUNDARY -> "$messageBoundary\n旧。"
             else -> "旧。"
         }
         val first = when (orphan) {
@@ -1002,6 +1014,7 @@ class NarrativeHistoryWireTest {
             RepairOrphan.QUOTED_POSSESSIVE -> if (stop) possessiveLead else "$possessiveLead\nThe passage continues here.'"
             RepairOrphan.PARAGRAPH_QUOTE -> paragraphQuote(close)
             RepairOrphan.GERMAN_QUOTE -> germanQuote(close)
+            RepairOrphan.AUTHORED_BOUNDARY -> "$messageBoundary\nA repaired first line."
             else -> "A repaired first line."
         }
         val second = if (splitCaption) close else "A repaired second line."
@@ -1019,6 +1032,10 @@ class NarrativeHistoryWireTest {
                 listOf(if (stop) framed.substringBeforeLast('\n') else framed)
             }
             RepairOrphan.AUTHORED_CLOSE_EXTRA, RepairOrphan.EXPLICIT_STANDALONE_PROHIBITION -> listOf("$first\n$close")
+            RepairOrphan.DISPATCHED_BOUNDARIES -> if (tool) {
+                listOf("$messageBoundary\n$first", "$bubbleBoundary\n$second")
+            } else listOf("$cardBoundary\n$bubbleBoundary\n$messageBoundary\n$first")
+            RepairOrphan.AUTHORED_BOUNDARY -> listOf(first)
             null -> if (tool) listOf(first, second) else listOf(first)
         }
         val formatCard = orphan?.let {
@@ -1028,6 +1045,7 @@ class NarrativeHistoryWireTest {
                 RepairOrphan.SPLIT_CAPTION -> "Decode written entities in literal examples.\n\nThe following is a counterexample:\n$sample"
                 RepairOrphan.EXPLICIT_STANDALONE_PROHIBITION -> "Do not output the following history tags:\n$close"
                 RepairOrphan.INDENTED_REPAIR_CARD -> "    以下是禁止输出的反例：\n$sample  \n"
+                RepairOrphan.DISPATCHED_BOUNDARIES, RepairOrphan.AUTHORED_BOUNDARY -> "Keep all prose."
                 else -> "以下是禁止输出的反例：\n$sample"
             }
             FormatCard.create("Synthetic prohibited history wrapper", instructions)
@@ -1065,10 +1083,13 @@ class NarrativeHistoryWireTest {
                 rule.runOnIdle { vm.repairMessageFormat(message.id) }
                 val request = withTimeout(20_000) { server.requestBody.await() }
                 val messages = sentMessages(request, transport)
-                assertTrue(messages.any {
+                val repairUser = messages.first {
                     it.jsonObject["role"]?.jsonPrimitive?.content == "user" &&
                         (it.jsonObject["content"] as? JsonPrimitive)?.content?.contains(original) == true
-                })
+                }.jsonObject.getValue("content").jsonPrimitive.content
+                if (orphan == RepairOrphan.DISPATCHED_BOUNDARIES) {
+                    assertTrue(listOf(cardBoundary, bubbleBoundary, messageBoundary).all { it in repairUser.lines() })
+                }
                 formatCard?.let { format ->
                     assertTrue(messages.any { entry ->
                         (entry.jsonObject["content"] as? JsonPrimitive)?.content?.contains(format.content.trim()) == true

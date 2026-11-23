@@ -13,12 +13,34 @@ class MessageFormatRepairService(
     internal class PreparedRequest(
         val originalContent: String,
         renderedFormatCard: String?,
-        val segmentedBubbleFormat: String?,
+        renderedSegmentedBubbleFormat: String?,
     ) {
         val formatCard = renderedFormatCard?.trim()?.takeIf(String::isNotEmpty)
+        private val segmentedBubbleFormat = renderedSegmentedBubbleFormat?.trim()?.takeIf(String::isNotEmpty)
+        val userPrompt = PromptTemplates.messageFormatRepairUserPrompt(formatCard, segmentedBubbleFormat, originalContent)
 
         fun historyCleanup(): NarrativeHistoryEcho.RequestCleanup =
-            NarrativeHistoryEcho.forFormatRepair(formatCard, originalContent)
+            NarrativeHistoryEcho.forFormatRepair(formatCard, originalContent, dispatchedBoundaries())
+
+        private fun dispatchedBoundaries(): Set<String> {
+            val authoredSections = listOfNotNull(formatCard, segmentedBubbleFormat, originalContent)
+            var start = 0
+            return buildSet {
+                for ((index, authoredContent) in authoredSections.withIndex()) {
+                    val boundaryEnd = userPrompt.indexOf('\n', start)
+                    if (boundaryEnd <= start) return emptySet()
+                    val contentStart = boundaryEnd + 1
+                    val contentEnd = contentStart + authoredContent.length
+                    if (!userPrompt.regionMatches(contentStart, authoredContent, 0, authoredContent.length)) return emptySet()
+                    if (index == authoredSections.lastIndex) {
+                        if (contentEnd != userPrompt.length) return emptySet()
+                    } else if (!userPrompt.startsWith("\n\n", contentEnd)) return emptySet()
+                    val boundary = userPrompt.substring(start, boundaryEnd)
+                    if (authoredSections.none { boundary in it }) add(boundary)
+                    start = contentEnd + 2
+                }
+            }
+        }
     }
 
     fun streamRepair(
@@ -46,11 +68,7 @@ class MessageFormatRepairService(
             ),
             ChatApiMessage.text(
                 role = "user",
-                content = PromptTemplates.messageFormatRepairUserPrompt(
-                    formatCard = request.formatCard,
-                    segmentedBubbleFormat = request.segmentedBubbleFormat,
-                    message = request.originalContent
-                )
+                content = request.userPrompt,
             )
         ),
         modelConfig = modelConfig,

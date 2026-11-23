@@ -4829,6 +4829,120 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `repair removes only exact dispatched boundary lines from live stopped and finished output`() = runBlocking {
+        val original = "The visitor left."
+        val revised = "The visitor returned by the garden path and laid the keys on the bench."
+        val actualCard = "Keep paragraph breaks."
+        val actualBubble = "Use separate bubbles for narration and dialogue."
+        val cardBoundary = "{格式卡要求}（禁止覆盖应用格式卡中的占位文本，如对选项的描述）"
+        val bubbleBoundary = "{分段气泡格式}"
+        val originalBoundary = "{待修复消息}"
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            for (header in listOf(cardBoundary, bubbleBoundary)) {
+                assertRepairBoundaryReply(original, null, null, listOf("$header\n$revised"), "$header\n$revised", experimental, toolCall)
+            }
+            for (raw in listOf(
+                "~~~text\n$originalBoundary\n~~~\n$revised",
+                "> $originalBoundary\n\n$revised",
+                "The sign read:\n$originalBoundary",
+                PromptTemplates.narrativeModeHistoryReply(revised, ChatNarrativeMode.FOCUS),
+                PromptTemplates.MESSAGE_FORMAT_REPAIR_UNCHANGED_MARKER,
+            )) {
+                assertRepairBoundaryReply(original, actualCard, actualBubble, listOf(raw), raw, experimental, toolCall)
+            }
+            assertRepairBoundaryReply(
+                "$originalBoundary\n$original", actualCard, actualBubble,
+                listOf("$originalBoundary\n$revised"), "$originalBoundary\n$revised", experimental, toolCall,
+            )
+            for (header in listOf(originalBoundary, cardBoundary, bubbleBoundary)) {
+                assertRepairBoundaryReply(original, actualCard, actualBubble, listOf("$header\n$revised"), revised, experimental, toolCall)
+            }
+        }
+        assertRepairBoundaryReply(
+            original, actualCard, actualBubble, listOf(originalBoundary, revised), revised,
+            experimental = true, tool = true, expectedFirstPreview = "",
+        )
+        assertRepairBoundaryReply(
+            original, actualCard, actualBubble, listOf("$originalBoundary\n$revised", bubbleBoundary), revised,
+            experimental = true, tool = true,
+        )
+        val secondStory = "She rang the bell."
+        assertRepairBoundaryReply(
+            original, actualCard, actualBubble,
+            listOf("$originalBoundary\n$revised", "$bubbleBoundary\n$secondStory"), "$revised\n$secondStory",
+            experimental = true, tool = true, expectedFirstPreview = revised,
+        )
+        val caption = "She read the heading aloud:"
+        assertRepairBoundaryReply(
+            original, actualCard, actualBubble,
+            listOf(caption, "$bubbleBoundary\n$secondStory"), "$caption\n$bubbleBoundary\n$secondStory",
+            experimental = true, tool = true, expectedFirstPreview = caption,
+        )
+    }
+
+    private suspend fun assertRepairBoundaryReply(
+        original: String,
+        card: String?,
+        bubble: String?,
+        parts: List<String>,
+        expected: String,
+        experimental: Boolean,
+        tool: Boolean,
+        expectedFirstPreview: String = expected,
+    ) {
+        val frame = when {
+            parts.size == 2 -> repairToolFrame(parts[0], 1, buildJsonObject { put("content", parts[1]) }.toString())
+            tool -> chunk(buildJsonObject { put("content", parts.single()) }.toString(), "game_content")
+            else -> ordinaryDelta(parts.single())
+        }
+        val terminal = sse(listOf(chunk(reason = if (tool) "tool_calls" else "stop"), "[DONE]"))
+        val originalRequest = MessageFormatRepairService.PreparedRequest(original, card, bubble)
+        val formatRepair = MessageFormatRepairService(
+            StreamingChatService(experimentalApiModeEnabled = { experimental }, allowCleartextHttp = { true }),
+        )
+        val cleanup = originalRequest.historyCleanup()
+        val raw = parts.joinToString("\n")
+        val expectedWire = PromptTemplates.messageFormatRepairUserPrompt(card, bubble, original)
+        val lengths = parts.map(String::length).takeIf { it.size > 1 }.orEmpty()
+        GatedExperimentalResponse(sse(listOf(frame)), terminal).use { server ->
+            var reader: (() -> List<String>)? = null
+            val event = withTimeout(5_000) {
+                formatRepair.streamRepair(originalRequest, model(server.baseUrl)) { reader = it }
+                    .first { it is StreamEvent.Delta || it is StreamEvent.ContentPreview }
+            }
+            val live = if (event is StreamEvent.Delta) event.text else (event as StreamEvent.ContentPreview).text
+            assertEquals(parts.first(), live)
+            val payload = Json.parseToJsonElement(server.requestBody).jsonObject
+            val wireMessages = if (experimental) {
+                val context = payload.getValue("tools").jsonArray.map { it.jsonObject.getValue("function").jsonObject }
+                    .single { it.getValue("name").jsonPrimitive.content == "context" }.getValue("description").jsonPrimitive.content
+                Json.parseToJsonElement(context + "\"}]").jsonArray
+            } else payload.getValue("messages").jsonArray
+            assertTrue(wireMessages.any {
+                val message = it.jsonObject
+                message.getValue("role").jsonPrimitive.content == "user" &&
+                    message.getValue("content").jsonPrimitive.content == expectedWire
+            })
+            assertFalse(server.tailSent)
+            val stopped = reader?.invoke()?.takeIf(List<String>::isNotEmpty)?.joinToString("\n") ?: live
+            assertEquals(raw, stopped)
+            assertEquals(expected, cleanup.completedBody(stopped, interrupted = true, partLengths = lengths))
+            assertEquals(expectedFirstPreview, cleanup.streamingPreview().appendedBody(live, 0))
+        }
+        GatedExperimentalResponse(sse(listOf(frame)), terminal).use { server ->
+            val events = withTimeout(5_000) {
+                formatRepair.streamRepair(originalRequest, model(server.baseUrl))
+                    .onEach { if (it is StreamEvent.Delta || it is StreamEvent.ContentPreview) server.releaseTail() }.toList()
+            }
+            val deltas = events.filterIsInstance<StreamEvent.Delta>()
+            assertEquals(raw, deltas.joinToString("") { it.text })
+            assertEquals(lengths, deltas.last().toolReplyPartLengths)
+            assertEquals(StreamEvent.Done, events.last())
+            assertEquals(expected, cleanup.completedBody(raw, partLengths = lengths))
+        }
+    }
+
+    @Test
     fun `repair cleans eligible orphan closes in independently validated tool parts over real SSE`() = runBlocking {
         for (mode in listOf(ChatNarrativeMode.FOCUS, ChatNarrativeMode.ADVANCE)) assertRepairToolOrphans(mode)
     }

@@ -308,6 +308,7 @@ object NarrativeHistoryEcho {
         private val repairOriginalContent: String = "",
         private val repairProtectedClosings: Map<String, Set<String>> = emptyMap(),
         private val repairStandaloneClosings: Set<String> = emptySet(),
+        private val repairBoundaries: List<String> = emptyList(),
     ) {
         private val projectedOpenings = mutableSetOf<String>()
         private val projectedDuplicateOpenings = mutableSetOf<String>()
@@ -519,12 +520,23 @@ object NarrativeHistoryEcho {
                     .flatMap { it.closings }.plus(repairStandaloneClosings).distinct()
                 fun withoutRepairOrphan(part: String, isJoinedLiteral: (Int) -> Boolean = { false }): String =
                     withoutOrphanClosing(part, repairClosings, provisional, formatOutput, ::authored, isJoinedLiteral)
+                fun removeRepairBoundary(part: String, isJoinedLiteral: (Int) -> Boolean = { false }) = withoutEchoedHeading(
+                    part, repairBoundaries, provisional, isAuthored = { false }, continuations = emptyMap(),
+                    isJoinedLiteral = { isJoinedLiteral(it) || hasOrphanClosingCaption(part, it) },
+                    allowPartialHeading = false,
+                )
+                val reply = removeRepairBoundary(text)
+                val body = text.substring(reply.body)
+                val lengths = if (reply.body == text.indices) partLengths else partLengths.trimTo(reply.body, text.length)
                 val cleaned = cleanCompletedBody(
-                    text, formatOutput, interrupted, partLengths, streaming, allowedOpenings = repairOpenings,
+                    body, formatOutput, interrupted, lengths, streaming, allowedOpenings = repairOpenings,
                     repairProtectedClosings = repairProtectedClosings,
                     cleanPartOrphan = ::withoutRepairOrphan,
+                    cleanExposedBody = { part -> removeRepairBoundary(part).content(part) },
+                    cleanPartHeading = ::removeRepairBoundary.takeIf { repairBoundaries.isNotEmpty() },
+                    protectCaptionedPartHeading = true,
                 )
-                return if (cleaned != text) cleaned else withoutRepairOrphan(text)
+                return text.substring(0, reply.prefixEnd) + if (cleaned != body) cleaned else withoutRepairOrphan(body)
             }
 
             val headings = narrativeHeadings.filterNot(::isAuthoredHeading)
@@ -923,7 +935,9 @@ object NarrativeHistoryEcho {
         formatCard.takeIf { position.includesStart || position.includesEnd && hasCurrentUser },
     )
 
-    internal fun forFormatRepair(formatCard: String?, original: String): RequestCleanup {
+    internal fun forFormatRepair(
+        formatCard: String?, original: String, dispatchedBoundaries: Set<String> = emptySet(),
+    ): RequestCleanup {
         val output = formatCard?.let(::declaredOutput) ?: FormatOutput()
         val candidates = wrappers.filter {
             it.opening in output.counterexampleOpenings && it.opening !in output.declaredOpenings
@@ -956,9 +970,10 @@ object NarrativeHistoryEcho {
                 sameFamily.none { close in it.closings && it.name in authoredOpeningFamilies }
         }
         return RequestCleanup(
-            enabled = openings.isNotEmpty() || standaloneClosings.isNotEmpty(),
+            enabled = openings.isNotEmpty() || standaloneClosings.isNotEmpty() || dispatchedBoundaries.isNotEmpty(),
             formatOutput = output, repairOpenings = openings.mapTo(mutableSetOf(), Wrapper::opening),
             repairOriginalContent = original, repairProtectedClosings = protected, repairStandaloneClosings = standaloneClosings,
+            repairBoundaries = dispatchedBoundaries.toList(),
         )
     }
 
@@ -1005,13 +1020,14 @@ object NarrativeHistoryEcho {
         text: String, headings: List<String>, provisional: Boolean, isAuthored: (String) -> Boolean,
         continuations: Map<String, Set<List<String>>>,
         isJoinedLiteral: (Int) -> Boolean = { false },
+        allowPartialHeading: Boolean = true,
     ): HeadingSelection {
         if (headings.isEmpty() || text.isBlank()) return HeadingSelection(text.indices)
         val literals by lazy(LazyThreadSafetyMode.NONE) { classifyLiterals(text, includeUnclosed = provisional) }
         fun matches(rawLine: String, allowPrefix: Boolean): Boolean {
             val line = headingText(rawLine) ?: return false
             return headings.any { heading ->
-                line == heading || allowPrefix && heading.startsWith(line) &&
+                line == heading || allowPartialHeading && allowPrefix && heading.startsWith(line) &&
                     line.startsWith(heading.substringBefore('（').removeSuffix("】")) && !isAuthored(line)
             }
         }
@@ -1474,6 +1490,7 @@ object NarrativeHistoryEcho {
         trailerHeadings: List<String> = emptyList(),
         cleanExposedBody: (String) -> String = { it },
         cleanPartHeading: ((String, (Int) -> Boolean) -> HeadingSelection)? = null,
+        protectCaptionedPartHeading: Boolean = false,
         cleanPartOrphan: ((String, (Int) -> Boolean) -> String)? = null,
     ): String {
         fun clean(part: String, requirePair: Boolean = false) = cleanReply(
@@ -1572,7 +1589,8 @@ object NarrativeHistoryEcho {
                 }
                 if (first == last && !requirePair && cleaned.body == part) {
                     val selection = cleanPartHeading?.invoke(part) {
-                        isJoinedLiteral(it, true) || joinedLiterals.followsLiteralHeadingLead(start + it)
+                        isJoinedLiteral(it, true) || joinedLiterals.followsLiteralHeadingLead(start + it) ||
+                            protectCaptionedPartHeading && hasOrphanClosingCaption(text, start + it, before = start)
                     } ?: HeadingSelection(part.indices)
                     val body = part.substring(selection.body)
                     val unwrapped = if (!cleaned.couldSpanToolCalls && !cleaned.matchedOuterPair &&
