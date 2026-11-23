@@ -381,6 +381,44 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `one response can echo two adjacent witnessed history pairs`(): Unit = runBlocking {
+        for (mode in ChatNarrativeMode.entries) {
+            val first = PromptTemplates.narrativeModeHistoryReply("雨停了。", mode)
+            val second = PromptTemplates.narrativeModeHistoryReply("She opened the door.", mode)
+            val opening = second.substringBefore('\n')
+            val earlyOpener = opening.take(2)
+            val restOfPartialOpener = opening.drop(2).dropLast(1)
+            val chunks = listOf(first, "\n$earlyOpener", restOfPartialOpener, second.drop(opening.length - 1))
+            val cleaned = "雨停了。\nShe opened the door."
+            val previews = listOf("雨停了。", "雨停了。", "雨停了。", cleaned)
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                assertNarrativeReplyDeltas(chunks, previews, cleaned, experimental = experimental, toolCall = toolCall)
+            }
+
+            val raw = "$first\n$second"
+            val copy = "Please copy the following XML verbatim:\n$raw"
+            assertNarrativeReplyStates(raw, raw, currentUserText = copy)
+            val explanatory = "$raw\nThis explains the two examples."
+            assertNarrativeReplyStates(explanatory, explanatory, experimental = false)
+        }
+    }
+
+    @Test
+    fun `visible XML documentation prohibition does not reserve a history wrapper`(): Unit = runBlocking {
+        for (mode in ChatNarrativeMode.entries) {
+            val example = PromptTemplates.narrativeModeHistoryReply("旧句。", mode)
+            val story = "She opened the door."
+            val reply = PromptTemplates.narrativeModeHistoryReply(story, mode)
+            val documentation = "The XML below is documentation. Never put it around your answer."
+            val card = "$documentation\n$example\nWrite only the story."
+            for (experimental in listOf(false, true)) {
+                assertNarrativeReplyStates(reply, story, formatCard = card, experimental = experimental)
+            }
+            assertNarrativeReplyStates(reply, reply, formatCard = "Output template:\n$example")
+        }
+    }
+
+    @Test
     fun `multipart main stream keeps wrapper syntax inside cross call code comments and quotes`() = runBlocking {
         val literal = "<历史回复 模式=\"聚焦\">\n字面示例\n</历史回复>"
         for ((before, after) in listOf(

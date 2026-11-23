@@ -41,9 +41,11 @@ object NarrativeHistoryEcho {
         val fences: List<MarkdownCodeFences.Block>,
     )
 
+    private const val modernOpeningPrefix = "<历史回复 模式="
+    private const val modernClosing = "</历史回复>"
     private val legacyWrapper = Wrapper("聚焦模式", "<聚焦模式=\"沉浸\">", listOf("</聚焦模式>", "</聚焦模式=\"沉浸\">"))
     private val wrappers = ChatNarrativeMode.entries.map { mode ->
-        Wrapper("历史回复", "<历史回复 模式=\"${mode.shortLabel}\">", listOf("</历史回复>"))
+        Wrapper("历史回复", "<历史回复 模式=\"${mode.shortLabel}\">", listOf(modernClosing))
     } + legacyWrapper
     private val wrapperClosings = wrappers.flatMapTo(mutableSetOf(), Wrapper::closings)
     private val narrativeModeHeadings = ChatNarrativeMode.entries.map { mode ->
@@ -176,7 +178,9 @@ object NarrativeHistoryEcho {
     private val formatTemplateFenceInfo = setOf("", "html", "xml")
     private val formatCounterexampleLead = Regex(
         " {0,3}(?:以下是禁止输出的反例[。.:：]?|以下标签仅供举例，不要在回复中输出[：:]|" +
-            "$forbidTemplateTags[。.:：]?|the following is a counterexample[.!:])[ \\t]*",
+            "$forbidTemplateTags[。.:：]?|the following is a counterexample[.!:]|" +
+            "the (?:XML|markup) below is (?:(?:only|just) )?documentation\\.[ \\t]+" +
+            "(?:never|do not) (?:put|wrap) it around (?:your|the) (?:reply|answer|response)[.!])[ \\t]*",
         RegexOption.IGNORE_CASE,
     )
     private val formatCounterexampleTail = Regex(
@@ -1098,20 +1102,20 @@ object NarrativeHistoryEcho {
         cleanPartHeading: ((String, (Int) -> Boolean) -> HeadingSelection)? = null,
         cleanPartOrphan: ((String, (Int) -> Boolean) -> String)? = null,
     ): String {
-        fun clean(part: String) = cleanReply(
-            part, streaming, interrupted, formatOutput = formatOutput,
+        fun clean(part: String, requirePair: Boolean = false) = cleanReply(
+            part, streaming, interrupted, requirePair = requirePair, formatOutput = formatOutput,
             projectedDuplicateOpenings = projectedDuplicateOpenings,
             projectedInnerOpenings = projectedInnerOpenings,
             allowedOpenings = allowedOpenings, literalOutput = literalOutput, trailerHeadings = trailerHeadings,
             cleanExposedBody = cleanExposedBody,
-        ).body
+        )
         if (partLengths.size > 1 && partLengths.sumOf(Int::toLong) + partLengths.size - 1 == text.length.toLong()) {
             var offset = 0
             val parts = partLengths.map { length ->
                 val end = offset + length
                 if (length < 0 || end !in offset..text.length ||
                     (end < text.length && text[end] != '\n')
-                ) return clean(text)
+                ) return clean(text).body
                 (offset until end).also { offset = end + 1 }
             }
             // A model can spread one wrapper across several valid game_content calls.
@@ -1239,7 +1243,74 @@ object NarrativeHistoryEcho {
                 }
             }
         }
-        return clean(text)
+        return cleanAdjacentHistoryPairs(
+            text, allowedOpenings.orEmpty(), formatOutput.declaredOpenings, streaming || interrupted, ::clean,
+        ) ?: clean(text).body
+    }
+
+    private fun cleanAdjacentHistoryPairs(
+        text: String,
+        allowedOpenings: Set<String>,
+        declaredOpenings: Set<String>,
+        provisional: Boolean,
+        clean: (String, Boolean) -> CleanedReply,
+    ): String? {
+        if (allowedOpenings.isEmpty()) return null
+        val firstClose = text.indexOf(modernClosing)
+        val possibleNextOpening = if (provisional) "<历" else modernOpeningPrefix
+        if (firstClose < 0 || text.indexOf(possibleNextOpening, firstClose + modernClosing.length) < 0) return null
+        val openings = allowedOpenings - declaredOpenings
+        if (openings.isEmpty()) return null
+        val tags = wrapperFamilyTokens.getValue("历史回复").findAll(text).toList()
+        val literals = classifyLiterals(text, tags, listOf(modernClosing), includeUnclosed = provisional)
+        val standalone = tags.filter { tag ->
+            literals.isVisibleWrapperTag(text, tag, includeStandaloneLazyTags = true) &&
+                literals.isStandaloneTagLine(tag.range.first, tag.value) &&
+                !literals.isLazyListItemLine(tag.range.first)
+        }
+        fun adjacent(end: Int, start: Int): Boolean {
+            val gap = text.subSequence(end, start)
+            return gap.isBlank() && gap.any { it.isHistoryLineBreak() }
+        }
+
+        val boundaries = standalone.zipWithNext().mapNotNull { (close, open) ->
+            val end = close.range.last + 1
+            val start = open.range.first
+            if (close.value == modernClosing && open.value in openings && adjacent(end, start)) end to start else null
+        }.toMutableList()
+        if (provisional) {
+            // Keep already proven text visible while the next opener is arriving.
+            val previousClose = standalone.lastOrNull()?.takeIf { it.value == modernClosing }
+            if (previousClose != null) {
+                val end = previousClose.range.last + 1
+                val start = (end until text.length).firstOrNull { !text[it].isWhitespace() }
+                if (start != null && adjacent(end, start) && hasMarkerPadding(text, start) &&
+                    literals.isUnprotected(start) && !literals.isLazyListItemLine(start) &&
+                    text.substring(start).let { prefix -> openings.any { it.startsWith(prefix) } } &&
+                    text.startsWith(possibleNextOpening, start)
+                ) boundaries += end to start
+            }
+        }
+        if (boundaries.isEmpty()) return null
+
+        // All sections must be independently removable. A requested literal pair or visible
+        // prose after a close makes the adjacent blocks ambiguous and leaves the reply intact.
+        val result = StringBuilder()
+        var start = 0
+        var previousEnd = 0
+        for ((end, next) in boundaries + (text.length to text.length)) {
+            val section = text.substring(start, end)
+            val last = end == text.length
+            val cleaned = clean(section, !last || !provisional)
+            if (cleaned.body == section || !cleaned.matchedOuterPair && (!last || !provisional)) return null
+            if (cleaned.body.isNotEmpty()) {
+                if (result.isNotEmpty()) result.append(text, previousEnd, start)
+                result.append(cleaned.body)
+            }
+            previousEnd = end
+            start = next
+        }
+        return result.toString()
     }
 
     fun replyBody(
@@ -1288,7 +1359,7 @@ object NarrativeHistoryEcho {
         val candidates = if (allowedOpenings == null) wrappers else wrappers.filter { it.opening in allowedOpenings }
         val wrapper = candidates.firstOrNull { start.startsWith(it.opening) }
         if (wrapper == null) {
-            val identifiable = start.startsWith("<历史回复 模式=") || start.startsWith("<聚焦模式=")
+            val identifiable = start.startsWith(modernOpeningPrefix) || start.startsWith("<聚焦模式=")
             if (!requirePair && (streaming || identifiable || interrupted && start.length > 1) &&
                 candidates.any { it.opening.startsWith(start) } && formatOutput.declaredOpenings.none { it.startsWith(start) } &&
                 literalOutput.openings.none { it.startsWith(start) } &&
