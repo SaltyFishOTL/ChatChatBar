@@ -64,36 +64,38 @@ internal class ReplyRemovalCoordinator(
         require((replacement == null) == (versionId == null))
         LocalDataMaintenance.access {
             var removal: ReplyRemoval? = null
-            val committed = voices.prepareReplyRemoval(
-                expected, versionId, playback::removeQueuedVoices, onlyIfUnvoiced
-            ) { collectMedia ->
-                chat.commitReplyRemoval(expected, replacement) {
-                    val media = collectMedia()
-                    val pending = ReplyRemoval(
-                        id = UUID.randomUUID().toString(), sessionId = expected.sessionId, messageId = expected.id,
-                        versionId = versionId, role = expected.role, sourceTurnId = expected.sourceTurnId,
-                        sourceTurnOrder = expected.sourceTurnOrder, timelineTurn = expected.timelineTurn,
-                        images = if (replacement == null) {
-                            (expected.images + expected.generatedImageMetadata.map { it.imagePath }).distinct()
-                        } else emptyList(),
-                        audioPaths = media.audioPaths,
-                        invalidateAutomaticMemory = ChatMemoryIndexPolicy.contributesToIndex(expected) &&
-                            (replacement == null || expected.displayContent != replacement.displayContent),
-                        legacyVoiceAnchorWitnessId = media.legacyAnchorWitnessId
-                    )
-                    storage.saveEntityUncached(STORE, pending.id, pending, ReplyRemoval.serializer())
-                    removal = pending
-                }
-            }
-            if (!committed) return@access null
+            var messageCommitted = false
             try {
+                val prepared = voices.prepareReplyRemoval(
+                    expected, versionId, playback::removeQueuedVoices, onlyIfUnvoiced
+                ) { collectMedia ->
+                    chat.commitReplyRemoval(expected, replacement) {
+                        val media = collectMedia()
+                        val pending = ReplyRemoval(
+                            id = UUID.randomUUID().toString(), sessionId = expected.sessionId, messageId = expected.id,
+                            versionId = versionId, role = expected.role, sourceTurnId = expected.sourceTurnId,
+                            sourceTurnOrder = expected.sourceTurnOrder, timelineTurn = expected.timelineTurn,
+                            images = if (replacement == null) {
+                                (expected.images + expected.generatedImageMetadata.map { it.imagePath }).distinct()
+                            } else emptyList(),
+                            audioPaths = media.audioPaths,
+                            invalidateAutomaticMemory = ChatMemoryIndexPolicy.contributesToIndex(expected) &&
+                                (replacement == null || expected.displayContent != replacement.displayContent),
+                            legacyVoiceAnchorWitnessId = media.legacyAnchorWitnessId
+                        )
+                        storage.saveEntityUncached(STORE, pending.id, pending, ReplyRemoval.serializer())
+                        removal = pending
+                    }.also { messageCommitted = it }
+                }
+                if (!prepared) return@access null
                 finish(checkNotNull(removal))
                 RemovalCommit(cleanupError = null)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: ReplyAudioFileCleanupException) {
                 RemovalCommit(error.message)
-            } catch (_: Exception) {
+            } catch (error: Exception) {
+                if (!messageCommitted) throw error
                 RemovalCommit("回复已删除，相关索引或附件清理尚未完成，将在重新打开会话时重试")
             }
         }

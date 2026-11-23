@@ -127,6 +127,37 @@ class ReplyRemovalDurabilityTest {
         verifyRetiredVoiceStaysHidden(assigned = true)
     @Test fun unassignedVoiceDoesNotPlayOnDifferentTextAfterColdRestore() =
         verifyRetiredVoiceStaysHidden(assigned = false)
+    @Test fun failedLegacyRestrictionReportsCommittedRemovalUntilColdRetry() = withFixture { fixture ->
+        val session = fixture.createSession()
+        val reply = fixture.addReply(session, versionOnly = true)
+        val retired = MessageAlternativeVersionPolicy.activeVersionId(reply)
+        val legacy = fixture.addVoice(reply).copy(versionOwnershipConfirmed = false)
+        fixture.voices.save(legacy)
+        val replacement = requireNotNull(MessageAlternativeVersionPolicy.remove(reply, retired))
+        val directory = File(fixture.context.filesDir, "entities/generated_voice_messages")
+        assertTrue(directory.setWritable(false))
+        try {
+            val warning = fixture.removals.remove(reply, replacement, retired)
+            assertTrue(warning.orEmpty().startsWith("回复已删除"))
+            assertEquals(replacement.displayContent, fixture.chats.getMessage(reply.id, session.id)?.displayContent)
+            assertEquals(legacy, fixture.voices.get(legacy.id))
+            assertTrue(File(legacy.audioPath).isFile)
+            assertEquals(1, File(fixture.context.filesDir, "entities/pending_reply_removals").listFiles().orEmpty().size)
+        } finally {
+            assertTrue(directory.setWritable(true))
+        }
+
+        val cold = Fixture(fixture.context, fixture.app)
+        assertTrue(cold.removals.retryMessage(session.id, reply.id, retired))
+        val persisted = requireNotNull(cold.chats.getMessage(reply.id, session.id))
+        assertEquals(replacement.displayContent, persisted.displayContent)
+        assertTrue(cold.voices.listForCurrentVersion(persisted).isEmpty())
+        val retained = requireNotNull(cold.voices.get(legacy.id))
+        assertTrue(retained.requiresCompatibleVersion)
+        assertEquals("synthetic audio", File(retained.audioPath).readText())
+        ReplyRemovalCoordinator.requireSettledForBackup(fixture.context.filesDir)
+    }
+
     @Test fun failedAlternativeBodyWriteAllowsOneConfirmedRetry() = verifyUncommittedRetry(versionOnly = true)
     @Test fun failedWholeMessageBodyDeleteAllowsOneConfirmedRetry() = verifyUncommittedRetry(versionOnly = false)
     @Test fun legacyArchiveStillOwnsAudioAndImageAfterMessageRemoval() = withFixture { fixture ->
