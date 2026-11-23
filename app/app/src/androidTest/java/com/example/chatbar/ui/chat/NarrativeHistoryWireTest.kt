@@ -65,12 +65,12 @@ class NarrativeHistoryWireTest {
         PADDED_OPENER, AUTHORED_CLOSE_EXTRA, HISTORICAL_TEMPLATE_PROHIBITED,
         LAZY_LIST_CLOSE, CAPTIONED_CLOSE, LAZY_QUOTE_CLOSE, ORDINARY_CAPTIONED_CLOSE, CHARACTER_POST_HISTORY,
         CHARACTER_TAIL_OPEN, CHARACTER_TAIL_CLOSE, CHARACTER_CORE, USER_COMPACT_TEMPLATE, STRONG_SUFFIX_DENIAL,
-        DOCUMENTARY_FORMAT, BOUNDED_LOG_QUOTATION,
+        DOCUMENTARY_FORMAT, BOUNDED_LOG_QUOTATION, BRACE_SLOT_TEMPLATE, QUOTED_POSSESSIVE,
     }
     private enum class RepairSecondCall { COMPLETE, INCOMPLETE, MALFORMED, GAP }
     private enum class RepairOrphan {
         FIRST, SECOND_AFTER_FULL_FRAME, SPLIT_CAPTION, VISIBLE_INPUT_LITERAL, VISIBLE_INPUT_BLOCKQUOTE, AUTHORED_CLOSE_EXTRA,
-        EXPLICIT_STANDALONE_PROHIBITION,
+        EXPLICIT_STANDALONE_PROHIBITION, QUOTED_POSSESSIVE,
     }
 
     @Before fun prepareSyntheticApplication() = runBlocking {
@@ -240,6 +240,19 @@ class NarrativeHistoryWireTest {
         verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = LiteralCase.BOUNDED_LOG_QUOTATION)
     }
 
+    @Test fun braceSlotPreservesBothTagsDuringActualStopAndDone() = runBlocking {
+        verifyReply(Transport.ORDINARY, stop = true, literal = LiteralCase.BRACE_SLOT_TEMPLATE)
+        verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = LiteralCase.BRACE_SLOT_TEMPLATE)
+    }
+
+    @Test fun quotedPossessivePreservesLiteralClosingTagInChatAndRepairColdStorage() = runBlocking {
+        verifyReply(Transport.ORDINARY, stop = true, literal = LiteralCase.QUOTED_POSSESSIVE)
+        verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = LiteralCase.QUOTED_POSSESSIVE)
+        verifyRepair(Transport.ORDINARY, stop = true, orphan = RepairOrphan.QUOTED_POSSESSIVE)
+        verifyRepair(Transport.EXPERIMENTAL_TOOL, stop = false, orphan = RepairOrphan.QUOTED_POSSESSIVE,
+            repairMode = ChatNarrativeMode.ADVANCE)
+    }
+
     @Test fun stopPersistsTwoCompleteToolCallsWhileTheProviderTerminalIsHeld() = runBlocking {
         verifyReply(Transport.EXPERIMENTAL_TOOL, stop = true, stopAfterCompleteToolCalls = true)
     }
@@ -354,6 +367,8 @@ class NarrativeHistoryWireTest {
         val ordinaryCaptionedBody = if (stop) ordinaryCaption else "$ordinaryCaption\nShe turned the page."
         val quoteLead = "Below is a literal quotation copied from the history log."
         val quoteTail = "That was a verbatim quotation from the log."
+        val possessiveLead = "'The visitors' log contains this line:\n$closing"
+        val possessiveBody = if (stop) possessiveLead else "$possessiveLead\nThe passage continues here.'"
         val listBody = if (stop) listExample else "$listExample\n\nThe explanation continues."
         val authorsTemplate = !stop && continuation == null && literal == null && legacyFirst == null && toolIndexes == null
         val input = when {
@@ -370,6 +385,9 @@ class NarrativeHistoryWireTest {
                 "Use exactly this XML template, replace [story] with new prose and keep both tags verbatim:\n" +
                     historicalTemplate.replace("\n", "")
             literal == LiteralCase.STRONG_SUFFIX_DENIAL -> "Required output template (keep both tags verbatim):\n$historicalTemplate"
+            literal == LiteralCase.BRACE_SLOT_TEMPLATE ->
+                "Use exactly this XML template, replace {story} with new prose and keep both tags verbatim:\n" +
+                    PromptTemplates.narrativeModeHistoryReply("{story}", mode)
             authorsTemplate -> "Use exactly this XML shape, replace [story] with new prose and keep both tags:\n$template"
             else -> "Continue the scene."
         }
@@ -397,7 +415,9 @@ class NarrativeHistoryWireTest {
             LiteralCase.ORDINARY_CAPTIONED_CLOSE -> if (stop) "$opener\n$ordinaryCaptionedBody"
                 else PromptTemplates.narrativeModeHistoryReply(ordinaryCaptionedBody, mode)
             LiteralCase.CHARACTER_POST_HISTORY, LiteralCase.CHARACTER_CORE, LiteralCase.USER_COMPACT_TEMPLATE,
-            LiteralCase.STRONG_SUFFIX_DENIAL, LiteralCase.DOCUMENTARY_FORMAT -> framedReply
+            LiteralCase.STRONG_SUFFIX_DENIAL, LiteralCase.DOCUMENTARY_FORMAT, LiteralCase.BRACE_SLOT_TEMPLATE -> framedReply
+            LiteralCase.QUOTED_POSSESSIVE -> if (stop) "$opener\n$possessiveBody"
+                else PromptTemplates.narrativeModeHistoryReply(possessiveBody, mode)
             LiteralCase.CHARACTER_TAIL_OPEN -> "$opener\nThis is the opening tag."
             LiteralCase.CHARACTER_TAIL_CLOSE -> "$opener\n$captionedExample"
             LiteralCase.BOUNDED_LOG_QUOTATION -> "$quoteLead\n$framedReply\n$quoteTail"
@@ -426,6 +446,7 @@ class NarrativeHistoryWireTest {
             literal == LiteralCase.CAPTIONED_CLOSE || literal == LiteralCase.CHARACTER_TAIL_CLOSE -> captionedExample
             literal == LiteralCase.LAZY_QUOTE_CLOSE -> lazyQuoteExample
             literal == LiteralCase.ORDINARY_CAPTIONED_CLOSE -> ordinaryCaptionedBody
+            literal == LiteralCase.QUOTED_POSSESSIVE -> possessiveBody
             literal == LiteralCase.ADJACENT_AUTHORED -> "$prose\n$adjacentAuthored"
             literal == LiteralCase.CARD_ORPHAN_NO_HISTORY -> prose
             literal == LiteralCase.PADDED_OPENER || literal == LiteralCase.HISTORICAL_TEMPLATE_PROHIBITED ||
@@ -577,6 +598,7 @@ class NarrativeHistoryWireTest {
         val store = ViewModelStore()
         val close = "</历史回复>"
         val splitCaption = orphan == RepairOrphan.SPLIT_CAPTION
+        val possessiveLead = "'The visitors' log contains this line:\n$close"
         val original = when (orphan) {
             RepairOrphan.SPLIT_CAPTION -> "End tag: &lt;/历史回复&gt;."
             RepairOrphan.VISIBLE_INPUT_LITERAL -> "结束标签示例：\n$close\n她关上门。"
@@ -589,6 +611,7 @@ class NarrativeHistoryWireTest {
             RepairOrphan.VISIBLE_INPUT_LITERAL -> "结束标签示例：\n`$close`\n她关上门。"
             RepairOrphan.VISIBLE_INPUT_BLOCKQUOTE -> "Closing-tag example:\n\n> $close"
             RepairOrphan.AUTHORED_CLOSE_EXTRA -> "屏幕显示 `$close`。新句。"
+            RepairOrphan.QUOTED_POSSESSIVE -> if (stop) possessiveLead else "$possessiveLead\nThe passage continues here.'"
             else -> "A repaired first line."
         }
         val second = if (splitCaption) close else "A repaired second line."
@@ -599,6 +622,10 @@ class NarrativeHistoryWireTest {
             RepairOrphan.SPLIT_CAPTION -> listOf(first, second)
             RepairOrphan.VISIBLE_INPUT_LITERAL -> listOf(PromptTemplates.narrativeModeHistoryReply(first, repairMode))
             RepairOrphan.VISIBLE_INPUT_BLOCKQUOTE -> listOf(PromptTemplates.narrativeModeHistoryReply("$first\n", repairMode))
+            RepairOrphan.QUOTED_POSSESSIVE -> {
+                val framed = PromptTemplates.narrativeModeHistoryReply(first, repairMode)
+                listOf(if (stop) framed.substringBeforeLast('\n') else framed)
+            }
             RepairOrphan.AUTHORED_CLOSE_EXTRA, RepairOrphan.EXPLICIT_STANDALONE_PROHIBITION -> listOf("$first\n$close")
             null -> if (tool) listOf(first, second) else listOf(first)
         }

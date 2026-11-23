@@ -80,7 +80,8 @@ object NarrativeHistoryEcho {
         "(?:(?:必须|务必|请)(?:逐字|原样|完整)保留(?:以下)?首尾标签|" +
             "(?:keep|preserve)[ \\t]+(?:both|the)[ \\t]+(?:opening and closing[ \\t]+)?tags[ \\t]+" +
             "(?:verbatim|exactly as (?:written|shown)))"
-    private const val templateSlot = "\\[[\\p{L}][\\p{L}\\p{N}_ -]{0,31}\\]"
+    private const val templateSlotName = "[\\p{L}][\\p{L}\\p{N}_ -]{0,31}"
+    private const val templateSlot = "(?:\\[$templateSlotName\\]|\\{$templateSlotName\\})"
     private const val userTemplateSlot = "($templateSlot)"
     private val formatTemplateSlot = Regex(templateSlot)
     private val userTemplateInstruction = Regex(
@@ -235,8 +236,13 @@ object NarrativeHistoryEcho {
         "\\b(?:never|do[ \\t]+not)[ \\t]+(?:reproduce|repeat|output)[ \\t]+(?:this|the)[ \\t]+(?:sample|example|tags)\\b",
         RegexOption.IGNORE_CASE,
     )
-    private val unfinishedPluralPossessor = Regex("(?:the|these|those|our|your|their)[ \\t]+[a-z]{2,}s")
+    private val unfinishedPluralPossessor = Regex("(?:the|these|those|our|your|their)[ \\t]+[a-z]{2,}s", RegexOption.IGNORE_CASE)
     private val unfinishedPossessedWord = Regex("[a-z]{2,}")
+    private val possessedLiteralLineLead = Regex(
+        "([a-z]{2,})[ \\t]+(?:contains|includes|shows|lists)[ \\t]+(?:this|the following)[ \\t]+" +
+            "(?:line|tag|token)[ \\t]*[:：][ \\t]*",
+        RegexOption.IGNORE_CASE,
+    )
     private val chineseSpeechLead = Regex("[说說][ \\t]*[：:]?[ \\t]*$")
     private val hanIdeograph = Regex("[\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uF900-\\uFAFF]")
     private val ordinaryProseFollowers = setOf(
@@ -2162,7 +2168,8 @@ object NarrativeHistoryEcho {
                     canBatchMarkup(source, markup, containerLineStarts, lazyQuoteLineStarts, listItemLineStarts)
             }
             val quotes = proseQuoteRanges(
-                end, source, quoteDelimitersToSkip, includeUnclosed, interiorClosings, collectMarkup.takeIf { hasMarkup },
+                end, source, quoteDelimitersToSkip, includeUnclosed, closings, interiorClosings,
+                collectMarkup.takeIf { hasMarkup },
                 interpretProseQuotes, dialogue,
             )
             return ReplyLiterals(
@@ -2288,6 +2295,7 @@ object NarrativeHistoryEcho {
         markdown: String,
         delimiterExclusions: List<IntRange>,
         includeUnclosed: Boolean,
+        wrapperClosings: List<String>,
         interiorClosings: List<Int>,
         onMarkup: ((LiteralMarkup) -> Boolean)?,
         interpretProseQuotes: Boolean,
@@ -2332,14 +2340,15 @@ object NarrativeHistoryEcho {
             if (!isProseDelimiter(index)) continue
             val followsWord = text.getOrNull(index - 1)?.isLetterOrDigit() == true
             val precedesWord = text.getOrNull(index + 1)?.isLetterOrDigit() == true
-            // Apostrophes in contractions and possessives do not start a prose quote.
-            if (symbol == '\'' && followsWord && (precedesWord || open < 0)) continue
+            // Word apostrophes and possessives use the same boundaries for both quote styles.
+            if ((symbol == '\'' || symbol == '’') && followsWord &&
+                (precedesWord || open < 0 || symbol == closing && isQuotedPossessive(
+                    text, open, index, wrapperClosings.takeIf { includeUnclosed }.orEmpty(), interiorClosings, ::isProseDelimiter,
+                ))
+            ) continue
             if (open < 0 && !followsWord && (symbol == '\'' || symbol == '‘') &&
                 leadingApostropheContraction.matchesAt(text, index + 1) &&
-                !hasContractionQuoteClose(text, index, symbol, ::isProseDelimiter)
-            ) continue
-            if (symbol == '’' && followsWord && (isWordApostrophe(text, index) ||
-                    isCurlyPossessive(text, open, index, interiorClosings, ::isProseDelimiter))
+                subsequentSingleQuoteCloses(text, index, symbol, ::isProseDelimiter) != true
             ) continue
             if (symbol == '"' && open < 0 && text.getOrNull(index - 1)?.isDigit() == true && !precedesWord) continue
             when {
@@ -2361,27 +2370,30 @@ object NarrativeHistoryEcho {
         if (includeUnclosed && open >= 0) add(open..text.lastIndex)
     }
 
-    private fun hasContractionQuoteClose(
+    /** Null while there is no later delimiter. A new opening does not complete this quote. */
+    private fun subsequentSingleQuoteCloses(
         text: String,
-        opening: Int,
-        marker: Char,
+        after: Int,
+        opening: Char,
         isProseDelimiter: (Int) -> Boolean,
-    ): Boolean {
-        val closing = proseDelimiters.getValue(marker)
-        val next = (opening + 1 until text.length).firstOrNull { index ->
-            (text[index] == marker || text[index] == closing) &&
+    ): Boolean? {
+        val closing = proseDelimiters.getValue(opening)
+        val next = (after + 1 until text.length).firstOrNull { index ->
+            (text[index] == opening || text[index] == closing) &&
                 !isWordApostrophe(text, index) && isProseDelimiter(index)
-        } ?: return false
+        } ?: return null
         if (text[next] != closing) return false
-        // For straight quotes, a mark before a new word can start the next quotation.
-        return marker != closing || !text[next - 1].isWhitespace() ||
-            text.getOrNull(next + 1)?.isLetterOrDigit() != true
+        // For straight quotes, an isolated delimiter before a word can open a new quotation.
+        val precedesWord = text.getOrNull(next + 1)?.isLetterOrDigit() == true
+        val followsWord = text.getOrNull(next - 1)?.isLetterOrDigit() == true
+        return opening != closing || !precedesWord || followsWord
     }
 
-    private fun isCurlyPossessive(
+    private fun isQuotedPossessive(
         text: String,
         quoteStart: Int,
         position: Int,
+        provisionalClosings: List<String>,
         interiorClosings: List<Int>,
         isProseDelimiter: (Int) -> Boolean,
     ): Boolean {
@@ -2390,16 +2402,31 @@ object NarrativeHistoryEcho {
         ) return false
         val wordStart = (position + 2 until text.length).firstOrNull { !text[it].isWhitespace() } ?: return false
         if (!text[wordStart].isLetter()) return false
-        val nextQuote = (position + 1 until text.length).firstOrNull { index ->
-            (text[index] == '‘' || text[index] == '’' && !isWordApostrophe(text, index)) &&
-                isProseDelimiter(index)
-        }
-        if (nextQuote != null) return text[nextQuote] == '’'
-        // Require a speech cue before widening a quote with an ambiguous English closing mark.
-        if (!chineseSpeechLead.containsMatchIn(text.subSequence(lineStart(text, quoteStart), quoteStart))) return false
+        subsequentSingleQuoteCloses(text, position, text[quoteStart], isProseDelimiter)?.let { return it }
         if (!unfinishedPluralPossessor.matches(text.subSequence(quoteStart + 1, position))) return false
+        if (lineStart(text, wordStart) != lineStart(text, position)) return false
+
+        if (hasMarkerPadding(text, quoteStart) && provisionalClosings.isNotEmpty()) {
+            val leadEnd = lineEnd(text, wordStart)
+            val introduction = possessedLiteralLineLead.matchEntire(text.subSequence(wordStart, leadEnd))
+            val possessed = introduction?.groupValues?.get(1)?.lowercase()
+            if (possessed != null && possessed !in ordinaryProseFollowers && !possessed.endsWith("ly")) {
+                val markerLine = if (text.startsWith("\r\n", leadEnd)) leadEnd + 2 else leadEnd + 1
+                if (markerLine < text.length) {
+                    val markerEnd = lineEnd(text, markerLine)
+                    val markerStart = (markerLine until markerEnd).firstOrNull { text[it] != ' ' } ?: markerEnd
+                    val marker = text.substring(markerStart, markerEnd).trimEnd()
+                    if (hasMarkerPadding(text, markerStart) && marker.startsWith("</") &&
+                        provisionalClosings.any { it.startsWith(marker) }
+                    ) return true
+                }
+            }
+        }
+
+        // A speech cue and an immediately continuing Han line also witness this provisional reading.
+        if (!chineseSpeechLead.containsMatchIn(text.subSequence(lineStart(text, quoteStart), quoteStart))) return false
         val tagLine = interiorClosings.firstOrNull { it > wordStart }?.let { lineStart(text, it) } ?: return false
-        if (tagLine <= wordStart || lineStart(text, wordStart) != lineStart(text, position)) return false
+        if (tagLine <= wordStart) return false
         val possessed = text.substring(wordStart, tagLine).trimEnd()
         return unfinishedPossessedWord.matches(possessed) && possessed !in ordinaryProseFollowers && !possessed.endsWith("ly")
     }

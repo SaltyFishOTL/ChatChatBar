@@ -3255,6 +3255,168 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `an explicitly named brace slot declares the same output shape as a square slot`() = runBlocking {
+        val story = "The lamp flickered."
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Earlier scene.").copy(narrativeMode = mode)
+            val reply = PromptTemplates.narrativeModeHistoryReply(story, mode)
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                for (slot in listOf("{story}", "[story]")) {
+                    val instruction = "Use exactly this XML template, replace $slot with new prose and keep both tags verbatim:"
+                    val template = PromptTemplates.narrativeModeHistoryReply(slot, mode)
+                    for (sample in listOf(template, template.replace("\n", ""))) {
+                        assertNarrativeReplyDeltas(
+                            listOf(reply), listOf(reply), reply, previousAssistant = prior, experimental = experimental,
+                            toolCall = toolCall, currentUserText = "$instruction\n$sample",
+                        )
+                    }
+                }
+                val slot = "{story}"
+                val instruction = "Use exactly this XML template, replace $slot with new prose and keep both tags verbatim:"
+                val template = PromptTemplates.narrativeModeHistoryReply(slot, mode)
+                for (negative in listOf(
+                    "This is a historical example:\n$template",
+                    "$instruction\n" + PromptTemplates.narrativeModeHistoryReply("{state: true}", mode),
+                    "$instruction\n" + PromptTemplates.narrativeModeHistoryReply("{story} and other prose", mode),
+                    "$instruction\n" + PromptTemplates.narrativeModeHistoryReply("{{story}}", mode),
+                    "$instruction\n" + PromptTemplates.narrativeModeHistoryReply("[story]", mode),
+                )) {
+                    assertNarrativeReplyDeltas(
+                        listOf(reply), listOf(story), story, previousAssistant = prior, experimental = experimental,
+                        toolCall = toolCall, currentUserText = negative,
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `quoted possessive keeps the inner marker and still permits the true outer close`() = runBlocking {
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Earlier scene.").copy(narrativeMode = mode)
+            val sample = PromptTemplates.narrativeModeHistoryReply("History", mode)
+            val opening = sample.substringBefore('\n')
+            val closing = sample.substringAfterLast('\n')
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                for ((start, end) in listOf('\'' to '\'', '‘' to '’')) {
+                    val lead = "${start}The visitors${end} log contains this line:"
+                    val intro = "$lead\n$closing"
+                    val continuation = "\nThe passage continues here."
+                    val body = "$intro$continuation$end"
+                    assertNarrativeReplyDeltas(
+                        listOf("$opening\n$intro", continuation, "$end\n$closing"),
+                        listOf(intro, intro + continuation, body), body, previousAssistant = prior,
+                        experimental = experimental, toolCall = toolCall,
+                    )
+                    val noWitness = PromptTemplates.narrativeModeHistoryReply(body, mode)
+                    assertNarrativeReplyDeltas(
+                        listOf(noWitness), listOf(noWitness), noWitness, fixtureHistory = false,
+                        experimental = experimental, toolCall = toolCall,
+                    )
+                    for (plain in listOf(
+                        "She said ${start}the visitors${end} arrived.",
+                        "She called it ${start}Visitors${end}, then left.",
+                        "The visitors${end} log is on the desk.",
+                        "The visitors don't need another guide.",
+                        "She said ${start}the visitors${end} wrote ${start}another log${end}.",
+                        "She said ${start}the visitors${end} then told us:",
+                        "${start}The visitors${end} arrived before sunrise.",
+                    )) {
+                        val wrapped = PromptTemplates.narrativeModeHistoryReply(plain, mode)
+                        assertNarrativeReplyDeltas(
+                            listOf(wrapped), listOf(plain), plain, previousAssistant = prior,
+                            experimental = experimental, toolCall = toolCall,
+                        )
+                    }
+                    val fenced = "```text\n$body\n```"
+                    val frame = PromptTemplates.narrativeModeHistoryReply(fenced, mode)
+                    assertNarrativeReplyDeltas(
+                        listOf(frame), listOf(fenced), fenced, previousAssistant = prior,
+                        experimental = experimental, toolCall = toolCall,
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `format repair retains the marker inside an actual straight quoted possessive`() = runBlocking {
+        val original = "The lamp opened."
+        for (mode in ChatNarrativeMode.entries) {
+            val sample = PromptTemplates.narrativeModeHistoryReply("Incorrect wrapper example.", mode)
+            val card = "The following is a counterexample:\n$sample"
+            val close = sample.substringAfterLast('\n')
+            val body = "'The visitors' log contains this line:\n$close\nThe passage continues here.'"
+            val raw = PromptTemplates.narrativeModeHistoryReply(body, mode)
+            for (experimental in listOf(false, true)) {
+                val frame = if (experimental) chunk(buildJsonObject { put("content", raw) }.toString(), "game_content")
+                    else ordinaryDelta(raw)
+                GatedExperimentalResponse(
+                    sse(listOf(frame)), sse(listOf(chunk(reason = if (experimental) "tool_calls" else "stop"), "[DONE]")),
+                ).use { server ->
+                    val repair = MessageFormatRepairService(StreamingChatService(
+                        experimentalApiModeEnabled = { experimental }, allowCleartextHttp = { true },
+                    ))
+                    val events = withTimeout(5_000) {
+                        repair.streamRepair(original, card, null, model(server.baseUrl))
+                            .onEach { if (it is StreamEvent.Delta) server.releaseTail() }.toList()
+                    }
+                    assertEquals(StreamEvent.Done, events.last())
+                    val decoded = events.filterIsInstance<StreamEvent.Delta>().joinToString("") { it.text }
+                    assertEquals(raw, decoded)
+                    assertTrue("Expected the actual prohibition in the repair request", card.lineSequence().first() in server.requestBody)
+                    val cleanup = NarrativeHistoryEcho.forFormatRepair(card, original)
+                    assertEquals("Repair Preview, Stop and Done", listOf(body, body, body), listOf(
+                        cleanup.completedBody(decoded, streaming = true),
+                        cleanup.completedBody(decoded, interrupted = true),
+                        cleanup.completedBody(decoded),
+                    ))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `held repair Stop preserves the label introduced inside an unfinished possessive quote`() = runBlocking {
+        val original = "A repaired first line."
+        for (mode in ChatNarrativeMode.entries) {
+            val sample = PromptTemplates.narrativeModeHistoryReply("Incorrect wrapper example.", mode)
+            val card = "The following is a counterexample:\n$sample"
+            val opening = sample.substringBefore('\n')
+            val close = sample.substringAfterLast('\n')
+            for ((start, end) in listOf('\'' to '\'', '‘' to '’')) {
+                val body = "${start}The visitors${end} log contains this line:\n$close"
+                val raw = "$opening\n$body"
+                for (experimental in listOf(false, true)) {
+                    val frame = if (experimental) chunk(buildJsonObject { put("content", raw) }.toString(), "game_content")
+                        else ordinaryDelta(raw)
+                    GatedExperimentalResponse(sse(listOf(frame)), sse(listOf(
+                        chunk(reason = if (experimental) "tool_calls" else "stop"), "[DONE]",
+                    ))).use { server ->
+                        var readBuffered: (() -> List<String>)? = null
+                        val repair = MessageFormatRepairService(StreamingChatService(
+                            experimentalApiModeEnabled = { experimental }, allowCleartextHttp = { true },
+                        ))
+                        val preview = withTimeout(5_000) {
+                            repair.streamRepair(original, card, null, model(server.baseUrl)) {
+                                readBuffered = it
+                            }.first { it is StreamEvent.Delta }
+                        } as StreamEvent.Delta
+                        assertFalse(server.tailSent)
+                        val buffered = readBuffered?.invoke()?.takeIf(List<String>::isNotEmpty) ?: listOf(preview.text)
+                        assertEquals(listOf(raw), buffered)
+                        val cleanup = NarrativeHistoryEcho.forFormatRepair(card, original)
+                        assertEquals("Repair Preview and actual Stop", listOf(body, body), listOf(
+                            cleanup.completedBody(preview.text, streaming = true),
+                            cleanup.completedBody(buffered.single(), interrupted = true),
+                        ))
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
     fun `text array SSE preserves a separate newline after the issued mode title`() = runBlocking {
         val prompt = PromptTemplates.narrativeModeSystemPrompt(ChatNarrativeMode.FOCUS)
         val title = prompt.lineSequence().first()
