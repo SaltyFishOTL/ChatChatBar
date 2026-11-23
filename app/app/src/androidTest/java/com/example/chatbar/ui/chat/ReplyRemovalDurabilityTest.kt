@@ -47,6 +47,28 @@ class ReplyRemovalDurabilityTest {
     @Test fun failedAlternativeLegacyAnchorDeleteUsesJournaledWitnessOnColdRetry() =
         verifyUnscopedAnchorFailure(versionOnly = true)
 
+    @Test fun malformedUnrelatedAnchorDoesNotBlockOwnedVoiceCleanup() = withFixture { fixture ->
+        val session = fixture.createSession()
+        val reply = fixture.addReply(session, versionOnly = true)
+        val voice = fixture.addVoice(reply)
+        val version = MessageAlternativeVersionPolicy.activeVersionId(reply)
+        val replacement = requireNotNull(MessageAlternativeVersionPolicy.remove(reply, version))
+        val anchorDirectory = File(fixture.context.filesDir, "entities/voice_anchor_states")
+        val ownedAnchor = File(anchorDirectory, "${VoiceAnchorStateKey(session.id, reply.id, version).storageId}.json")
+        assertTrue(ownedAnchor.isFile)
+        val malformedAnchor = File(anchorDirectory, "unrelated-malformed-anchor.json").apply {
+            writeBytes(byteArrayOf())
+        }
+
+        assertNull(fixture.removals.remove(reply, replacement, version))
+
+        assertEquals(replacement.displayContent, fixture.chats.getMessage(reply.id, session.id)?.displayContent)
+        assertFalse(ownedAnchor.exists())
+        assertFalse(File(voice.audioPath).exists())
+        assertTrue(malformedAnchor.isFile)
+        assertArrayEquals(byteArrayOf(), malformedAnchor.readBytes())
+    }
+
     @Test fun pendingAudioCleanupPreservesRebuiltMemoryAcrossReopenAndRetry() = withFixture { fixture ->
         val session = fixture.createSession()
         val reply = fixture.addReply(session, versionOnly = true)

@@ -349,7 +349,13 @@ class VoiceMessageRepository(
             }
             removeFromPlayback(targeted.mapTo(mutableSetOf(), GeneratedVoiceMessage::id))
             val anchorKeys = mutableSetOf<VoiceAnchorStateKey>()
-            storage.forEachUncached(ANCHOR_TYPE, VoiceAnchorState.serializer(), requireCompleteRead = true) { state ->
+            // Malformed anchor metadata cannot prove ownership and stores no audio file references.
+            storage.forEachUncached(
+                ANCHOR_TYPE,
+                VoiceAnchorState.serializer(),
+                requireCompleteRead = true,
+                skipMalformedRecords = true
+            ) { state ->
                 if (state.messageId == removal.messageId &&
                     (removal.versionId == null || state.messageVersionId == removal.versionId) &&
                     ownsReplyAnchor(state, removal)) {

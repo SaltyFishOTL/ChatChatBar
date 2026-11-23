@@ -315,6 +315,7 @@ class JsonFileStorage(private val context: Context) {
         serializer: KSerializer<T>,
         predicate: (T) -> Boolean = { true },
         requireCompleteRead: Boolean = false,
+        skipMalformedRecords: Boolean = false,
         action: suspend (T) -> Unit
     ) = mutexFor(entityType).withStorageAccess {
         withContext(Dispatchers.IO) {
@@ -327,7 +328,8 @@ class JsonFileStorage(private val context: Context) {
                         json.decodeFromStream(serializer, input)
                     }
                 } catch (error: Exception) {
-                    if (requireCompleteRead || error is kotlinx.coroutines.CancellationException) throw error
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    if (requireCompleteRead && !(skipMalformedRecords && error is SerializationException)) throw error
                     continue
                 }
                 if (predicate(entity)) action(entity)
