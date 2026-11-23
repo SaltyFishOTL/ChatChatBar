@@ -1,6 +1,7 @@
 package com.example.chatbar.domain.chat
 
 import com.example.chatbar.data.local.entity.ChatNarrativeMode
+import com.example.chatbar.domain.prompt.PromptTemplates
 
 /** Removes request-only history wrappers when the model echoes them around its new reply. */
 object NarrativeHistoryEcho {
@@ -27,6 +28,9 @@ object NarrativeHistoryEcho {
     private val wrappers = ChatNarrativeMode.entries.map { mode ->
         Wrapper("历史回复", "<历史回复 模式=\"${mode.shortLabel}\">", listOf("</历史回复>"))
     } + legacyWrapper
+    private val narrativeModeHeadings = ChatNarrativeMode.entries.map { mode ->
+        PromptTemplates.narrativeModeSystemPrompt(mode).lineSequence().first()
+    }.toSet()
     private val wrapperFamilyTokens = wrappers.associate { wrapper ->
         val name = Regex.escape(wrapper.name)
         wrapper.name to Regex("</?$name(?=[\\s=>/])[^<>]*>")
@@ -127,6 +131,7 @@ object NarrativeHistoryEcho {
         val singlePairOpenings: Set<String> = emptySet(),
         val declaresAnnotatedActions: Boolean = false,
         val counterexampleOpenings: Set<String> = emptySet(),
+        val counterexampleClosingStarts: Set<Int> = emptySet(),
     )
 
     internal class RequestCleanup internal constructor(
@@ -143,7 +148,9 @@ object NarrativeHistoryEcho {
         private var authoredPairs: Set<String> = emptySet()
 
         fun recordNarrativePrompt(prompt: String, userText: String?) {
-            prompt.lineSequence().firstOrNull()?.takeIf(String::isNotBlank)?.let(narrativeHeadings::add)
+            prompt.lineSequence().forEachIndexed { index, line ->
+                if (line.isNotBlank() && (index == 0 || line in narrativeModeHeadings)) narrativeHeadings += line
+            }
             if (currentUserText != userText) {
                 currentUserText = userText
                 authoredPairs = declaredUserPairs(userText)
@@ -152,6 +159,17 @@ object NarrativeHistoryEcho {
 
         private fun isAuthored(token: String): Boolean =
             formatCard?.contains(token) == true || currentUserText?.contains(token) == true
+
+        private fun isAuthoredClosing(token: String): Boolean {
+            if (currentUserText?.contains(token) == true) return true
+            val card = formatCard ?: return false
+            var position = card.indexOf(token)
+            while (position >= 0) {
+                if (position !in formatOutput.counterexampleClosingStarts) return true
+                position = card.indexOf(token, position + 1)
+            }
+            return false
+        }
 
         val declaresLegacyHistoryWrapper: Boolean
             get() = legacyWrapper.opening in formatOutput.declaredOpenings
@@ -188,6 +206,7 @@ object NarrativeHistoryEcho {
                 )
                 if (cleaned != text) return cleaned
                 val repairClosings = wrappers.filter { it.opening in repairOpenings }.flatMap { it.closings }
+                    .filterNot { close -> repairLiteralSources.any { close in it } }
                 return withoutOrphanClosing(text, repairClosings, provisional, formatOutput) { partial ->
                     repairLiteralSources.any { partial in it }
                 }
@@ -206,8 +225,8 @@ object NarrativeHistoryEcho {
                 },
             )
             val unwrapped = if (cleaned != body) cleaned else {
-                val closings = projectedClosings.filterNot(::isAuthored)
-                withoutOrphanClosing(body, closings, provisional, formatOutput, ::isAuthored)
+                val closings = projectedClosings.filterNot(::isAuthoredClosing)
+                withoutOrphanClosing(body, closings, provisional, formatOutput, ::isAuthoredClosing)
             }
             return withoutHeadingBeforeTrailer(unwrapped, headings, provisional, formatOutput)
         }
@@ -254,11 +273,10 @@ object NarrativeHistoryEcho {
                     if (lineStart(text, tag.range.first) != tag.range.first) continue
                     val closing = wrapperBoundary(wrapper, tags.asSequence().drop(index + 1)).closing ?: continue
                     val end = closing.range.last + 1
-                    if (lineStart(text, closing.range.first) != closing.range.first ||
-                        (end < text.length && !text[end].isHistoryLineBreak())
-                    ) continue
+                    if (end < text.length && !text[end].isHistoryLineBreak()) continue
                     val pair = text.substring(tag.range.first, end)
-                    if (wrapper.isStandalonePair(pair)) add(pair)
+                    val singleLine = lineStart(text, closing.range.first) == tag.range.first
+                    if (singleLine || wrapper.isStandalonePair(pair)) add(pair)
                 }
             }
         }
@@ -272,15 +290,27 @@ object NarrativeHistoryEcho {
 
     internal fun forFormatRepair(formatCard: String?, original: String, userText: String? = null): RequestCleanup {
         val output = formatCard?.let(::declaredOutput) ?: FormatOutput()
-        val openings = wrappers.filter { wrapper ->
+        val sources = listOfNotNull(original, userText)
+        val candidates = wrappers.filter { wrapper ->
             wrapper.opening in output.counterexampleOpenings && wrapper.opening !in output.declaredOpenings &&
-                wrapper.opening !in original && wrapper.closings.none { it in original } &&
-                userText?.contains(wrapper.opening) != true &&
-                wrapper.closings.none { userText?.contains(it) == true }
+                sources.none { wrapper.opening in it }
+        }
+        val closings = candidates.flatMap(Wrapper::closings).toSet()
+        // A closing delimiter inside a literal is independent of a newly emitted outer pair.
+        // Keep the stricter source check for orphan closers, where there is no matching opener.
+        val visibleClosings = sources.flatMapTo(mutableSetOf()) { source ->
+            if (closings.none { it in source }) return@flatMapTo emptyList()
+            val tags = wrapperFamilyTokens.values.flatMap { it.findAll(source).toList() }
+            val literals = classifyLiterals(source, tags)
+            tags.filter { it.value in closings && literals.isVisibleWrapperTag(source, it, includeStandaloneLazyTags = true) }
+                .map { it.value }
+        }
+        val openings = candidates.filter { wrapper ->
+            wrapper.closings.none { it in visibleClosings }
         }.mapTo(mutableSetOf(), Wrapper::opening)
         return RequestCleanup(
             enabled = openings.isNotEmpty(), formatOutput = output, repairOpenings = openings,
-            repairLiteralSources = listOfNotNull(original, userText),
+            repairLiteralSources = sources,
         )
     }
 
@@ -382,6 +412,7 @@ object NarrativeHistoryEcho {
         val trailingBareStatusLeads = mutableSetOf<String>()
         val singlePairOpenings = mutableSetOf<String>()
         val counterexampleOpenings = mutableSetOf<String>()
+        val counterexampleClosingStarts = mutableSetOf<Int>()
         val declaredOpenings = buildSet {
             var matchedEnd = -1
             for ((index, opening) in markup.withIndex()) {
@@ -418,6 +449,7 @@ object NarrativeHistoryEcho {
                     literals.matchesVisibleLine(after, formatCounterexampleTail)
                 ) {
                     counterexampleOpenings += wrapper.opening
+                    counterexampleClosingStarts += closing.range.first
                     continue
                 }
                 add(wrapper.opening)
@@ -450,7 +482,12 @@ object NarrativeHistoryEcho {
                     if (example != null && cleanReply(
                             template, streaming = false, interrupted = false, requirePair = true,
                         ).matchedOuterPair
-                    ) counterexampleOpenings += example.opening
+                    ) {
+                        counterexampleOpenings += example.opening
+                        val templateStart = formatCard.indexOf(example.opening, contentStart)
+                        val close = example.closings.first(template::endsWith)
+                        counterexampleClosingStarts += templateStart + template.length - close.length
+                    }
                     continue
                 }
                 val statusInfo = fence.statusInfo()
@@ -492,7 +529,7 @@ object NarrativeHistoryEcho {
         }
         return FormatOutput(
             declaredOpenings, trailingStatusInfos, trailingBareStatusLeads, singlePairOpenings, declaresAnnotatedActions,
-            counterexampleOpenings,
+            counterexampleOpenings, counterexampleClosingStarts,
         )
     }
 

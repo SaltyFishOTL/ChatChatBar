@@ -1,5 +1,6 @@
 package com.example.chatbar.domain.chat
 
+import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatNarrativeMode
 import com.example.chatbar.data.local.entity.MessageRole
@@ -1497,6 +1498,145 @@ class ExperimentalToolTransportTest {
             assertEquals(received, NarrativeHistoryEcho.forFormatRepair(card, "$original\n$close").completedBody(received))
             val literal = NarrativeHistoryEcho.forFormatRepair(card, "$original\n$partial")
             assertEquals(prefix, literal.completedBody(prefix, interrupted = true))
+        }
+    }
+
+    @Test
+    fun `serialized narrative sections clean the exact mode subtitle`() = runBlocking {
+        val story = "她推开了门。"
+        for (mode in ChatNarrativeMode.entries) {
+            val built = PromptAssembler().assembleCachePromptLayers(CharacterCard.create("fixture"), narrativeMode = mode)
+                .narrativeModeSystemPrompt
+            val subtitle = PromptTemplates.narrativeModeSystemPrompt(mode).lineSequence().first()
+            val tail = PromptTemplates.narrativeModeTailSystemPrompt(mode, null)
+            val inner = "$subtitle\n$story"
+            val wrapped = PromptTemplates.narrativeModeHistoryReply(inner, mode)
+            val partialTitle = subtitle.substringBefore('（')
+            for (toolCall in listOf(false, true)) {
+                assertNarrativeReplyDeltas(
+                    listOf(partialTitle, "${subtitle.removePrefix(partialTitle)}\n$story"),
+                    listOf("", story), story, narrativePrompt = built, narrativeTail = tail,
+                    experimental = toolCall, toolCall = toolCall,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(wrapped), listOf(story), story, narrativePrompt = built, narrativeTail = tail,
+                    experimental = toolCall, toolCall = toolCall,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(inner), listOf(inner), inner, narrativePrompt = built, narrativeTail = tail,
+                    currentUserText = "原样保留标题 $subtitle", experimental = toolCall, toolCall = toolCall,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `an exact single line pair from the sent user survives alongside a history projection`() = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val literal = "<历史回复 模式=\"${mode.shortLabel}\">样张</历史回复>"
+        val userText = "原样输出以下整行：\n$literal"
+        val previous = ChatMessage.create("fixture", MessageRole.ASSISTANT, "雨落在窗沿。").copy(narrativeMode = mode)
+        val prefix = literal.substringBefore("</")
+        val differentBody = "另一页样张"
+        val different = literal.replace("样张", differentBody)
+        for (toolCall in listOf(false, true)) {
+            assertNarrativeReplyDeltas(
+                listOf(prefix, literal.removePrefix(prefix)), listOf(prefix, literal), literal,
+                previousAssistant = previous, currentUserText = userText, experimental = toolCall, toolCall = toolCall,
+            )
+            assertNarrativeReplyDeltas(
+                listOf(different), listOf(differentBody), differentBody, previousAssistant = previous,
+                currentUserText = userText, experimental = toolCall, toolCall = toolCall,
+            )
+        }
+    }
+
+    @Test
+    fun `a forbidden card example does not reserve the projected orphan close`() = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val story = "她推开了门。"
+        val previous = ChatMessage.create("fixture", MessageRole.ASSISTANT, "雨落在窗沿。").copy(narrativeMode = mode)
+        val sample = PromptTemplates.narrativeModeHistoryReply("示例", mode)
+        val close = sample.lineSequence().last()
+        val partialClose = close.dropLast(1)
+        val forbidden = "以下是禁止输出的反例："
+        val bareCard = "$forbidden\n$sample"
+        val fencedCard = "$forbidden\n```xml\n$sample\n```"
+        val raw = "$story\n$close"
+        for (toolCall in listOf(false, true)) {
+            for (card in listOf(bareCard, fencedCard)) {
+                assertNarrativeReplyDeltas(
+                    listOf("$story\n$partialClose", close.removePrefix(partialClose)), listOf(story, story), story,
+                    formatCard = card, previousAssistant = previous, experimental = toolCall, toolCall = toolCall,
+                )
+            }
+            for (card in listOf("输出模板：\n$sample", "$bareCard\n\n保留书页文字 `$close`。")) {
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(raw), raw, formatCard = card, previousAssistant = previous,
+                    experimental = toolCall, toolCall = toolCall,
+                )
+            }
+            assertNarrativeReplyDeltas(
+                listOf(raw), listOf(raw), raw, formatCard = bareCard, previousAssistant = previous,
+                currentUserText = "保留字面标签 $close", experimental = toolCall, toolCall = toolCall,
+            )
+        }
+    }
+
+    @Test
+    fun `repair SSE removes an outer pair while retaining the original literal close`() = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val original = "纸上写着 `</历史回复>`。"
+        val revised = "纸上印着 `</历史回复>`。"
+        val sample = PromptTemplates.narrativeModeHistoryReply("示例", mode)
+        val card = "以下是禁止输出的反例：\n$sample"
+        val reply = PromptTemplates.narrativeModeHistoryReply(revised, mode)
+        val prefix = reply.substringBeforeLast('\n')
+        val suffix = reply.removePrefix(prefix)
+        for (toolCall in listOf(false, true)) {
+            val deltas = listOf(prefix, suffix).mapIndexed { index, body ->
+                if (toolCall) {
+                    val escaped = JsonPrimitive(body).toString().removeSurrounding("\"")
+                    val fragment = if (index == 0) "{\"content\":\"$escaped" else "$escaped\"}"
+                    chunk(fragment, "game_content".takeIf { index == 0 })
+                } else buildJsonObject {
+                    put("choices", buildJsonArray {
+                        add(buildJsonObject { put("delta", buildJsonObject { put("content", body) }) })
+                    })
+                }.toString()
+            }
+            GatedExperimentalResponse(
+                sse(listOf(deltas.first())),
+                sse(listOf(deltas.last(), chunk(reason = if (toolCall) "tool_calls" else "stop"), "[DONE]")),
+            ).use { server ->
+                val transport = StreamingChatService(
+                    allowCleartextHttp = { true }, experimentalApiModeEnabled = { toolCall },
+                )
+                val cleanup = NarrativeHistoryEcho.forFormatRepair(card, original)
+                var received = ""
+                val events = withTimeout(5_000) {
+                    MessageFormatRepairService(transport).streamRepair(original, card, null, model(server.baseUrl))
+                        .onEach { event ->
+                            if (event is StreamEvent.Delta) {
+                                received += event.text
+                                if (received == prefix) {
+                                    assertFalse(server.tailSent)
+                                    server.releaseTail()
+                                }
+                            }
+                        }.toList()
+                }
+                assertEquals(StreamEvent.Done, events.last())
+                assertEquals(reply, received)
+                for ((streaming, interrupted) in listOf(true to false, false to true)) {
+                    val cleaned = cleanup.completedBody(prefix, streaming = streaming, interrupted = interrupted)
+                    assertEquals(revised, MessageFormatRepairPolicy.progressiveOverlay(original, cleaned))
+                }
+                assertEquals(revised, cleanup.completedBody(received))
+                val request = Json.parseToJsonElement(server.requestBody).jsonObject.toString()
+                assertTrue(request.contains("禁止输出的反例"))
+                assertTrue(request.contains(original))
+            }
         }
     }
 

@@ -38,6 +38,7 @@ Use chatbar-model-request-runtime for provider/request failures and chatbar-long
 - Replace only the current displayed candidate. Preserve other alternatives, images, reasoning, timestamps/order identity, and source-turn identity unless the owning operation explicitly changes them.
 - Use Unicode code-point boundaries for progressive overlay so surrogate-pair emoji are not split.
 - Keep streamed overlay in UI memory. Persist only terminal content or an explicit stopped result.
+- A protected closing tag in the original text can coexist with cleanup of a fresh outer pair from a prohibited format-card example. Keep a close already present in the original or current user text out of orphan cleanup.
 - Whenever repair changes content, persist an APPLIED or recoverable terminal notice containing the exact pre-repair text.
 - Show a notice only while notice.targetContent equals message.displayContent.
 - Restore only the current candidate from notice.originalContent, then clear the notice.
