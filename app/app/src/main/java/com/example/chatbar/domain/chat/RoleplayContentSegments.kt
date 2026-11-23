@@ -317,26 +317,33 @@ private val dashFencePattern = Regex("(?m)^[ \t]*---[ \t]*$")
 private const val actionOptionsTitle = "**【行动选项】**"
 private val actionOptionsHeading = Regex(" {0,3}${Regex.escape(actionOptionsTitle)}[ \\t]*")
 private val numberedActionOption = Regex(" {0,3}([1-9][0-9]{0,8})\\.(?:[ \\t]+|(?=\\*\\*))\\S.*")
+private val bulletedActionOption = Regex(" {0,3}([-+*])[ \\t]+\\S.*")
+private val actionListBoundary = Regex("(?m)^ {0,3}([-—―─－]{3,})[ \\t]*$")
 
 private fun matchesNumberedActionOption(line: String, ordinal: Int): Boolean =
     numberedActionOption.matchEntire(line)?.groupValues?.get(1) == ordinal.toString()
 
-/** Plain dashes need ordered choices. The exact action heading makes even one choice explicit. */
+private fun String.isActionListDelimiter(): Boolean =
+    this == "---" || isNotEmpty() && length >= minLongWrapperDashCount(first()) && all { it == first() }
+
+private fun actionBullet(line: String): String? = bulletedActionOption.matchEntire(line)?.groupValues?.get(1)
+
+/** Paired dashes need an actual choice list. Legacy long delimiters require ordered choices. */
 internal fun roleplayListedActionRanges(text: String): Sequence<IntRange> =
-    dashFencePattern.findAll(text)
-        .filter { marker ->
-            val indent = marker.value.substringBefore("---")
-            indent.length <= 3 && '\t' !in indent
-        }
+    actionListBoundary.findAll(text)
+        .filter { it.groupValues[1].isActionListDelimiter() }
         .zipWithNext()
         .mapNotNull { (opening, closing) ->
+            val delimiter = opening.groupValues[1]
+            if (delimiter != closing.groupValues[1]) return@mapNotNull null
             val lines = text.subSequence(opening.range.last + 1, closing.range.first)
                 .lineSequence().filter { it.isNotBlank() }.toList()
             val hasHeading = lines.firstOrNull()?.let(actionOptionsHeading::matches) == true
             val options = if (hasHeading) lines.drop(1) else lines
             val minimumOptions = if (hasHeading) 1 else 2
+            val bullet = options.firstOrNull()?.takeIf { delimiter == "---" }?.let(::actionBullet)
             val listed = options.size >= minimumOptions && options.withIndex().all { (index, option) ->
-                matchesNumberedActionOption(option, index + 1)
+                if (bullet == null) matchesNumberedActionOption(option, index + 1) else actionBullet(option) == bullet
             }
             if (listed) opening.range.first..closing.range.last else null
         }
@@ -481,7 +488,8 @@ internal fun isPendingRoleplayActionSuffix(text: String): Boolean {
     val opening = lines.firstOrNull() ?: return false
     val annotated = annotatedActionBoundary.matchEntire(opening)
         ?.groupValues?.get(1)?.startsWith('—') == true
-    if (!annotated && !dashFencePattern.matches(opening)) return false
+    val delimiter = actionListBoundary.matchEntire(opening)?.groupValues?.get(1)
+    if (!annotated && delimiter?.isActionListDelimiter() != true) return false
     val hasHeading = lines.getOrNull(1)?.let(actionOptionsHeading::matches) == true
     if (annotated && !hasHeading) return false
 
@@ -492,18 +500,22 @@ internal fun isPendingRoleplayActionSuffix(text: String): Boolean {
         else -> 2
     }
     val options = lines.drop(if (hasHeading) 2 else 1)
+    val bullet = options.firstOrNull()?.takeIf { delimiter == "---" }?.let(::actionBullet)
     for ((index, line) in options.withIndex()) {
         val ordinal = index + 1
-        if (matchesNumberedActionOption(line, ordinal)) continue
+        val choice = if (bullet == null) matchesNumberedActionOption(line, ordinal) else actionBullet(line) == bullet
+        if (choice) continue
         if (index != options.lastIndex || index < minimumOptions) return false
         val lastCharacter = text.trimEnd(' ', '\t').lastOrNull()
         if (lastCharacter == '\n' || lastCharacter == '\r') return false
 
         val content = line.trimStart(' ')
         if (line.length - content.length > 3) return false
-        val closing = if (annotated) annotatedActionLabel + "—".repeat(annotatedActionDashCount) else "---"
+        val closing = if (annotated) annotatedActionLabel + "—".repeat(annotatedActionDashCount) else requireNotNull(delimiter)
+        if (closing.startsWith(content)) return true
+        if (bullet != null) return content.trimEnd(' ', '\t') == bullet
         val marker = "$ordinal."
-        if (closing.startsWith(content) || marker.startsWith(content)) return true
+        if (marker.startsWith(content)) return true
         if (!content.startsWith(marker)) return false
         val partialBody = content.substring(marker.length).trim(' ', '\t')
         return partialBody.length <= 2 && partialBody.all { it == '*' }

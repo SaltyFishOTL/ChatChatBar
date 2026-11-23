@@ -112,6 +112,7 @@ object NarrativeHistoryEcho {
     internal data class FormatOutput(
         val declaredOpenings: Set<String> = emptySet(),
         val trailingStatusInfos: Set<String> = emptySet(),
+        val trailingBareStatusLeads: Set<String> = emptySet(),
         val singlePairOpenings: Set<String> = emptySet(),
         val declaresAnnotatedActions: Boolean = false,
     )
@@ -153,9 +154,7 @@ object NarrativeHistoryEcho {
 
     private fun declaredOutput(formatCard: String): FormatOutput {
         val candidates = wrappers.filter { it.opening in formatCard }
-        if (candidates.isEmpty() && annotatedRoleplayActionOpening !in formatCard &&
-            typedStatusInfos.none { formatCard.contains("```$it", ignoreCase = true) }
-        ) {
+        if (candidates.isEmpty() && annotatedRoleplayActionOpening !in formatCard && "```" !in formatCard) {
             return FormatOutput()
         }
         val tokens = candidates.map { it.name }.distinct().flatMap { name ->
@@ -166,6 +165,7 @@ object NarrativeHistoryEcho {
             literals.isVisibleWrapperTag(formatCard, it, includeStandaloneLazyTags = true)
         }
         val trailingStatusInfos = mutableSetOf<String>()
+        val trailingBareStatusLeads = mutableSetOf<String>()
         val singlePairOpenings = mutableSetOf<String>()
         val declaredOpenings = buildSet {
             var matchedEnd = -1
@@ -226,12 +226,17 @@ object NarrativeHistoryEcho {
                 val isReplySample = replySampleLabel.matches(labelText)
                 val contentStart = literals.markdown.indexOf('\n', fence.range.first) + 1
                 val template = formatCard.substring(contentStart, closingLine).trim()
-                val statusInfo = fence.typedStatusInfo()
+                val statusInfo = fence.statusInfo()
                 if (statusInfo != null && template.isNotBlank() &&
                     (trailingStatusLabel.matches(labelText) ||
                         isReplySample && precedingInstruction?.let(trailingStatusLabel::matches) == true)
                 ) {
-                    trailingStatusInfos += statusInfo
+                    if (statusInfo.isEmpty()) {
+                        val lead = statusLead(template.lineSequence().first())
+                        if (lead.isNotEmpty()) trailingBareStatusLeads += lead
+                    } else {
+                        trailingStatusInfos += statusInfo
+                    }
                 }
                 val explicitReplySample = isReplySample && requiresUnfencedTags(precedingInstruction)
                 val explicitOutputFormat = outputFormatLabel.matches(labelText) &&
@@ -258,7 +263,9 @@ object NarrativeHistoryEcho {
                 ) &&
                 !literals.matchesVisibleLine(nextNonblankLine(literals.markdown, range.last + 1), formatCounterexampleTail)
         }
-        return FormatOutput(declaredOpenings, trailingStatusInfos, singlePairOpenings, declaresAnnotatedActions)
+        return FormatOutput(
+            declaredOpenings, trailingStatusInfos, trailingBareStatusLeads, singlePairOpenings, declaresAnnotatedActions,
+        )
     }
 
     private fun requiresUnfencedTags(instruction: String?): Boolean =
@@ -277,8 +284,29 @@ object NarrativeHistoryEcho {
         text.startsWith(opening) && closings.any(text::endsWith) &&
             wrapperFamilyTokens.getValue(name).findAll(text).count() == 2
 
-    private fun MarkdownCodeFences.Block.typedStatusInfo(): String? =
-        info.lowercase().takeIf { topLevel && marker == '`' && markerLength == 3 && it in typedStatusInfos }
+    private fun MarkdownCodeFences.Block.statusInfo(): String? =
+        info.lowercase().takeIf { topLevel && marker == '`' && markerLength == 3 && (it.isEmpty() || it in typedStatusInfos) }
+
+    private fun statusLead(line: String): String {
+        val colon = line.indexOfFirst { it == ':' || it == '：' }
+        return (if (colon >= 0) line.substring(0, colon) else line).trim().let {
+            if (colon >= 0 && it.isNotEmpty()) "$it:" else it
+        }
+    }
+
+    private fun MarkdownCodeFences.Block.matchesBareStatusLead(
+        text: String, declaredLeads: Set<String>, provisional: Boolean,
+    ): Boolean {
+        if (declaredLeads.isEmpty() || closingLineStart == null && !provisional) return false
+        val firstNewline = text.indexOf('\n', range.first)
+        val bodyEnd = closingLineStart ?: range.last + 1
+        val body = if (firstNewline in range) text.substring(firstNewline + 1, bodyEnd) else ""
+        val firstLine = body.lineSequence().firstOrNull { it.isNotBlank() }
+        if (firstLine == null) return closingLineStart == null && provisional
+        val lead = statusLead(firstLine)
+        return lead in declaredLeads || lead.isNotEmpty() && closingLineStart == null && provisional &&
+            !body.endsWith('\n') && body.trimStart() == firstLine.trimStart() && declaredLeads.any { it.startsWith(lead) }
+    }
 
     private fun previousVisibleLine(markdown: String, before: Int): IntRange? {
         var end = before
@@ -433,8 +461,13 @@ object NarrativeHistoryEcho {
         }
         val suffixRanges by lazy(LazyThreadSafetyMode.NONE) {
             val status = literals.fences.filter {
-                it.topLevel && it.legacyStatus ||
-                    it.typedStatusInfo()?.let(formatOutput.trailingStatusInfos::contains) == true
+                it.topLevel && it.legacyStatus || when (val info = it.statusInfo()) {
+                    null -> false
+                    "" -> it.matchesBareStatusLead(
+                        literals.markdown, formatOutput.trailingBareStatusLeads, streaming || interrupted,
+                    )
+                    else -> info in formatOutput.trailingStatusInfos
+                }
             }.map { it.range }
             val options = (roleplayAnnotatedActionRanges(literals.markdown).asSequence() +
                 roleplayListedActionRanges(literals.markdown)).filter { range ->
@@ -610,7 +643,8 @@ object NarrativeHistoryEcho {
 
         // A status opener can arrive a token at a time. A newline already committed to ordinary code stays literal.
         if (provisional && (MarkdownCodeFences.legacyStatusOpening.startsWith(remainder) ||
-                formatOutput.trailingStatusInfos.any { "```$it".startsWith(remainder, ignoreCase = true) })
+                formatOutput.trailingStatusInfos.any { "```$it".startsWith(remainder, ignoreCase = true) } ||
+                formatOutput.trailingBareStatusLeads.isNotEmpty() && "```".startsWith(remainder))
         ) return true
         if (!literals.isUnprotected(position)) return false
         val action = literals.markdown.substring(line) + text.substring(literals.markdown.length)

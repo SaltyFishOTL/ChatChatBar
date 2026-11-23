@@ -755,7 +755,7 @@ class ExperimentalToolTransportTest {
             actions.replace(heading, "**【示例】**") + "\n\n$status",
             "$optionOpen\n$heading\n正文示例。\n$optionClose\n\n$status",
             actions.removeSuffix(optionClose) + "\n\n$status",
-            actions.replace(optionLabel, "") + "\n\n$status",
+            actions.replace(optionLabel, "").replace("2. ", "3. ") + "\n\n$status",
             "$actions\n\n$status\n\n后续示例说明。",
         )) {
             val literal = "$wrapped\n\n$suffix"
@@ -790,6 +790,74 @@ class ExperimentalToolTransportTest {
         )) {
             assertNarrativeReplyStates(wrapped + literal, expected = wrapped + literal, experimental = false)
         }
+    }
+
+    @Test
+    fun `ordinary SSE keeps bulleted choices after a cleaned history wrapper`() = runBlocking {
+        val story = "灯亮了。"
+        val wrapped = PromptTemplates.narrativeModeHistoryReply(story, ChatNarrativeMode.FOCUS)
+        val firstChoice = "\n\n---\n**【行动选项】**\n- 先开门"
+        val continuation = "\n- 等同伴\n---"
+        assertNarrativeReplyDeltas(
+            listOf(wrapped, firstChoice, continuation),
+            listOf(story, story + firstChoice, story + firstChoice + continuation),
+            story + firstChoice + continuation,
+            experimental = false,
+        )
+        val unheaded = "\n\n---\n- 先开门\n- 等同伴\n---"
+        assertNarrativeReplyStates(wrapped + unheaded, story + unheaded, experimental = false)
+
+        for (literal in listOf(
+            "\n\n---\n一段普通文字。\n---",
+            "\n\n---\n- 唯一的普通列表项\n---",
+            "\n\n---\n- 第一项\n* 换到另一种列表\n---",
+            "\n\n```markdown$unheaded\n```",
+            "$unheaded\n\n她说这只是演示。",
+        )) {
+            assertNarrativeReplyStates(wrapped + literal, wrapped + literal, experimental = false)
+        }
+    }
+
+    @Test
+    fun `ordinary SSE keeps numbered choices in supported long dash blocks`() = runBlocking {
+        val story = "灯亮了。"
+        val wrapped = PromptTemplates.narrativeModeHistoryReply(story, ChatNarrativeMode.FOCUS)
+        for (delimiter in listOf("————", "------")) {
+            val choices = "\n\n$delimiter\n1. 先开门\n2. 等同伴"
+            val closing = "\n$delimiter"
+            assertNarrativeReplyDeltas(
+                listOf(wrapped, choices, closing),
+                listOf(story, story + choices, story + choices + closing),
+                story + choices + closing,
+                experimental = false,
+            )
+            assertEquals(story, stripRoleplayStatusSegments(story + choices + closing))
+            val literal = "\n\n$delimiter\n- 第一项\n- 第二项\n$delimiter"
+            assertNarrativeReplyStates(wrapped + literal, wrapped + literal, experimental = false)
+        }
+    }
+
+    @Test
+    fun `ordinary SSE keeps a declared bare status without treating bare code as status evidence`() = runBlocking {
+        val story = "灯亮了。"
+        val wrapped = PromptTemplates.narrativeModeHistoryReply(story, ChatNarrativeMode.FOCUS)
+        val template = "```\n🕰时间：待填\n📍地点：待填\n```"
+        val card = "每次回复末尾必须输出以下状态栏：\n$template"
+        val suffixDeltas = listOf("\n\n``", "`\n🕰时", "间: 晚上七点\n📍地点：中厅", "\n```")
+        val status = suffixDeltas.joinToString("")
+        assertNarrativeReplyDeltas(
+            listOf(wrapped) + suffixDeltas,
+            suffixDeltas.runningFold(story, String::plus),
+            story + status,
+            formatCard = card,
+            experimental = false,
+        )
+        assertEquals(story, stripRoleplayStatusSegments(story + status))
+        for (untrustedCard in listOf(template, "> 每次回复末尾必须输出以下状态栏：\n$template")) {
+            assertNarrativeReplyStates(wrapped + status, wrapped + status, formatCard = untrustedCard, experimental = false)
+        }
+        val code = "\n\n```\nval door = open()\n```"
+        assertNarrativeReplyStates(wrapped + code, wrapped + code, formatCard = card, experimental = false)
     }
 
     @Test
