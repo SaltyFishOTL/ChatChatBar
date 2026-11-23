@@ -1,9 +1,12 @@
 package com.example.chatbar.domain.chat
 
+import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatNarrativeMode
+import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.domain.prompt.AiTaskContext
 import com.example.chatbar.domain.prompt.AiTaskKind
+import com.example.chatbar.domain.prompt.PromptTemplates
 import java.io.File
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -522,6 +525,86 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `main stream keeps a fenced XML template declared by an existing output heading`() = runBlocking {
+        val opening = "<历史回复 模式=\"推进\">"
+        val closing = "</历史回复>"
+        val story = "雨落在窗沿。"
+        val raw = "$opening\n$story\n$closing"
+        val fenced = "```xml\n$opening\n{story}\n$closing\n```"
+        val label = "Required output template:"
+        val card = "$label\n$fenced\nReturn this exact XML structure with both tags. Omit the Markdown fence."
+        assertNarrativeReplyStates(raw, expected = raw, formatCard = card)
+
+        for (example in listOf(
+            "The following is a counterexample.\n$label\n$fenced",
+            "$label\n$fenced\nDo not output these tags.",
+            "她引用：“\n$label\n$fenced\n引文结束。”",
+            "$label\n" + fenced.prependIndent("> "),
+            "$label\n" + fenced.replace("```xml", "```kotlin"),
+        )) {
+            assertNarrativeReplyStates(raw, expected = story, formatCard = example)
+        }
+    }
+
+    @Test
+    fun `main stream keeps a selected status footer while removing its preceding history pair`() = runBlocking {
+        val story = "雨落在窗沿。"
+        val wrapped = PromptTemplates.narrativeModeHistoryReply(story, ChatNarrativeMode.ADVANCE)
+        val status = "\n\n```status\nTime: dawn\n```"
+        val lead = "Write the story first. End every reply with exactly one status panel after the story. " +
+            "Keep the status fence and replace the time."
+        val template = "```status\nTime: [current time]\n```"
+        val card = "$lead\n\n$template"
+        assertNarrativeReplyDeltas(
+            listOf(wrapped, "\n\n```st", "atus\nTime: dawn", "\n```"),
+            listOf(story, "$story\n\n```st", "$story\n\n```status\nTime: dawn", story + status),
+            expectedCompleted = story + status,
+            formatCard = card,
+        )
+        for (example in listOf(
+            template,
+            "$lead\n\n$template\nDo not output these tags.",
+            "她引用：“\n$lead\n\n$template\n引文结束。”",
+        )) {
+            assertNarrativeReplyStates(wrapped + status, expected = wrapped + status, formatCard = example)
+        }
+        for (language in listOf("", "text", "kotlin")) {
+            val literal = status.replace("```status", "```$language")
+            assertNarrativeReplyStates(wrapped + literal, expected = wrapped + literal, formatCard = card)
+        }
+    }
+
+    @Test
+    fun `main stream removes only the duplicated pair projected into the current request`() = runBlocking {
+        val mode = ChatNarrativeMode.ADVANCE
+        val opening = "<历史回复 模式=\"推进\">"
+        val closing = "</历史回复>"
+        val story = "门外传来脚步。"
+        val template = "$opening\n（故事正文）\n$closing"
+        val label = "输出模板："
+        val onePair = "每次回复只使用一对以下首尾标签，正文中不得重复这两个标签。"
+        val card = "$onePair\n$label\n$template"
+        val previous = ChatMessage.create("fixture", MessageRole.ASSISTANT,
+            PromptTemplates.narrativeModeHistoryReply("雨落在窗沿。", mode)).copy(narrativeMode = mode)
+        val authored = PromptTemplates.narrativeModeHistoryReply(story, mode)
+        val echoed = PromptTemplates.narrativeModeHistoryReply(authored, mode)
+
+        assertNarrativeReplyDeltas(
+            listOf("$opening\n$opening\n$story", "\n$closing", "\n$closing"),
+            listOf("$opening\n$story", authored, authored),
+            expectedCompleted = authored,
+            formatCard = card,
+            previousAssistant = previous,
+        )
+        assertNarrativeReplyStates(authored, expected = authored, formatCard = card, previousAssistant = previous)
+        assertNarrativeReplyStates(echoed, expected = echoed, formatCard = card)
+        assertNarrativeReplyStates(echoed, expected = echoed, formatCard = card,
+            previousAssistant = previous.copy(content = "普通的历史正文"))
+        assertNarrativeReplyStates(echoed, expected = echoed,
+            formatCard = "$label\n$opening\n$template\n$closing", previousAssistant = previous)
+    }
+
+    @Test
     fun `main stream accepts ordinary closers only for annotated status outside the wrapper`() = runBlocking {
         val story = "她推开门。"
         val wrapped = "<历史回复 模式=\"推进\">\n$story\n</历史回复>"
@@ -644,16 +727,29 @@ class ExperimentalToolTransportTest {
         }
     }
 
-    private suspend fun assertNarrativeReplyStates(raw: String, expected: String, formatCard: String? = null) =
-        assertNarrativeReplyDeltas(listOf(raw), listOf(expected), expected, formatCard)
+    private suspend fun assertNarrativeReplyStates(
+        raw: String,
+        expected: String,
+        formatCard: String? = null,
+        previousAssistant: ChatMessage? = null,
+    ) = assertNarrativeReplyDeltas(listOf(raw), listOf(expected), expected, formatCard, previousAssistant)
 
     private suspend fun assertNarrativeReplyDeltas(
         deltaTexts: List<String>,
         expectedPreviews: List<String>,
         expectedCompleted: String,
         formatCard: String? = null,
+        previousAssistant: ChatMessage? = null,
     ) {
         val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, formatCard)
+        val requestMessages = previousAssistant?.let { assistant ->
+            val body = assistant.displayContent
+            val projected = ChatHistoryPromptPolicy.renderedHistoryText(
+                assistant, body, legacyHistoryWrapperDeclaredAsOutput = cleanup.declaresLegacyHistoryWrapper,
+            )
+            cleanup.recordHistoryProjection(body, projected)
+            messages.toMutableList().apply { add(1, ChatApiMessage.text("assistant", projected)) }
+        } ?: messages
         val rawPreviews = deltaTexts.runningFold("", String::plus).drop(1)
         val deltas = deltaTexts.map { delta ->
             buildJsonObject {
@@ -667,7 +763,7 @@ class ExperimentalToolTransportTest {
             sse(listOf("""{"choices":[{"delta":{},"finish_reason":"stop"}]}""", "[DONE]")),
         ).use { server ->
             val events = withTimeout(5_000) {
-                service().streamChat("narrative-reply-states", messages, model(server.baseUrl)).onEach { event ->
+                service().streamChat("narrative-reply-states", requestMessages, model(server.baseUrl)).onEach { event ->
                     if (event is StreamEvent.ContentPreview && event.text == rawPreviews.last()) {
                         assertFalse(server.tailSent)
                         server.releaseTail()

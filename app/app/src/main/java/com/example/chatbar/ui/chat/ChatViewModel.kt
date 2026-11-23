@@ -3108,6 +3108,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             narrativeModesEnabled = requestNarrativeMode != null,
                             legacyHistoryWrapperDeclaredAsOutput = narrativeEcho.declaresLegacyHistoryWrapper,
                         )
+                        if (msg.role == MessageRole.ASSISTANT) {
+                            narrativeEcho.recordHistoryProjection(payloadText, text)
+                        }
                         if (hasSupportedImage) {
                             try {
                                 val base64 = encodeImageToBase64(msg.images.first())

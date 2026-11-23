@@ -42,10 +42,22 @@ object NarrativeHistoryEcho {
     private val formatTemplateAffirmation = Regex(
         "[ \\t]*(?:（[ \\t]*标签是固定输出的一部分[ \\t]*）|\\([ \\t]*标签是固定输出的一部分[ \\t]*\\))[ \\t]*[。.]?[ \\t]*",
     )
-    private val fencedTemplateLead = Regex(
-        "(?m)^ {0,3}请严格按照以下固定模板作答，必须逐字保留首尾标签，不要输出代码围栏[:：]" +
-            "[ \\t]*(?:\\r?\\n[ \\t]*)+\\z",
+    private val fencedTemplateLabel = Regex(
+        " {0,3}请严格按照以下固定模板作答，必须逐字保留首尾标签，不要输出代码围栏[:：][ \\t]*",
     )
+    private val trailingStatusLabel = Regex(
+        " {0,3}(?:(?:required[ \\t]+)?trailing[ \\t]+status[ \\t]+(?:panel[ \\t]+)?template[:：]|" +
+            "(?:write the story first\\.[ \\t]+)?end every reply with (?:exactly )?one status panel after the story\\." +
+            "(?:[ \\t]+keep the status fence(?: and replace the time)?\\.)?|" +
+            "每次回复末尾必须输出以下状态栏[:：])[ \\t]*",
+        RegexOption.IGNORE_CASE,
+    )
+    private val singlePairTemplateConstraint = Regex(
+        " {0,3}(?:每次回复只使用一对以下首尾标签，正文中不得重复这两个标签。|" +
+            "use exactly one pair of the following tags\\.[ \\t]+do not repeat them inside the reply\\.)[ \\t]*",
+        RegexOption.IGNORE_CASE,
+    )
+    private const val trailingStatusOpening = "```status"
     private val formatTemplateFenceInfo = setOf("", "html", "xml")
     private val formatCounterexampleLead = Regex(
         " {0,3}(?:以下是禁止输出的反例[。.:：]?|以下标签仅供举例，不要在回复中输出[:：]|" +
@@ -73,12 +85,32 @@ object NarrativeHistoryEcho {
         "with", "without", "yesterday",
     )
 
+    internal data class FormatOutput(
+        val declaredOpenings: Set<String> = emptySet(),
+        val trailingStatusDeclared: Boolean = false,
+        val singlePairOpenings: Set<String> = emptySet(),
+    )
+
     internal class RequestCleanup internal constructor(
         private val enabled: Boolean,
-        private val declaredOpenings: Set<String> = emptySet(),
+        private val formatOutput: FormatOutput = FormatOutput(),
     ) {
+        private val projectedDuplicateOpenings = mutableSetOf<String>()
+
         val declaresLegacyHistoryWrapper: Boolean
-            get() = legacyWrapper.opening in declaredOpenings
+            get() = legacyWrapper.opening in formatOutput.declaredOpenings
+
+        /** Record the wrapper actually put around a single-pair reply in this request. */
+        fun recordHistoryProjection(body: String, projection: String) {
+            if (formatOutput.singlePairOpenings.isEmpty()) return
+            for (wrapper in wrappers) {
+                if (wrapper.opening in formatOutput.singlePairOpenings &&
+                    wrapper.opening !in projectedDuplicateOpenings &&
+                    projection == "${wrapper.opening}\n$body\n${wrapper.closings.first()}" &&
+                    wrapper.hasExactlyOnePair(body)
+                ) projectedDuplicateOpenings += wrapper.opening
+            }
+        }
 
         fun completedBody(
             text: String,
@@ -86,17 +118,17 @@ object NarrativeHistoryEcho {
             partLengths: List<Int> = emptyList(),
             streaming: Boolean = false,
         ): String = if (enabled) {
-            cleanCompletedBody(text, declaredOpenings, interrupted, partLengths, streaming)
+            cleanCompletedBody(text, formatOutput, interrupted, partLengths, streaming, projectedDuplicateOpenings)
         } else text
     }
 
     internal fun forRequest(narrativeMode: ChatNarrativeMode?, formatCard: String?): RequestCleanup =
         if (narrativeMode == null) RequestCleanup(enabled = false)
-        else RequestCleanup(enabled = true, declaredOpenings = formatCard?.let(::declaredOpenings).orEmpty())
+        else RequestCleanup(enabled = true, formatOutput = formatCard?.let(::declaredOutput) ?: FormatOutput())
 
-    private fun declaredOpenings(formatCard: String): Set<String> {
+    private fun declaredOutput(formatCard: String): FormatOutput {
         val candidates = wrappers.filter { it.opening in formatCard }
-        if (candidates.isEmpty()) return emptySet()
+        if (candidates.isEmpty() && trailingStatusOpening !in formatCard.lowercase()) return FormatOutput()
         val tokens = candidates.map { it.name }.distinct().flatMap { name ->
             wrapperFamilyTokens.getValue(name).findAll(formatCard).toList()
         }.sortedBy { it.range.first }
@@ -104,7 +136,9 @@ object NarrativeHistoryEcho {
         val markup = tokens.filter {
             literals.isVisibleWrapperTag(formatCard, it, includeStandaloneLazyTags = true)
         }
-        return buildSet {
+        var trailingStatusDeclared = false
+        val singlePairOpenings = mutableSetOf<String>()
+        val declaredOpenings = buildSet {
             var matchedEnd = -1
             for ((index, opening) in markup.withIndex()) {
                 val start = opening.range.first
@@ -141,23 +175,53 @@ object NarrativeHistoryEcho {
                     after?.let(formatCounterexampleTail::matches) == true
                 ) continue
                 add(wrapper.opening)
+                if (explicitLabel && lead != null &&
+                    singlePairTemplateConstraint.matches(literals.markdown.substring(lead)) &&
+                    wrapper.hasExactlyOnePair(formatCard.substring(start, matchedEnd + 1))
+                ) singlePairOpenings += wrapper.opening
             }
             for (fence in literals.fences) {
                 val closingLine = fence.closingLineStart ?: continue
-                if (!fence.topLevel || fence.info.lowercase() !in formatTemplateFenceInfo) continue
-                val lead = fencedTemplateLead.find(literals.markdown.subSequence(0, fence.range.first)) ?: continue
-                if (literals.ranges.any { lead.range.first in it }) continue
+                if (!fence.topLevel) continue
+                val label = previousVisibleLine(literals.markdown, fence.range.first) ?: continue
+                if (literals.ranges.any { label.first in it } ||
+                    literals.isMarkdownContainerLine(label.first, includeStandaloneLazyTags = true)
+                ) continue
+                val before = previousVisibleLine(literals.markdown, label.first)
+                val after = literals.markdown.substring(fence.range.last + 1).lineSequence().firstOrNull(String::isNotBlank)
+                if (before?.let { formatCounterexampleLead.matches(literals.markdown.substring(it)) } == true ||
+                    after?.let(formatCounterexampleTail::matches) == true
+                ) continue
+
+                val labelText = literals.markdown.substring(label)
                 val contentStart = literals.markdown.indexOf('\n', fence.range.first) + 1
                 val template = formatCard.substring(contentStart, closingLine).trim()
+                if (fence.isTrailingStatusFence() && template.isNotBlank() && trailingStatusLabel.matches(labelText)) {
+                    trailingStatusDeclared = true
+                }
+                if (fence.info.lowercase() !in formatTemplateFenceInfo ||
+                    !fencedTemplateLabel.matches(labelText) && !formatTemplateLabel.matches(labelText)
+                ) continue
                 val wrapper = candidates.firstOrNull {
                     template.startsWith(it.opening) && it.closings.any(template::endsWith)
                 } ?: continue
                 if (cleanReply(template, streaming = false, interrupted = false, requirePair = true).matchedOuterPair) {
                     add(wrapper.opening)
+                    if (before != null && singlePairTemplateConstraint.matches(literals.markdown.substring(before)) &&
+                        wrapper.hasExactlyOnePair(template)
+                    ) singlePairOpenings += wrapper.opening
                 }
             }
         }
+        return FormatOutput(declaredOpenings, trailingStatusDeclared, singlePairOpenings)
     }
+
+    private fun Wrapper.hasExactlyOnePair(text: String): Boolean =
+        text.startsWith(opening) && closings.any(text::endsWith) &&
+            wrapperFamilyTokens.getValue(name).findAll(text).count() == 2
+
+    private fun MarkdownCodeFences.Block.isTrailingStatusFence(): Boolean =
+        topLevel && marker == '`' && markerLength == 3 && info.equals("status", ignoreCase = true)
 
     private fun previousVisibleLine(markdown: String, before: Int): IntRange? {
         var end = before
@@ -178,17 +242,21 @@ object NarrativeHistoryEcho {
         partLengths: List<Int> = emptyList(),
         streaming: Boolean = false,
     ): String = if (enabled) {
-        cleanCompletedBody(text, emptySet(), interrupted, partLengths, streaming)
+        cleanCompletedBody(text, FormatOutput(), interrupted, partLengths, streaming)
     } else text
 
     private fun cleanCompletedBody(
         text: String,
-        declaredOpenings: Set<String>,
+        formatOutput: FormatOutput,
         interrupted: Boolean,
         partLengths: List<Int>,
         streaming: Boolean,
+        projectedDuplicateOpenings: Set<String> = emptySet(),
     ): String {
-        fun clean(part: String) = cleanReply(part, streaming, interrupted, declaredOpenings = declaredOpenings).body
+        fun clean(part: String) = cleanReply(
+            part, streaming, interrupted, formatOutput = formatOutput,
+            projectedDuplicateOpenings = projectedDuplicateOpenings,
+        ).body
         if (partLengths.size > 1 && partLengths.sumOf(Int::toLong) + partLengths.size - 1 == text.length.toLong()) {
             var offset = 0
             val parts = partLengths.map { length ->
@@ -202,7 +270,8 @@ object NarrativeHistoryEcho {
             // A complete match on the joined body takes precedence over per-call cleanup,
             // including when the format card reserves the matching outer wrapper.
             val wholeReply = cleanReply(
-                text, streaming, interrupted, requirePair = true, declaredOpenings = declaredOpenings,
+                text, streaming, interrupted, requirePair = true, formatOutput = formatOutput,
+                projectedDuplicateOpenings = projectedDuplicateOpenings,
             )
             if (wholeReply.matchedOuterPair) return wholeReply.body
             // Independent wrappers are still eligible, except where the joined Markdown makes a tag literal.
@@ -214,7 +283,8 @@ object NarrativeHistoryEcho {
             return parts.joinToString("\n") { part ->
                 val cleaned = cleanReply(
                     text.substring(part.first, part.last + 1), streaming, interrupted,
-                    declaredOpenings = declaredOpenings,
+                    formatOutput = formatOutput,
+                    projectedDuplicateOpenings = projectedDuplicateOpenings,
                     isJoinedLiteral = { index, opening ->
                         val joinedIndex = part.first + index
                         joinedLiterals.ranges.any { joinedIndex in it } ||
@@ -244,7 +314,8 @@ object NarrativeHistoryEcho {
         streaming: Boolean,
         interrupted: Boolean,
         requirePair: Boolean = false,
-        declaredOpenings: Set<String> = emptySet(),
+        formatOutput: FormatOutput = FormatOutput(),
+        projectedDuplicateOpenings: Set<String> = emptySet(),
         isJoinedLiteral: ((index: Int, opening: Boolean) -> Boolean)? = null,
     ): CleanedReply {
         val first = text.indexOfFirst { !it.isWhitespace() }
@@ -273,14 +344,12 @@ object NarrativeHistoryEcho {
         if (wrapper == null) {
             val identifiable = start.startsWith("<历史回复 模式=") || start.startsWith("<聚焦模式=")
             if (!requirePair && (streaming || identifiable || interrupted && start.length > 1) &&
-                wrappers.any { it.opening.startsWith(start) } && declaredOpenings.none { it.startsWith(start) } &&
+                wrappers.any { it.opening.startsWith(start) } && formatOutput.declaredOpenings.none { it.startsWith(start) } &&
                 isJoinedLiteral?.invoke(openingStart, true) != true
             ) return CleanedReply(leadingContent)
             return CleanedReply(text)
         }
         if (isJoinedLiteral?.invoke(openingStart, true) == true) return CleanedReply(text)
-        val declared = wrapper.opening in declaredOpenings
-
         val afterOpening = start.substring(wrapper.opening.length)
         val body = afterOpening.trimStart('\r', '\n')
         val bodyStart = text.length - body.length
@@ -294,7 +363,9 @@ object NarrativeHistoryEcho {
                 isJoinedLiteral?.invoke(bodyStart + tag.range.first, false) != true
         }
         val suffixRanges by lazy(LazyThreadSafetyMode.NONE) {
-            val status = literals.fences.filter { it.topLevel && it.legacyStatus }.map { it.range }
+            val status = literals.fences.filter {
+                it.topLevel && it.legacyStatus || formatOutput.trailingStatusDeclared && it.isTrailingStatusFence()
+            }.map { it.range }
             val options = (roleplayAnnotatedActionRanges(literals.markdown).asSequence() +
                 roleplayListedActionRanges(literals.markdown)).filter { range ->
                 literals.ranges.none { range.first in it || range.last in it } &&
@@ -314,7 +385,10 @@ object NarrativeHistoryEcho {
         }
         fun endsReply(tag: MatchResult): Boolean =
             tag.range.last + 1 == end.length ||
-                hasOnlyReplySuffix(body, tag.range.last + 1, suffixRanges, literals, streaming || interrupted)
+                hasOnlyReplySuffix(
+                    body, tag.range.last + 1, suffixRanges, literals, streaming || interrupted,
+                    formatOutput.trailingStatusDeclared,
+                )
 
         val terminal = visibleTags.lastOrNull()?.takeIf { tag ->
             tag.value in wrapper.closings && !literals.isLazyQuoteLine(tag.range.first) && endsReply(tag)
@@ -327,6 +401,11 @@ object NarrativeHistoryEcho {
         }
         val boundary = outsideQuote ?: wrapperBoundary(wrapper, visibleTags.asSequence())
         val closing = boundary.closing
+        val declared = wrapper.opening in formatOutput.declaredOpenings &&
+            !(wrapper.opening in projectedDuplicateOpenings &&
+                openingStart == first && afterOpening.firstOrNull().isHistoryLineBreak() &&
+                (closing != null || streaming || interrupted) &&
+                wrapper.matchesProjectedDuplicate(end, visibleTags))
         if (closing != null) {
             val position = closing.range.first
             val afterClosing = closing.range.last + 1
@@ -367,6 +446,16 @@ object NarrativeHistoryEcho {
             ) return CleanedReply(leadingContent + bodyBeforeClose(lastTag))
         }
         return CleanedReply(if (sameLineContent) text else leadingContent + body)
+    }
+
+    private fun Wrapper.matchesProjectedDuplicate(body: String, tags: List<MatchResult>): Boolean {
+        val openingTag = tags.firstOrNull() ?: return false
+        if (openingTag.range.first != 0 || openingTag.value != opening) return false
+        val closingTags = tags.drop(1)
+        if (closingTags.size > 2 || closingTags.any { it.value !in closings }) return false
+        if (closingTags.size < 2) return true
+        val separator = body.subSequence(closingTags[0].range.last + 1, closingTags[1].range.first)
+        return separator.isBlank() && separator.any { it.isHistoryLineBreak() }
     }
 
     private fun wrapperBoundary(wrapper: Wrapper, tags: Sequence<MatchResult>): WrapperBoundary {
@@ -419,7 +508,12 @@ object NarrativeHistoryEcho {
     }
 
     private fun hasOnlyReplySuffix(
-        text: String, start: Int, suffixRanges: List<IntRange>, literals: ReplyLiterals, provisional: Boolean,
+        text: String,
+        start: Int,
+        suffixRanges: List<IntRange>,
+        literals: ReplyLiterals,
+        provisional: Boolean,
+        trailingStatusDeclared: Boolean,
     ): Boolean {
         var next = start
         for (range in suffixRanges) {
@@ -438,7 +532,9 @@ object NarrativeHistoryEcho {
         if (indent.length > 3 || indent.any { it != ' ' }) return false
 
         // A status opener can arrive a token at a time. A newline already committed to ordinary code stays literal.
-        if (MarkdownCodeFences.legacyStatusOpening.startsWith(remainder)) return true
+        if (MarkdownCodeFences.legacyStatusOpening.startsWith(remainder) ||
+            trailingStatusDeclared && trailingStatusOpening.startsWith(remainder, ignoreCase = true)
+        ) return true
         return literals.ranges.none { position in it } &&
             !literals.isMarkdownContainerLine(position, includeStandaloneLazyTags = true) &&
             isPendingRoleplayActionSuffix(literals.markdown.substring(line) + text.substring(literals.markdown.length))
