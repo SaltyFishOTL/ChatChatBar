@@ -393,16 +393,16 @@ object NarrativeHistoryEcho {
             if (!enabled) return text
             val provisional = streaming || interrupted
             if (repairOpenings != null) {
+                val isAuthored: (String) -> Boolean = { token -> repairLiteralSources.any { token in it } }
+                val repairClosings = wrappers.filter { it.opening in repairOpenings }.flatMap { it.closings }
+                    .filterNot(isAuthored)
+                fun withoutRepairOrphan(part: String, isJoinedLiteral: (Int) -> Boolean = { false }): String =
+                    withoutOrphanClosing(part, repairClosings, provisional, formatOutput, isAuthored, isJoinedLiteral)
                 val cleaned = cleanCompletedBody(
                     text, formatOutput, interrupted, partLengths, streaming, allowedOpenings = repairOpenings,
+                    cleanPartOrphan = ::withoutRepairOrphan,
                 )
-                if (cleaned != text) return cleaned
-                val repairClosings = wrappers.filter { it.opening in repairOpenings }.flatMap { it.closings }
-                    .filterNot { close -> repairLiteralSources.any { close in it } }
-                return withoutOrphanClosing(
-                    text, repairClosings, provisional, formatOutput,
-                    isAuthored = { partial -> repairLiteralSources.any { partial in it } },
-                )
+                return if (cleaned != text) cleaned else withoutRepairOrphan(text)
             }
 
             val headings = narrativeHeadings.filterNot(::isAuthoredHeading)
@@ -510,9 +510,9 @@ object NarrativeHistoryEcho {
                     val atLineStart = startsLine(start)
                     val quotedOpening = tag.value !in wrapperClosings && start > line &&
                         MarkdownCodeFences.afterQuotePrefixes(literals.markdown, line) == start
-                    if (!atLineStart && !quotedOpening && (tag.value in wrapperClosings ||
-                            !inlineExactCopyInstruction.matches(text.subSequence(line, start)))
-                    ) continue
+                    val requestedInlineCopy = !atLineStart && !quotedOpening && tag.value !in wrapperClosings &&
+                        inlineExactCopyInstruction.matches(text.subSequence(line, start))
+                    if (!atLineStart && !quotedOpening && !requestedInlineCopy) continue
                     val lead = previousVisibleLine(literals.markdown, line)
                     if (tag.value in wrapperClosings) {
                         val after = tag.range.last + 1
@@ -545,7 +545,9 @@ object NarrativeHistoryEcho {
                         literals.markdown.substring(lead.last + 1, line) in setOf("\n", "\r\n") &&
                         text.getOrNull(tag.range.last + 1).isHistoryLineBreak() && literals.isUnprotected(start)
                     val followingTags = tags.asSequence().drop(index + 1)
-                    val closing = wrapperBoundary(wrapper, if (requestedMultilineCopy) {
+                    val closing = wrapperBoundary(wrapper, if (requestedMultilineCopy ||
+                        requestedInlineCopy && literals.isUnprotected(start)
+                    ) {
                         followingTags.filter { literals.isVisibleWrapperTag(text, it) }
                     } else followingTags).closing ?: continue
                     val end = closing.range.last + 1
@@ -1363,7 +1365,9 @@ object NarrativeHistoryEcho {
                 val section = text.substring(start, end)
                 val last = end == text.length
                 val cleaned = clean(section, start, !last || !provisional)
-                if (cleaned.body == section || !cleaned.matchedOuterPair && (!last || !provisional)) return null
+                // A proven authored pair can be intentionally unchanged. An unmatched, unchanged
+                // section still leaves the whole split uncertain.
+                if (!cleaned.matchedOuterPair && (cleaned.body == section || !last || !provisional)) return null
                 val gap = text.subSequence(previousEnd, start)
                 if (result.isNotEmpty() && cleaned.body.isNotEmpty() || gap.isNotBlank()) result.append(gap)
                 result.append(cleaned.body)

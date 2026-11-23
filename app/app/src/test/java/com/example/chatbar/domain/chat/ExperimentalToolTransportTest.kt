@@ -2293,6 +2293,56 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `a same line copy instruction preserves the exact pair across a split inline code closer`(): Unit = runBlocking {
+        val close = "</历史回复>"
+        for (mode in listOf(ChatNarrativeMode.FOCUS, ChatNarrativeMode.ADVANCE)) {
+            val open = "<历史回复 模式=\"${mode.shortLabel}\">"
+            val prefix = "${open}Use `"
+            val body = "Use `$close` here"
+            val literal = "$open$body$close"
+            val user = "Copy this verbatim: $literal"
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Earlier scene.").copy(narrativeMode = mode)
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                assertNarrativeReplyDeltas(
+                    listOf(prefix, close, "` here${close.dropLast(1)}", ">"),
+                    listOf(prefix, prefix + close, literal.dropLast(1), literal), literal,
+                    previousAssistant = prior, currentUserText = user, experimental = experimental, toolCall = toolCall,
+                )
+                assertNarrativeReplyDeltas(listOf("$open\n$literal\n$close"), listOf(literal), literal,
+                    previousAssistant = prior, currentUserText = user, experimental = experimental, toolCall = toolCall)
+            }
+            assertNarrativeReplyStates(literal, body, previousAssistant = prior, experimental = false,
+                currentUserText = "Here is a reference: $literal")
+            val other = body.replace("here", "elsewhere")
+            assertNarrativeReplyStates("$open$other$close", other, previousAssistant = prior, experimental = false, currentUserText = user)
+        }
+    }
+
+    @Test
+    fun `adjacent transport and exact authored frames each keep their own boundary meaning`(): Unit = runBlocking {
+        for (mode in listOf(ChatNarrativeMode.FOCUS, ChatNarrativeMode.ADVANCE)) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "旧文。").copy(narrativeMode = mode)
+            val transport = PromptTemplates.narrativeModeHistoryReply(prior.displayContent, mode)
+            val authored = PromptTemplates.narrativeModeHistoryReply("须保留。", mode)
+            val user = "Copy this verbatim:\n$authored"
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                val expected = "旧文。\n$authored"
+                assertNarrativeReplyDeltas(
+                    listOf(transport, "\n$authored"), listOf("旧文。", expected), expected,
+                    previousAssistant = prior, currentUserText = user, experimental = experimental, toolCall = toolCall,
+                )
+                val reverse = "$authored\n旧文。"
+                assertNarrativeReplyDeltas(
+                    listOf(authored, "\n$transport"), listOf(authored, reverse), reverse,
+                    previousAssistant = prior, currentUserText = user, experimental = experimental, toolCall = toolCall,
+                )
+            }
+            val uncertain = "$transport\n$authored\nThis continues the same passage."
+            assertNarrativeReplyStates(uncertain, uncertain, previousAssistant = prior, experimental = false, currentUserText = user)
+        }
+    }
+
+    @Test
     fun `projected orphan padding is distinct from Markdown code indentation`(): Unit = runBlocking {
         val previous = ChatMessage.create("fixture", MessageRole.ASSISTANT, "旧故事。")
         val closing = "</历史回复>"
@@ -3220,6 +3270,75 @@ class ExperimentalToolTransportTest {
             assertEquals(StreamEvent.Delta(first), event)
             assertFalse(registeredToolReader)
             assertFalse(server.tailSent)
+        }
+    }
+
+    @Test
+    fun `repair cleans eligible orphan closes in independently validated tool parts over real SSE`() = runBlocking {
+        for (mode in listOf(ChatNarrativeMode.FOCUS, ChatNarrativeMode.ADVANCE)) assertRepairToolOrphans(mode)
+    }
+
+    private suspend fun assertRepairToolOrphans(mode: ChatNarrativeMode) {
+        val original = "旧。"
+        val first = "第一段。"
+        val second = "第二段。"
+        val close = "</历史回复>"
+        val card = "以下是禁止输出的反例：\n${PromptTemplates.narrativeModeHistoryReply("旧示例", mode)}"
+        val framed = PromptTemplates.narrativeModeHistoryReply(first, mode)
+        val footnote = "$first\n$close\n[^1]: Editor note."
+        val quote = "$first\n> $close"
+        val cases = listOf(
+            Triple("$first\n$close", second, "$first\n$second"),
+            Triple(framed, "$second\n$close", "$first\n$second"),
+            Triple(quote, second, "$quote\n$second"),
+            Triple(footnote, second, "$footnote\n$second"),
+            Triple("$first\n```xml", "$close\n```", "$first\n```xml\n$close\n```"),
+            Triple(first, second, "$first\n$second"),
+        )
+        for ((firstPart, secondPart, expected) in cases) {
+            val arguments = buildJsonObject { put("content", secondPart) }.toString()
+            val frame = repairToolFrame(firstPart, 1, arguments)
+            val cleanup = NarrativeHistoryEcho.forFormatRepair(card, original)
+            val parts = listOf(firstPart, secondPart)
+            val prefix = heldRepairPrefix(frame, card, original)
+            assertEquals(parts, prefix)
+            val raw = prefix.joinToString("\n")
+            val lengths = prefix.map(String::length)
+            assertEquals(expected, cleanup.completedBody(raw, interrupted = true, partLengths = lengths))
+            val authored = NarrativeHistoryEcho.forFormatRepair(card, "$original\n`$close`")
+            if (firstPart == framed) {
+                assertEquals("$first\n$second\n$close", authored.completedBody(raw, partLengths = lengths))
+                val visibleAuthoredClose = NarrativeHistoryEcho.forFormatRepair(card, "$original\n$close")
+                assertEquals(raw, visibleAuthoredClose.completedBody(raw, partLengths = lengths))
+            }
+            GatedExperimentalResponse(sse(listOf(frame)), sse(listOf(chunk(reason = "tool_calls"), "[DONE]"))).use { server ->
+                val events = withTimeout(5_000) {
+                    MessageFormatRepairService(service()).streamRepair(original, card, null, model(server.baseUrl))
+                        .onEach { if (it is StreamEvent.Delta) server.releaseTail() }.toList()
+                }
+                val deltas = events.filterIsInstance<StreamEvent.Delta>()
+                assertEquals(raw, deltas.joinToString("") { it.text })
+                assertEquals(lengths, deltas.last().toolReplyPartLengths)
+                assertEquals(StreamEvent.Done, events.last())
+                assertEquals(expected, cleanup.completedBody(raw, partLengths = lengths, streaming = true))
+                assertEquals(expected, cleanup.completedBody(raw, partLengths = lengths))
+            }
+        }
+        val incomplete = heldRepairPrefix(repairToolFrame("$first\n$close", 1, """{"content":"unfinished"""), card, original)
+        assertEquals(listOf("$first\n$close"), incomplete)
+        assertEquals(first, NarrativeHistoryEcho.forFormatRepair(card, original).completedBody(incomplete.single(), interrupted = true))
+    }
+
+    private suspend fun heldRepairPrefix(frame: String, card: String, original: String): List<String> {
+        GatedExperimentalResponse(sse(listOf(frame)), sse(listOf(chunk(reason = "tool_calls"), "[DONE]"))).use { server ->
+            var reader: (() -> List<String>)? = null
+            val first = withTimeout(5_000) {
+                MessageFormatRepairService(service()).streamRepair(original, card, null, model(server.baseUrl)) {
+                    reader = it
+                }.first { it is StreamEvent.Delta }
+            } as StreamEvent.Delta
+            assertFalse(server.tailSent)
+            return checkNotNull(reader).invoke().ifEmpty { listOf(first.text) }
         }
     }
 

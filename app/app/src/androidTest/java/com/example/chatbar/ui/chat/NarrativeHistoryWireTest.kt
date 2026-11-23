@@ -11,6 +11,7 @@ import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatNarrativeMode
 import com.example.chatbar.data.local.entity.ChatSession
+import com.example.chatbar.data.local.entity.FormatCard
 import com.example.chatbar.data.local.entity.MessageFormatRepairNoticeKind
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.ModelConfig
@@ -56,8 +57,12 @@ class NarrativeHistoryWireTest {
         val experimental: Boolean get() = this != ORDINARY
     }
 
-    private enum class LiteralCase { OPENING, INLINE_CLOSE, INLINE_CODE_CLOSE, LAZY_LIST_CLOSE, CAPTIONED_CLOSE, LAZY_QUOTE_CLOSE }
+    private enum class LiteralCase {
+        OPENING, INLINE_CLOSE, INLINE_CODE_CLOSE, SAME_LINE_INLINE_CODE_CLOSE, ADJACENT_AUTHORED,
+        LAZY_LIST_CLOSE, CAPTIONED_CLOSE, LAZY_QUOTE_CLOSE,
+    }
     private enum class RepairSecondCall { COMPLETE, INCOMPLETE, MALFORMED, GAP }
+    private enum class RepairOrphan { FIRST, SECOND_AFTER_FULL_FRAME }
 
     @Before fun prepareSyntheticApplication() = runBlocking {
         assumeTrue("Use the repository-supported isolated Android test build", BuildConfig.ISOLATED_ANDROID_TEST)
@@ -103,6 +108,16 @@ class NarrativeHistoryWireTest {
         verifyReply(Transport.ORDINARY, stop = false, literal = LiteralCase.INLINE_CODE_CLOSE)
     }
 
+    @Test fun sameLineExactCopyWithInlineCodeCloserSurvivesPreviewStopAndColdRead() = runBlocking {
+        verifyReply(Transport.ORDINARY, stop = true, literal = LiteralCase.SAME_LINE_INLINE_CODE_CLOSE)
+        verifyReply(Transport.ORDINARY, stop = false, literal = LiteralCase.SAME_LINE_INLINE_CODE_CLOSE)
+    }
+
+    @Test fun adjacentTransportAndAuthoredPairsKeepTheirOwnBoundariesOnDisk() = runBlocking {
+        verifyReply(Transport.ORDINARY, stop = true, literal = LiteralCase.ADJACENT_AUTHORED)
+        verifyReply(Transport.ORDINARY, stop = false, literal = LiteralCase.ADJACENT_AUTHORED)
+    }
+
     @Test fun lazyListClosingExampleSurvivesStopAndGenuineOuterClosing() = runBlocking {
         verifyReply(Transport.ORDINARY, stop = true, literal = LiteralCase.LAZY_LIST_CLOSE)
         verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = LiteralCase.LAZY_LIST_CLOSE)
@@ -143,6 +158,11 @@ class NarrativeHistoryWireTest {
         }
     }
 
+    @Test fun repairOrphanCleanupUsesValidatedToolPartsOnStopAndDone() = runBlocking {
+        verifyRepair(Transport.EXPERIMENTAL_TOOL, stop = true, orphan = RepairOrphan.FIRST)
+        verifyRepair(Transport.EXPERIMENTAL_TOOL, stop = false, orphan = RepairOrphan.SECOND_AFTER_FULL_FRAME)
+    }
+
     @Test fun ordinaryRepairStopAndCompletedToolRepairRetainTheirOwnNotices() = runBlocking {
         verifyRepair(Transport.ORDINARY, stop = true)
         verifyRepair(Transport.EXPERIMENTAL_TOOL, stop = false)
@@ -166,14 +186,16 @@ class NarrativeHistoryWireTest {
         val card = CharacterCard.create("Synthetic narrative wire")
         val store = ViewModelStore()
         val mode = if (stop && legacyFirst == null) ChatNarrativeMode.FOCUS else ChatNarrativeMode.ADVANCE
-        val prior = "Previous synthetic scene."
-        val prose = "She opens the door and walks into the courtyard."
+        val prior = if (literal == LiteralCase.ADJACENT_AUTHORED) "旧文。" else "Previous synthetic scene."
+        val prose = if (literal == LiteralCase.ADJACENT_AUTHORED) prior else "She opens the door and walks into the courtyard."
         val template = PromptTemplates.narrativeModeHistoryReply("[story]", mode).prependIndent("> ")
         val framedReply = PromptTemplates.narrativeModeHistoryReply(prose, mode)
         val opener = framedReply.substringBefore('\n')
         val closing = framedReply.substringAfterLast('\n')
         val exactInlineCopy = "$opener\n例子$closing"
         val exactCopyWithInlineCode = "$opener\nThe closing-tag token is `$closing`.\n$closing"
+        val sameLineCopyWithInlineCode = "${opener}Use `$closing` here$closing"
+        val adjacentAuthored = "$opener\n须保留。\n$closing"
         val listExample = "- A literal closing-tag example:\n$closing"
         val captionedExample = "The closing tag example:\n$closing"
         val lazyQuoteExample = "> Closing tag example:\n$closing"
@@ -183,6 +205,8 @@ class NarrativeHistoryWireTest {
             literal == LiteralCase.OPENING -> "Please show the literal opening tag only on its own line, then explain it:\n$opener"
             literal == LiteralCase.INLINE_CLOSE -> "请逐字照抄以下文本并保留首尾标签：\n$exactInlineCopy"
             literal == LiteralCase.INLINE_CODE_CLOSE -> "Copy this text verbatim:\n$exactCopyWithInlineCode"
+            literal == LiteralCase.SAME_LINE_INLINE_CODE_CLOSE -> "Copy this verbatim: $sameLineCopyWithInlineCode"
+            literal == LiteralCase.ADJACENT_AUTHORED -> "Copy this verbatim:\n$adjacentAuthored"
             literal == LiteralCase.CAPTIONED_CLOSE -> "Please show the literal closing tag only on its own line:\n$closing"
             authorsTemplate -> "Use exactly this XML shape, replace [story] with new prose and keep both tags:\n$template"
             else -> "Continue the scene."
@@ -196,6 +220,8 @@ class NarrativeHistoryWireTest {
             LiteralCase.OPENING -> "$opener\nThis is the opening tag."
             LiteralCase.INLINE_CLOSE -> exactInlineCopy
             LiteralCase.INLINE_CODE_CLOSE -> exactCopyWithInlineCode
+            LiteralCase.SAME_LINE_INLINE_CODE_CLOSE -> sameLineCopyWithInlineCode
+            LiteralCase.ADJACENT_AUTHORED -> "$framedReply\n$adjacentAuthored"
             LiteralCase.CAPTIONED_CLOSE -> if (stop) "$opener\n$captionedExample" else "$opener\n$captionedExample\n$closing"
             LiteralCase.LAZY_QUOTE_CLOSE -> if (stop) "$opener\n$lazyQuoteExample" else "$opener\n$lazyQuoteExample\n$closing"
             LiteralCase.LAZY_LIST_CLOSE -> if (stop) "$opener\n$listBody" else PromptTemplates.narrativeModeHistoryReply(listBody, mode)
@@ -219,6 +245,7 @@ class NarrativeHistoryWireTest {
             literal == LiteralCase.LAZY_LIST_CLOSE -> listBody
             literal == LiteralCase.CAPTIONED_CLOSE -> captionedExample
             literal == LiteralCase.LAZY_QUOTE_CLOSE -> lazyQuoteExample
+            literal == LiteralCase.ADJACENT_AUTHORED -> "$prose\n$adjacentAuthored"
             legacyFirst == true -> "$legacyScene\n$prose"
             legacyFirst == false -> "$prose\n$legacyScene"
             authorsTemplate || literal != null -> reply
@@ -300,6 +327,7 @@ class NarrativeHistoryWireTest {
 
     private suspend fun verifyRepair(
         transport: Transport, stop: Boolean, secondCall: RepairSecondCall = RepairSecondCall.COMPLETE,
+        orphan: RepairOrphan? = null,
     ) {
         val app = ChatBarApp.instance
         val settings = app.settingsRepository.getAppSettings()
@@ -309,16 +337,28 @@ class NarrativeHistoryWireTest {
         val first = "A repaired first line."
         val second = "A repaired second line."
         val tool = transport == Transport.EXPERIMENTAL_TOOL
-        val parts = if (tool) listOf(first, second) else listOf(first)
-        val expected = if (secondCall == RepairSecondCall.COMPLETE) parts.joinToString("\n") else first
+        val close = "</历史回复>"
+        val parts = when (orphan) {
+            RepairOrphan.FIRST -> listOf("$first\n$close", second)
+            RepairOrphan.SECOND_AFTER_FULL_FRAME -> listOf(PromptTemplates.narrativeModeHistoryReply(first, ChatNarrativeMode.FOCUS), "$second\n$close")
+            null -> if (tool) listOf(first, second) else listOf(first)
+        }
+        val formatCard = orphan?.let {
+            val sample = PromptTemplates.narrativeModeHistoryReply("旧示例", ChatNarrativeMode.FOCUS)
+            FormatCard.create("Synthetic prohibited history wrapper", "以下是禁止输出的反例：\n$sample")
+        }
+        val expected = if (tool && secondCall == RepairSecondCall.COMPLETE) "$first\n$second" else first
         HeldNarrativeReplyServer(parts, tool, reasoningWitness = null, secondCall = secondCall).use { server ->
             val model = ModelConfig.create("Synthetic repair ${transport.name}", server.baseUrl, "fixture-key", "fixture-model")
-            val session = ChatSession.create(card.id, model.displayName).copy(modelId = model.id, longTermMemoryEnabled = false)
+            val session = ChatSession.create(card.id, model.displayName).copy(
+                modelId = model.id, longTermMemoryEnabled = false, formatCardId = formatCard?.id,
+            )
             val message = ChatMessage.create(session.id, MessageRole.ASSISTANT, original)
             var editor: ChatViewModel? = null
             try {
                 app.modelRepository.saveModel(model)
                 app.characterRepository.save(card)
+                formatCard?.let { app.formatCardRepository.save(it) }
                 app.chatRepository.createSession(session)
                 app.chatRepository.addMessage(message)
                 app.settingsRepository.saveAppSettings(settings.copy(
@@ -333,10 +373,16 @@ class NarrativeHistoryWireTest {
                 rule.waitUntil(20_000) { vm.messages.value.any { it.id == message.id && it.displayContent == original } }
                 rule.runOnIdle { vm.repairMessageFormat(message.id) }
                 val request = withTimeout(20_000) { server.requestBody.await() }
-                assertTrue(sentMessages(request, transport).any {
+                val messages = sentMessages(request, transport)
+                assertTrue(messages.any {
                     it.jsonObject["role"]?.jsonPrimitive?.content == "user" &&
                         (it.jsonObject["content"] as? JsonPrimitive)?.content?.contains(original) == true
                 })
+                formatCard?.let { format ->
+                    assertTrue(messages.any { entry ->
+                        (entry.jsonObject["content"] as? JsonPrimitive)?.content?.contains(format.content) == true
+                    })
+                }
                 rule.waitUntil(20_000) { vm.messageFormatRepairState.value?.previewContent == first }
                 assertFalse("The provider terminal must be held while both calls are already received", server.terminalSent.get())
                 assertTrue(vm.isResponding.value)
@@ -362,6 +408,7 @@ class NarrativeHistoryWireTest {
                         app.deletionCoordinator.deleteSession(session.id)
                     } finally {
                         app.settingsRepository.saveAppSettings(settings)
+                        formatCard?.let { app.formatCardRepository.delete(it.id) }
                         app.characterRepository.delete(card.id)
                         app.modelRepository.deleteModel(model.id)
                     }
