@@ -535,45 +535,12 @@ class NarrativeHistoryWireTest {
                     else assertTrue(vm.sendMessage(input))
                 }
                 val request = withTimeout(20_000) { server.requestBody.await() }
-                val messages = sentMessages(request, transport)
-                assertEquals(includePrior, messages.any { it.hasMessage("assistant", PromptTemplates.narrativeModeHistoryReply(prior, mode)) })
-                priorLegacy?.let { body -> assertTrue(messages.any { it.hasMessage("assistant", body) }) }
-                historicalUser?.let { body -> assertTrue(messages.any { it.hasMessage("user", body) }) }
-                if (customCore.isNotEmpty()) {
-                    val first = Json.parseToJsonElement(request).jsonObject.getValue("messages").jsonArray.first().jsonObject
-                    assertEquals("system", first["role"]?.jsonPrimitive?.content)
-                    assertTrue(customCore in first.getValue("content").jsonPrimitive.content)
-                }
-                if (customTail.isNotEmpty()) {
-                    val expectedTail = customTail.replace("{{char}}", cardName)
-                    val tailRole = if (transport.experimental) "system" else "assistant"
-                    assertTrue(messages.any { entry ->
-                        entry.jsonObject["role"]?.jsonPrimitive?.content == tailRole &&
-                            (entry.jsonObject["content"] as? JsonPrimitive)?.content?.contains(expectedTail) == true
-                    })
-                }
-                selectedFormatCard?.let { format ->
-                    assertEquals(!rebuildInitial, messages.any { entry ->
-                        (entry.jsonObject["content"] as? JsonPrimitive)?.content?.contains(format.content) == true
-                    })
-                    for (configuredTool in format.userTools) assertTrue(messages.any { entry ->
-                        (entry.jsonObject["content"] as? JsonPrimitive)?.content?.contains(configuredTool.text) == true
-                    })
-                }
-                assertEquals(!rebuildInitial, messages.any { it.hasMessage("user", input) })
-                supplementaryTemplate?.let { template ->
-                    val marker = template.replace("{{char}}", cardName)
-                    val setting = messages.indexOfFirst { it.jsonObject.getValue("content").jsonPrimitive.content.contains(marker) }
-                    val sentUser = messages.indexOfFirst { it.hasMessage("user", input) }
-                    assertTrue("The evaluated supplementary setting must precede the sent user", setting >= 0 && sentUser > setting)
-                }
-                if (literal == LiteralCase.STRONG_SUFFIX_DENIAL) {
-                    val user = messages.indexOfFirst { it.hasMessage("user", input) }
-                    val role = if (transport.experimental) "system" else "assistant"
-                    val strongText = checkNotNull(selectedFormatCard).userTools.single().text
-                    val suffix = messages.indexOfFirst { it.hasMessage(role, strongText) }
-                    assertTrue("The sent strong denial follows the actual user", user >= 0 && suffix > user)
-                }
+                assertReplyRequest(
+                    request, transport, includePrior, PromptTemplates.narrativeModeHistoryReply(prior, mode),
+                    priorLegacy, historicalUser, customCore, customTail.replace("{{char}}", cardName),
+                    selectedFormatCard, input, rebuildInitial, supplementaryTemplate?.replace("{{char}}", cardName),
+                    checksStrongDenial = literal == LiteralCase.STRONG_SUFFIX_DENIAL,
+                )
                 // Experimental live preview initially carries the first tool call only.
                 val preview = when {
                     toolIndexes != null -> prose
@@ -596,23 +563,9 @@ class NarrativeHistoryWireTest {
                 rule.waitUntil(20_000) { !vm.isResponding.value }
                 assertEquals(!stop, server.terminalSent.get())
                 val saved = ChatRepository(JsonFileStorage(app)).getMessages(session.id)
-                if (greeting != null) {
-                    assertEquals(greeting.id, saved.single().id)
-                    assertEquals(expected, saved.single().displayContent)
-                    return
-                }
-                assertEquals(priorBodies.toSet(), saved.take(priorBodies.size).map(ChatMessage::displayContent).toSet())
-                val newMessages = saved.drop(priorBodies.size).map(ChatMessage::displayContent)
-                if (toolIndexes == null) assertEquals(listOf(input, expected), newMessages) else {
-                    assertEquals(input, newMessages.first())
-                    assertTrue(newMessages.last().startsWith("错误:"))
-                    assertFalse(newMessages.last().contains(disconnectedText))
-                }
-                val savedPriorRoles = saved.take(priorBodies.size).map(ChatMessage::role)
-                val historicalUserCount = if (historicalUser == null) 0 else 1
-                assertEquals(historicalUserCount, savedPriorRoles.count { it == MessageRole.USER })
-                assertEquals(priorBodies.size - historicalUserCount, savedPriorRoles.count { it == MessageRole.ASSISTANT })
-                assertEquals(listOf(MessageRole.USER, MessageRole.ASSISTANT), saved.drop(priorBodies.size).map(ChatMessage::role))
+                assertReplyStorage(
+                    saved, greeting?.id, priorBodies, historicalUser != null, input, expected, toolIndexes, disconnectedText,
+                )
             } finally {
                 try {
                     // The generating job, like memory maintenance, can outlive its ViewModel.
@@ -634,6 +587,89 @@ class NarrativeHistoryWireTest {
                 }
             }
         }
+    }
+
+    private fun assertReplyRequest(
+        request: String,
+        transport: Transport,
+        includePrior: Boolean,
+        projectedPrior: String,
+        priorLegacy: String?,
+        historicalUser: String?,
+        customCore: String,
+        customTail: String,
+        selectedFormatCard: FormatCard?,
+        input: String,
+        rebuildInitial: Boolean,
+        supplementaryTemplate: String?,
+        checksStrongDenial: Boolean,
+    ) {
+        val messages = sentMessages(request, transport)
+        assertEquals(includePrior, messages.any { it.hasMessage("assistant", projectedPrior) })
+        priorLegacy?.let { body -> assertTrue(messages.any { it.hasMessage("assistant", body) }) }
+        historicalUser?.let { body -> assertTrue(messages.any { it.hasMessage("user", body) }) }
+        if (customCore.isNotEmpty()) {
+            val first = Json.parseToJsonElement(request).jsonObject.getValue("messages").jsonArray.first().jsonObject
+            assertEquals("system", first["role"]?.jsonPrimitive?.content)
+            assertTrue(customCore in first.getValue("content").jsonPrimitive.content)
+        }
+        if (customTail.isNotEmpty()) {
+            val tailRole = if (transport.experimental) "system" else "assistant"
+            assertTrue(messages.any { entry ->
+                entry.jsonObject["role"]?.jsonPrimitive?.content == tailRole &&
+                    (entry.jsonObject["content"] as? JsonPrimitive)?.content?.contains(customTail) == true
+            })
+        }
+        selectedFormatCard?.let { format ->
+            assertEquals(!rebuildInitial, messages.any { entry ->
+                (entry.jsonObject["content"] as? JsonPrimitive)?.content?.contains(format.content) == true
+            })
+            for (configuredTool in format.userTools) assertTrue(messages.any { entry ->
+                (entry.jsonObject["content"] as? JsonPrimitive)?.content?.contains(configuredTool.text) == true
+            })
+        }
+        assertEquals(!rebuildInitial, messages.any { it.hasMessage("user", input) })
+        supplementaryTemplate?.let { marker ->
+            val setting = messages.indexOfFirst { it.jsonObject.getValue("content").jsonPrimitive.content.contains(marker) }
+            val sentUser = messages.indexOfFirst { it.hasMessage("user", input) }
+            assertTrue("The evaluated supplementary setting must precede the sent user", setting >= 0 && sentUser > setting)
+        }
+        if (checksStrongDenial) {
+            val user = messages.indexOfFirst { it.hasMessage("user", input) }
+            val role = if (transport.experimental) "system" else "assistant"
+            val strongText = checkNotNull(selectedFormatCard).userTools.single().text
+            val suffix = messages.indexOfFirst { it.hasMessage(role, strongText) }
+            assertTrue("The sent strong denial follows the actual user", user >= 0 && suffix > user)
+        }
+    }
+
+    private fun assertReplyStorage(
+        saved: List<ChatMessage>,
+        greetingId: String?,
+        priorBodies: List<String>,
+        hasHistoricalUser: Boolean,
+        input: String,
+        expected: String,
+        toolIndexes: List<Int>?,
+        disconnectedText: String,
+    ) {
+        if (greetingId != null) {
+            assertEquals(greetingId, saved.single().id)
+            assertEquals(expected, saved.single().displayContent)
+            return
+        }
+        assertEquals(priorBodies.toSet(), saved.take(priorBodies.size).map(ChatMessage::displayContent).toSet())
+        val newMessages = saved.drop(priorBodies.size).map(ChatMessage::displayContent)
+        if (toolIndexes == null) assertEquals(listOf(input, expected), newMessages) else {
+            assertEquals(input, newMessages.first())
+            assertTrue(newMessages.last().startsWith("错误:"))
+            assertFalse(newMessages.last().contains(disconnectedText))
+        }
+        val savedPriorRoles = saved.take(priorBodies.size).map(ChatMessage::role)
+        val historicalUserCount = if (hasHistoricalUser) 1 else 0
+        assertEquals(historicalUserCount, savedPriorRoles.count { it == MessageRole.USER })
+        assertEquals(priorBodies.size - historicalUserCount, savedPriorRoles.count { it == MessageRole.ASSISTANT })
+        assertEquals(listOf(MessageRole.USER, MessageRole.ASSISTANT), saved.drop(priorBodies.size).map(ChatMessage::role))
     }
 
     private suspend fun verifyAutomaticRepairDenial(stop: Boolean) {
