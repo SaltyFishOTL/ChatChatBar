@@ -715,7 +715,7 @@ object NarrativeHistoryEcho {
         // Delimiters inside a literal are independent of a newly emitted outer pair.
         // Keep the stricter source check for orphan closers, where there is no matching opener.
         val visibleDelimiters = sources.flatMap { source ->
-            if (delimiterTokens.none { it in source }) return@flatMapTo emptyList()
+            if (delimiterTokens.none { it in source }) return@flatMap emptyList()
             val tags = wrapperFamilyTokens.values.flatMap { it.findAll(source).toList() }
             val literals = classifyLiterals(source, tags)
             tags.filter {
