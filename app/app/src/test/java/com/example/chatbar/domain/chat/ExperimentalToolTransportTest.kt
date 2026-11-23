@@ -249,6 +249,55 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `main stream respects explicit English and Chinese inline tag ownership`() = runBlocking {
+        val opening = "<历史回复 模式=\"推进\">"
+        val closing = "</历史回复>"
+        val story = "她推开门。"
+        val reply = "$opening$story$closing"
+        val template = "$opening{story}$closing"
+        for (label in listOf(
+            "Required output template (keep both tags verbatim): ",
+            "请完整保留首尾标签：",
+        )) {
+            assertNarrativeReplyStates(reply, expected = reply, formatCard = label + template)
+        }
+        for (card in listOf(
+            "The following is a counterexample.\nRequired output template: $template",
+            "Output template: $template\nDo not output these tags.",
+            "Output template: $template is merely an example.",
+            "She referred to the output template: $template",
+            "请完整保留首尾标签：`$template`",
+        )) {
+            assertNarrativeReplyStates(reply, expected = story, formatCard = card)
+        }
+    }
+
+    @Test
+    fun `main stream cleans a fully identified partial close on the opening line`() = runBlocking {
+        val opening = "<历史回复 模式=\"推进\">"
+        val closingPrefix = "</历史回复"
+        val story = "她推开门。"
+        val raw = "$opening$story$closingPrefix"
+        assertNarrativeReplyDeltas(listOf(raw, ">"), listOf(story, story), story)
+        assertNarrativeReplyStates(raw, expected = story)
+
+        val literal = "$opening 是本次要解释的标签。"
+        assertNarrativeReplyStates(literal, expected = literal)
+        val escaped = "$opening$story\\$closingPrefix"
+        assertNarrativeReplyStates(escaped, expected = escaped)
+    }
+
+    @Test
+    fun `main stream keeps a closing tag in a guillemet quote inside a genuine wrapper`() = runBlocking {
+        val opening = "<历史回复 模式=\"推进\">"
+        val closing = "</历史回复>"
+        val body = "Elle lit : « Exemple\n$closing\nfin de l’exemple. »\nElle ferme le livre."
+        assertNarrativeReplyStates("$opening\n$body\n$closing", expected = body)
+        assertNarrativeReplyStates(body, expected = body)
+        assertNarrativeReplyStates("$opening\n$body", expected = body)
+    }
+
+    @Test
     fun `main stream closes a quoted title before a later contraction`() = runBlocking {
         val body = "She titled it ‘Visitors’ because they’re leaving."
         assertNarrativeReplyStates("<历史回复 模式=\"聚焦\">\n$body\n</历史回复>", expected = body)

@@ -34,7 +34,10 @@ object NarrativeHistoryEcho {
     private const val cdataClosing = "]]>"
     private val formatTemplateLabel = Regex(
         " {0,3}(\\*\\*|)(?:(?:本轮)?输出(?:模板|格式)|本轮的固定输出模板|请按以下格式输出|" +
-            "每次回复必须使用此固定模板)[ \\t]*[:：]\\1[ \\t]*",
+            "每次回复必须使用此固定模板|请(?:完整|逐字)保留首尾标签|" +
+            "(?:(?:required|exact|fixed)[ \\t]+)?output template(?:[ \\t]+\\(keep both tags verbatim\\))?)" +
+            "[ \\t]*[:：]\\1[ \\t]*",
+        RegexOption.IGNORE_CASE,
     )
     private val formatTemplateAffirmation = Regex(
         "[ \\t]*(?:（[ \\t]*标签是固定输出的一部分[ \\t]*）|\\([ \\t]*标签是固定输出的一部分[ \\t]*\\))[ \\t]*[。.]?[ \\t]*",
@@ -45,14 +48,19 @@ object NarrativeHistoryEcho {
     )
     private val formatTemplateFenceInfo = setOf("", "html", "xml")
     private val formatCounterexampleLead = Regex(
-        " {0,3}(?:以下是禁止输出的反例[。.:：]?|以下标签仅供举例，不要在回复中输出[:：])[ \\t]*",
+        " {0,3}(?:以下是禁止输出的反例[。.:：]?|以下标签仅供举例，不要在回复中输出[:：]|" +
+            "the following is a counterexample[.!:])[ \\t]*",
+        RegexOption.IGNORE_CASE,
     )
-    private val formatCounterexampleTail = Regex(" {0,3}不得输出上面的标签[。.]?[ \\t]*")
+    private val formatCounterexampleTail = Regex(
+        " {0,3}(?:不得输出上面的标签[。.]?|do not output (?:these|the above) tags[.!]?)[ \\t]*",
+        RegexOption.IGNORE_CASE,
+    )
     private val statusFenceInfo = Regex("(text|status)(?=$|[ \\t(（]).*", RegexOption.IGNORE_CASE)
     private val paragraphBreak = Regex("\\r?\\n[ \\t]*\\r?\\n")
     private val bareCarriageReturn = Regex("\\r(?!\\n)")
     private val proseDelimiters = mapOf(
-        '「' to '」', '『' to '』', '｢' to '｣', '“' to '”', '‘' to '’', '"' to '"', '\'' to '\'',
+        '「' to '」', '『' to '』', '｢' to '｣', '“' to '”', '‘' to '’', '«' to '»', '"' to '"', '\'' to '\'',
     )
     private val unfinishedPluralPossessor = Regex("(?:the|these|those|our|your|their)[ \\t]+[a-z]{2,}s")
     private val unfinishedPossessedWord = Regex("[a-z]{2,}")
@@ -345,11 +353,13 @@ object NarrativeHistoryEcho {
         if (declared || requirePair) return CleanedReply(text)
         val sameLineContent = end.isNotEmpty() && !afterOpening.firstOrNull().isHistoryLineBreak()
         val lastTag = end.lastIndexOf('<')
-        if (lastTag >= 0 && (!sameLineContent || lastTag == 0) && boundary.canEndWithPartialClose) {
+        if (lastTag >= 0 && boundary.canEndWithPartialClose) {
             val suffix = end.substring(lastTag)
-            val identifiable = suffix.startsWith("</历史回复") || suffix.startsWith("</聚焦模式")
+            val identifiable = suffix.startsWith("</${wrapper.name}")
             val aloneOnLine = end.substring(0, lastTag).substringAfterLast('\n').substringAfterLast('\r').isBlank()
-            if ((streaming || identifiable || interrupted && (suffix.length > 1 || aloneOnLine)) &&
+            // Same-line prose can explain the opener. A fully identified closing prefix confirms the pair.
+            if ((!sameLineContent || lastTag == 0 || identifiable) &&
+                (streaming || identifiable || interrupted && (suffix.length > 1 || aloneOnLine)) &&
                 wrapper.closings.any { suffix.length < it.length && it.startsWith(suffix) } &&
                 !isEscaped(end, lastTag) && !literals.isMarkdownContainerLine(lastTag) &&
                 literals.ranges.none { lastTag in it } && !literals.hasCodeIndentAt(lastTag) &&
