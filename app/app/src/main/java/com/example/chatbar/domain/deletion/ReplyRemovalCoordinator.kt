@@ -66,8 +66,9 @@ internal class ReplyRemovalCoordinator(
             var removal: ReplyRemoval? = null
             val committed = voices.prepareReplyRemoval(
                 expected, versionId, playback::removeQueuedVoices, onlyIfUnvoiced
-            ) { collectAudioPaths ->
+            ) { collectMedia ->
                 chat.commitReplyRemoval(expected, replacement) {
+                    val media = collectMedia()
                     val pending = ReplyRemoval(
                         id = UUID.randomUUID().toString(), sessionId = expected.sessionId, messageId = expected.id,
                         versionId = versionId, role = expected.role, sourceTurnId = expected.sourceTurnId,
@@ -75,9 +76,10 @@ internal class ReplyRemovalCoordinator(
                         images = if (replacement == null) {
                             (expected.images + expected.generatedImageMetadata.map { it.imagePath }).distinct()
                         } else emptyList(),
-                        audioPaths = collectAudioPaths(),
+                        audioPaths = media.audioPaths,
                         invalidateAutomaticMemory = ChatMemoryIndexPolicy.contributesToIndex(expected) &&
-                            (replacement == null || expected.displayContent != replacement.displayContent)
+                            (replacement == null || expected.displayContent != replacement.displayContent),
+                        legacyVoiceAnchorWitnessId = media.legacyAnchorWitnessId
                     )
                     storage.saveEntityUncached(STORE, pending.id, pending, ReplyRemoval.serializer())
                     removal = pending

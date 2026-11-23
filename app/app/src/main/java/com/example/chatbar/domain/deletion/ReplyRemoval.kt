@@ -16,5 +16,6 @@ internal data class ReplyRemoval(
     val timelineTurn: Long?,
     val images: List<String>,
     val audioPaths: List<String>,
-    val invalidateAutomaticMemory: Boolean = versionId != null
+    val invalidateAutomaticMemory: Boolean = versionId != null,
+    val legacyVoiceAnchorWitnessId: String? = null
 )

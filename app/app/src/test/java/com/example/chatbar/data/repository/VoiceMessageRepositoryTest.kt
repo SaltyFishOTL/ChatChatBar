@@ -154,8 +154,8 @@ class VoiceMessageRepositoryTest {
                 images = listOf(File(context.filesDir, "attachment.png").path)))
             val voice = recording(reply, "clip", "Earlier reply", anchor = null)
 
-            suspend fun removeIfUnvoiced() = voices.prepareReplyRemoval(reply, null, {}, onlyIfUnvoiced = true) { collectAudio ->
-                chats.commitReplyRemoval(reply, null) { assertTrue(collectAudio().isEmpty()) }
+            suspend fun removeIfUnvoiced() = voices.prepareReplyRemoval(reply, null, {}, onlyIfUnvoiced = true) { collectMedia ->
+                chats.commitReplyRemoval(reply, null) { assertTrue(collectMedia().audioPaths.isEmpty()) }
             }
 
             val committing = CompletableDeferred<Unit>()
@@ -215,8 +215,8 @@ class VoiceMessageRepositoryTest {
         val regenerated = MessageAlternativeVersionPolicy.append(original, alternate, "B")
         val current = requireNotNull(chats.updateMessageIfUnchanged(original, regenerated))
         val survivor = requireNotNull(MessageAlternativeVersionPolicy.remove(current, originalId))
-        assertTrue(voices.prepareReplyRemoval(current, originalId, {}) { collectAudio ->
-            chats.commitReplyRemoval(current, survivor) { assertTrue(collectAudio().isEmpty()) }
+        assertTrue(voices.prepareReplyRemoval(current, originalId, {}) { collectMedia ->
+            chats.commitReplyRemoval(current, survivor) { assertTrue(collectMedia().audioPaths.isEmpty()) }
         })
         val removal = ReplyRemoval("remove-legacy", original.sessionId, original.id, originalId, original.role,
             original.sourceTurnId, original.sourceTurnOrder, original.timelineTurn, emptyList(), emptyList())

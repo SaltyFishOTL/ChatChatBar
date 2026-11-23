@@ -14,6 +14,7 @@ import com.example.chatbar.data.local.entity.GeneratedImageMetadata
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.SaveSlot
 import com.example.chatbar.data.local.entity.VectorChunk
+import com.example.chatbar.data.local.entity.VoiceAnchorState
 import com.example.chatbar.data.repository.ChatRepository
 import com.example.chatbar.data.repository.VoiceMessageRepository
 import com.example.chatbar.domain.backup.BackupDataRegistry
@@ -23,6 +24,8 @@ import com.example.chatbar.domain.image.NovelAiImageStorage
 import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
 import com.example.chatbar.domain.rag.RagRepository
 import com.example.chatbar.domain.voice.FishAudioStorage
+import com.example.chatbar.domain.voice.VoiceAnchorPolicy
+import com.example.chatbar.domain.voice.VoiceAnchorStateKey
 import com.example.chatbar.domain.voice.VoiceGenerationPolicy
 import java.io.File
 import java.nio.ByteBuffer
@@ -39,6 +42,10 @@ import org.junit.Test
 class ReplyRemovalDurabilityTest {
     @Test fun failedVoiceRecordDeleteKeepsAudioUntilColdRetry() = verifyFailure("generated_voice_messages", versionOnly = true)
     @Test fun failedAnchorDeleteKeepsAudioUntilColdRetry() = verifyFailure("voice_anchor_states", versionOnly = true)
+    @Test fun failedWholeReplyLegacyAnchorDeleteKeepsItsWitnessUntilColdRetry() =
+        verifyUnscopedAnchorFailure(versionOnly = false)
+    @Test fun failedAlternativeLegacyAnchorDeleteUsesJournaledWitnessOnColdRetry() =
+        verifyUnscopedAnchorFailure(versionOnly = true)
 
     @Test fun pendingAudioCleanupPreservesRebuiltMemoryAcrossReopenAndRetry() = withFixture { fixture ->
         val session = fixture.createSession()
@@ -457,6 +464,68 @@ class ReplyRemovalDurabilityTest {
                 }
             }
         }
+
+    private fun verifyUnscopedAnchorFailure(versionOnly: Boolean) = withFixture { fixture ->
+        val session = fixture.createSession()
+        val otherSession = fixture.createSession()
+        val message = fixture.addReply(session, versionOnly = true)
+        fixture.chats.addMessage(message.copy(sessionId = otherSession.id, images = emptyList()))
+        val (retired, active) = MessageAlternativeVersionPolicy.versions(message)
+        val retiredState = VoiceAnchorPolicy.initialState(message.id, retired.content, retired.id, includeNarration = true)
+        val unrelatedState = VoiceAnchorPolicy.initialState(message.id, active.content, active.id, includeNarration = true)
+        val anchorDirectory = File(fixture.context.filesDir, "entities/voice_anchor_states")
+        for (state in listOf(retiredState, unrelatedState)) {
+            fixture.storage.saveEntity("voice_anchor_states", VoiceAnchorStateKey(state).storageId, state, VoiceAnchorState.serializer())
+        }
+        val retiredFile = File(anchorDirectory, "${VoiceAnchorStateKey(retiredState).storageId}.json")
+        val unrelatedFile = File(anchorDirectory, "${VoiceAnchorStateKey(unrelatedState).storageId}.json")
+        val unrelatedBytes = unrelatedFile.readBytes()
+        val activeVoice = fixture.addVoice(message)
+
+        fun legacyVoice(id: String, owner: ChatSession, state: VoiceAnchorState): GeneratedVoiceMessage {
+            val anchor = state.anchors.single()
+            val audio = File(fixture.context.filesDir, "audio/generated/${owner.id}/$id.mp3").apply {
+                parentFile!!.mkdirs()
+                writeText(id)
+            }
+            return activeVoice.copy(
+                id = id, sessionId = owner.id, messageVersionId = state.messageVersionId, anchorId = anchor.id,
+                versionOwnershipConfirmed = false, sourceSegmentKind = anchor.segmentKind,
+                sourceSpeakerName = anchor.speakerName.orEmpty(), sourceText = anchor.sourceText,
+                taggedText = anchor.sourceText, audioPath = audio.path, byteLength = audio.length()
+            )
+        }
+        val retiredVoice = legacyVoice("retired-legacy", session, retiredState)
+        val unrelatedVoice = legacyVoice("unrelated-legacy", otherSession, unrelatedState)
+        fixture.voices.save(retiredVoice)
+        fixture.voices.save(unrelatedVoice)
+
+        val replacement = if (versionOnly) MessageAlternativeVersionPolicy.remove(message, retired.id) else null
+        assertTrue(anchorDirectory.setWritable(false))
+        try {
+            val error = fixture.removals.remove(message, replacement, retired.id.takeIf { versionOnly })
+            assertNotNull("The retired anchor must remain pending when its deletion fails", error)
+            assertTrue(retiredFile.isFile)
+            assertTrue(File(retiredVoice.audioPath).isFile)
+            val pendingVoice = requireNotNull(fixture.voices.get(retiredVoice.id))
+            assertEquals(retiredVoice.anchorId.takeUnless { versionOnly }, pendingVoice.anchorId)
+            assertEquals(versionOnly, pendingVoice.requiresCompatibleVersion)
+        } finally {
+            assertTrue(anchorDirectory.setWritable(true))
+        }
+
+        val cold = Fixture(fixture.context, fixture.app)
+        cold.removals.resumePending(session.id)
+        assertFalse(retiredFile.exists())
+        assertArrayEquals(unrelatedBytes, unrelatedFile.readBytes())
+        assertEquals(unrelatedVoice, cold.voices.get(unrelatedVoice.id))
+        assertEquals(unrelatedVoice.id, File(unrelatedVoice.audioPath).readText())
+        assertEquals(versionOnly, File(activeVoice.audioPath).isFile)
+        assertEquals(versionOnly, File(retiredVoice.audioPath).isFile)
+        assertEquals(versionOnly, cold.voices.get(retiredVoice.id) != null)
+        assertEquals(replacement?.displayContent, cold.chats.getMessage(message.id, session.id)?.displayContent)
+        ReplyRemovalCoordinator.requireSettledForBackup(fixture.context.filesDir)
+    }
 
     private fun withFixture(block: suspend (Fixture) -> Unit) = runBlocking<Unit> {
         val app = ApplicationProvider.getApplicationContext<ChatBarApp>()

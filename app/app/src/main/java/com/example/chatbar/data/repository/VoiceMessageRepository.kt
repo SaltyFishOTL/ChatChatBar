@@ -26,6 +26,8 @@ import kotlinx.coroutines.withContext
 internal class ReplyAudioFileCleanupException :
     IllegalStateException("回复已删除，语音文件清理失败，将在重试时继续")
 
+internal data class ReplyRemovalMedia(val audioPaths: List<String>, val legacyAnchorWitnessId: String?)
+
 data class VoiceSegmentAnchor(
     val segment: CurrentVoiceSegment,
     val anchor: VoiceAnchor
@@ -297,13 +299,13 @@ class VoiceMessageRepository(
         removed
     }
 
-    /** Capture only audio with confirmed ownership before changing a reply. */
+    /** Capture confirmed audio ownership and the legacy anchor witness before changing a reply. */
     internal suspend fun prepareReplyRemoval(
         message: ChatMessage,
         versionId: String?,
         removeFromPlayback: suspend (Set<String>) -> Unit,
         onlyIfUnvoiced: Boolean = false,
-        commit: suspend (suspend () -> List<String>) -> Boolean
+        commit: suspend (suspend () -> ReplyRemovalMedia) -> Boolean
     ): Boolean = mutex.withLock {
         ensureInitializedLocked()
         require(!onlyIfUnvoiced || versionId == null)
@@ -313,8 +315,16 @@ class VoiceMessageRepository(
             if (!onlyIfUnvoiced) {
                 targeted = persistedReplyVoices(message.sessionId, message.id, versionId, includeUnassigned = true)
             }
-            targeted.filter { versionId == null || it.messageVersionId == versionId && it.versionOwnershipConfirmed }
+            val audioPaths = targeted.filter { versionId == null || it.messageVersionId == versionId && it.versionOwnershipConfirmed }
                 .map(GeneratedVoiceMessage::audioPath).distinct()
+            // Restricting an unconfirmed recording after commit clears its anchor ID.
+            val legacyAnchorWitnessId = versionId?.let {
+                anchorsByVersion[VoiceAnchorStateKey("", message.id, it)]
+            }?.let { state ->
+                val witnesses = unscopedAnchorVoices(state)
+                witnesses.firstOrNull()?.anchorId?.takeIf { witnesses.all { it.sessionId == message.sessionId } }
+            }
+            ReplyRemovalMedia(audioPaths, legacyAnchorWitnessId)
         }
         if (committed) {
             removeFromPlayback(targeted.mapTo(mutableSetOf(), GeneratedVoiceMessage::id))
@@ -341,14 +351,15 @@ class VoiceMessageRepository(
             val anchorKeys = mutableSetOf<VoiceAnchorStateKey>()
             storage.forEachUncached(ANCHOR_TYPE, VoiceAnchorState.serializer(), requireCompleteRead = true) { state ->
                 if (state.messageId == removal.messageId &&
-                    (state.sessionId == removal.sessionId || unscopedAnchorOwner(state) == removal.sessionId) &&
-                    (removal.versionId == null || state.messageVersionId == removal.versionId)) {
+                    (removal.versionId == null || state.messageVersionId == removal.versionId) &&
+                    ownsReplyAnchor(state, removal)) {
                     anchorKeys += VoiceAnchorStateKey(state)
                 }
             }
+            // A whole reply's voice rows can be the only witness for an unscoped anchor on retry.
+            anchorKeys.forEach { deleteAnchorLocked(it) }
             deleteVoiceRecordsLocked(removed)
             if (removal.versionId != null) restrictUnconfirmedReplyVoices(targeted)
-            anchorKeys.forEach { deleteAnchorLocked(it) }
             deleteUnownedReplyAudio(removal.audioPaths, deleteAudio)
         }
     }
@@ -430,13 +441,23 @@ class VoiceMessageRepository(
         }
     }
 
-    private fun unscopedAnchorOwner(state: VoiceAnchorState): String? {
-        if (state.sessionId.isNotBlank()) return null
+    private fun ownsReplyAnchor(state: VoiceAnchorState, removal: ReplyRemoval): Boolean {
+        if (state.sessionId.isNotBlank()) return state.sessionId == removal.sessionId
+        val witnesses = unscopedAnchorVoices(state)
+        if (witnesses.isNotEmpty()) return witnesses.all { it.sessionId == removal.sessionId }
+        return state.anchors.any { it.id == removal.legacyVoiceAnchorWitnessId }
+    }
+
+    private fun unscopedAnchorOwner(state: VoiceAnchorState): String? =
+        unscopedAnchorVoices(state).map(GeneratedVoiceMessage::sessionId).distinct().singleOrNull()
+
+    private fun unscopedAnchorVoices(state: VoiceAnchorState): List<GeneratedVoiceMessage> {
+        if (state.sessionId.isNotBlank()) return emptyList()
         val anchors = state.anchors.mapTo(hashSetOf(), VoiceAnchor::id)
         return _voices.value.filter { voice ->
             voice.messageId == state.messageId && voice.anchorId in anchors &&
                 (state.messageVersionId == null || voice.messageVersionId == state.messageVersionId)
-        }.map(GeneratedVoiceMessage::sessionId).distinct().singleOrNull()
+        }
     }
 
     private suspend fun adoptUnscopedAnchorLocked(key: VoiceAnchorStateKey): VoiceAnchorState? {
