@@ -24,6 +24,7 @@ import com.example.chatbar.domain.chat.ChatMessageOrderSnapshot
 import com.example.chatbar.domain.chat.ChatRequestMemoryPolicy
 import com.example.chatbar.domain.chat.InterruptedReplyPolicy
 import com.example.chatbar.domain.chat.MessageFormatRepairPolicy
+import com.example.chatbar.domain.chat.MessageFormatRepairService
 import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.domain.chat.PromptCacheKeyFactory
