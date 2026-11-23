@@ -12,6 +12,9 @@ object NarrativeHistoryEcho {
         val matchedOuterPair: Boolean = false,
         val couldSpanToolCalls: Boolean = false,
     )
+    private data class HeadingSelection(val body: IntRange, val prefixEnd: Int = 0) {
+        fun content(text: String): String = text.substring(0, prefixEnd) + text.substring(body)
+    }
     private data class LiteralMarkup(val range: IntRange, val isComment: Boolean)
     private data class UserOutput(
         val exactPairs: Set<String> = emptySet(),
@@ -191,7 +194,7 @@ object NarrativeHistoryEcho {
         private val projectedDuplicateOpenings = mutableSetOf<String>()
         private val projectedClosings = mutableSetOf<String>()
         private val narrativeHeadings = mutableSetOf<String>()
-        private val sentUserTexts = mutableMapOf<String, UserOutput>()
+        private val authoredSources = mutableMapOf<String, UserOutput>()
         private val authoredPairs = mutableSetOf<String>()
         private val authoredTemplateOpenings = mutableSetOf<String>()
 
@@ -199,20 +202,23 @@ object NarrativeHistoryEcho {
             prompt.lineSequence().forEachIndexed { index, line ->
                 if (line.isNotBlank() && (index == 0 || line in narrativeModeHeadings)) narrativeHeadings += line
             }
-            if (userText != null && userText !in sentUserTexts) {
-                val output = declaredUserOutput(userText)
-                sentUserTexts[userText] = output
-                authoredPairs += output.exactPairs
-                authoredTemplateOpenings += output.templateOpenings
-            }
+            userText?.let(::recordAuthoredOutput)
+        }
+
+        fun recordAuthoredOutput(source: String) {
+            if (!enabled || source.isBlank() || source in authoredSources) return
+            val output = declaredUserOutput(source)
+            authoredSources[source] = output
+            authoredPairs += output.exactPairs
+            authoredTemplateOpenings += output.templateOpenings
         }
 
         private fun isAuthoredHeading(token: String): Boolean =
             formatCard?.let { hasAuthoredHeading(it, token, narrativeHeadings) } == true ||
-                sentUserTexts.keys.any { hasAuthoredHeading(it, token, narrativeHeadings) }
+                authoredSources.keys.any { hasAuthoredHeading(it, token, narrativeHeadings) }
 
         private fun isAuthoredClosing(token: String): Boolean =
-            sentUserTexts.any { (source, output) -> hasAuthoredClosing(source, token, output.counterexampleClosingStarts) } ||
+            authoredSources.any { (source, output) -> hasAuthoredClosing(source, token, output.counterexampleClosingStarts) } ||
                 formatCard?.let { hasAuthoredClosing(it, token, formatOutput.counterexampleClosingStarts) } == true
 
         val declaresLegacyHistoryWrapper: Boolean
@@ -253,9 +259,10 @@ object NarrativeHistoryEcho {
                 if (cleaned != text) return cleaned
                 val repairClosings = wrappers.filter { it.opening in repairOpenings }.flatMap { it.closings }
                     .filterNot { close -> repairLiteralSources.any { close in it } }
-                return withoutOrphanClosing(text, repairClosings, provisional, formatOutput) { partial ->
-                    repairLiteralSources.any { partial in it }
-                }
+                return withoutOrphanClosing(
+                    text, repairClosings, provisional, formatOutput,
+                    isAuthored = { partial -> repairLiteralSources.any { partial in it } },
+                )
             }
 
             val headings = narrativeHeadings.filterNot(::isAuthoredHeading)
@@ -263,31 +270,35 @@ object NarrativeHistoryEcho {
                 formatOutput.copy(declaredOpenings = formatOutput.declaredOpenings + authoredTemplateOpenings)
             }
             val reply = withoutEchoedHeading(text, headings, provisional, ::isAuthoredHeading)
-            val body = text.substring(reply)
-            val lengths = if (reply == text.indices) partLengths else partLengths.trimTo(reply, text.length)
+            val body = text.substring(reply.body)
+            val preservedPrefix = text.substring(0, reply.prefixEnd)
+            val lengths = if (reply.body == text.indices) partLengths else partLengths.trimTo(reply.body, text.length)
+            val closings by lazy(LazyThreadSafetyMode.NONE) { projectedClosings.filterNot(::isAuthoredClosing) }
             val cleaned = cleanCompletedBody(
                 body, replyFormat, interrupted, lengths, streaming, projectedDuplicateOpenings,
                 allowedOpenings = projectedOpenings + formatOutput.counterexampleOpenings,
                 authoredPairs = authoredPairs,
                 trailerHeadings = headings,
                 cleanExposedBody = { inner ->
-                    val exposed = inner.substring(withoutEchoedHeading(inner, headings, provisional, ::isAuthoredHeading))
+                    val exposed = withoutEchoedHeading(inner, headings, provisional, ::isAuthoredHeading).content(inner)
                     withoutHeadingBeforeTrailer(exposed, headings, provisional, formatOutput)
                 },
                 cleanPartHeading = { part: String, isJoinedLiteral: (Int) -> Boolean ->
-                    part.substring(withoutEchoedHeading(part, headings, provisional, ::isAuthoredHeading, isJoinedLiteral))
+                    withoutEchoedHeading(part, headings, provisional, ::isAuthoredHeading, isJoinedLiteral)
                 }.takeIf { headings.isNotEmpty() },
+                cleanPartOrphan = { part, isJoinedLiteral ->
+                    withoutOrphanClosing(part, closings, provisional, formatOutput, ::isAuthoredClosing, isJoinedLiteral)
+                },
             )
             if (cleaned != body) {
-                return withoutHeadingBeforeTrailer(cleaned, headings, provisional, formatOutput)
+                return preservedPrefix + withoutHeadingBeforeTrailer(cleaned, headings, provisional, formatOutput)
             }
-            val closings = projectedClosings.filterNot(::isAuthoredClosing)
             val withoutTrailerHeading = withoutHeadingBeforeTrailer(body, headings, provisional, formatOutput)
             val unwrapped = withoutOrphanClosing(
                 withoutTrailerHeading, closings, provisional, formatOutput, ::isAuthoredClosing,
             )
-            if (unwrapped == withoutTrailerHeading) return unwrapped
-            return withoutHeadingBeforeTrailer(unwrapped, headings, provisional, formatOutput)
+            if (unwrapped == withoutTrailerHeading) return preservedPrefix + unwrapped
+            return preservedPrefix + withoutHeadingBeforeTrailer(unwrapped, headings, provisional, formatOutput)
         }
     }
 
@@ -458,8 +469,8 @@ object NarrativeHistoryEcho {
     private fun withoutEchoedHeading(
         text: String, headings: List<String>, provisional: Boolean, isAuthored: (String) -> Boolean,
         isJoinedLiteral: (Int) -> Boolean = { false },
-    ): IntRange {
-        if (headings.isEmpty() || text.isBlank()) return text.indices
+    ): HeadingSelection {
+        if (headings.isEmpty() || text.isBlank()) return HeadingSelection(text.indices)
         val literals by lazy(LazyThreadSafetyMode.NONE) { classifyLiterals(text, includeUnclosed = provisional) }
         fun matches(rawLine: String, allowPrefix: Boolean): Boolean {
             val line = headingText(rawLine) ?: return false
@@ -469,7 +480,8 @@ object NarrativeHistoryEcho {
             }
         }
 
-        var bodyStart = 0
+        val commentsEnd = leadingClosedCommentLinesEnd(text)
+        var bodyStart = commentsEnd
         while (bodyStart < text.length) {
             val start = (bodyStart until text.length).firstOrNull { !text[it].isHistoryLineBreak() } ?: break
             val end = text.indexOfAny(charArrayOf('\r', '\n'), start).takeIf { it >= 0 } ?: text.length
@@ -478,6 +490,8 @@ object NarrativeHistoryEcho {
             ) break
             bodyStart = (end until text.length).firstOrNull { !text[it].isHistoryLineBreak() } ?: text.length
         }
+        val prefixEnd = if (bodyStart > commentsEnd) commentsEnd else 0
+        if (bodyStart == commentsEnd) bodyStart = 0
         var bodyEnd = text.length
         while (bodyEnd > bodyStart) {
             val end = (bodyEnd - 1 downTo bodyStart).firstOrNull { !text[it].isWhitespace() }?.plus(1) ?: break
@@ -487,7 +501,20 @@ object NarrativeHistoryEcho {
             ) break
             bodyEnd = (start - 1 downTo bodyStart).firstOrNull { !text[it].isHistoryLineBreak() }?.plus(1) ?: bodyStart
         }
-        return bodyStart until bodyEnd
+        return HeadingSelection(bodyStart until bodyEnd, prefixEnd)
+    }
+
+    private fun leadingClosedCommentLinesEnd(text: String): Int {
+        var offset = 0
+        while (offset < text.length) {
+            val opening = (offset until text.length).firstOrNull { !text[it].isWhitespace() } ?: break
+            if (!text.startsWith(commentOpening, opening) || hasCodeIndent(text, opening)) break
+            val end = closedCommentEnd(text, opening) ?: break
+            val lineBreak = text.indexOfAny(charArrayOf('\r', '\n'), end)
+            if (lineBreak < 0 || text.subSequence(end, lineBreak).isNotBlank()) break
+            offset = if (text.startsWith("\r\n", lineBreak)) lineBreak + 2 else lineBreak + 1
+        }
+        return offset
     }
 
     private fun headingText(line: String): String? {
@@ -513,6 +540,7 @@ object NarrativeHistoryEcho {
     private fun withoutOrphanClosing(
         text: String, closings: List<String>, provisional: Boolean, formatOutput: FormatOutput,
         isAuthored: (String) -> Boolean,
+        isJoinedLiteral: (Int) -> Boolean = { false },
     ): String {
         if (closings.isEmpty() || "</" !in text) return text
         val end = text.trimEnd()
@@ -530,10 +558,13 @@ object NarrativeHistoryEcho {
         }
         if (candidates.isEmpty() && partialClosing == null) return text
         val literals = classifyLiterals(end, tags, closings, includeUnclosed = provisional)
-        val visible = tags.filter { literals.isVisibleWrapperTag(end, it, includeStandaloneLazyTags = true) }
+        val visible = tags.filter {
+            literals.isVisibleWrapperTag(end, it, includeStandaloneLazyTags = true) && !isJoinedLiteral(it.range.first)
+        }
         val close = visible.singleOrNull()?.takeIf { it in candidates }
         val position = close?.range?.first ?: if (visible.isEmpty() && partialClosing != null) {
-            (end.length - partialClosing.length).takeIf { literals.isUnprotected(it) } ?: return text
+            (end.length - partialClosing.length).takeIf { literals.isUnprotected(it) && !isJoinedLiteral(it) }
+                ?: return text
         } else return text
         val before = end.substring(0, position)
         val lastBodyCharacter = before.trimEnd().lastOrNull()
@@ -813,7 +844,8 @@ object NarrativeHistoryEcho {
         authoredPairs: Set<String> = emptySet(),
         trailerHeadings: List<String> = emptyList(),
         cleanExposedBody: (String) -> String = { it },
-        cleanPartHeading: ((String, (Int) -> Boolean) -> String)? = null,
+        cleanPartHeading: ((String, (Int) -> Boolean) -> HeadingSelection)? = null,
+        cleanPartOrphan: ((String, (Int) -> Boolean) -> String)? = null,
     ): String {
         fun clean(part: String) = cleanReply(
             part, streaming, interrupted, formatOutput = formatOutput,
@@ -875,10 +907,17 @@ object NarrativeHistoryEcho {
                     authoredPairs = authoredPairs, trailerHeadings = trailerHeadings, cleanExposedBody = cleanExposedBody,
                     isJoinedLiteral = ::isJoinedLiteral,
                 )
-                if (first == last && !requirePair && cleaned.body == part && cleanPartHeading != null) {
-                    return cleaned.copy(body = cleanPartHeading(part) {
+                if (first == last && !requirePair && cleaned.body == part) {
+                    val selection = cleanPartHeading?.invoke(part) {
                         isJoinedLiteral(it, true) || joinedLiterals.followsLiteralHeadingLead(start + it)
-                    })
+                    } ?: HeadingSelection(part.indices)
+                    val body = part.substring(selection.body)
+                    val unwrapped = if (!cleaned.couldSpanToolCalls && !cleaned.matchedOuterPair &&
+                        !explainsPreviousExample(last + 1)
+                    ) {
+                        cleanPartOrphan?.invoke(body) { isJoinedLiteral(selection.body.first + it, true) } ?: body
+                    } else body
+                    return cleaned.copy(body = part.substring(0, selection.prefixEnd) + unwrapped)
                 }
                 return cleaned
             }

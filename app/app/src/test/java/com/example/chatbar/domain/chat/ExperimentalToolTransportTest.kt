@@ -3,11 +3,14 @@ package com.example.chatbar.domain.chat
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatNarrativeMode
+import com.example.chatbar.data.local.entity.FormatCardUserToolConfig
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.ModelConfig
+import com.example.chatbar.domain.card.FormatCardUserToolPolicy
 import com.example.chatbar.domain.prompt.AiTaskContext
 import com.example.chatbar.domain.prompt.AiTaskKind
 import com.example.chatbar.domain.prompt.PromptTemplates
+import com.example.chatbar.ui.chat.appendCurrentUserAndCcbTailMessages
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.util.concurrent.CountDownLatch
@@ -279,9 +282,14 @@ class ExperimentalToolTransportTest {
 
     private suspend fun assertMultipartNarrativeReply(
         parts: List<String>, expected: String, formatCard: String? = null, narrativePrompt: String? = null,
+        userText: String? = null,
     ): String {
         val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.FOCUS, formatCard)
         val request = messages.toMutableList()
+        userText?.let {
+            cleanup.recordNarrativePrompt("", it)
+            request.add(ChatApiMessage.text("user", it))
+        }
         for (assistant in narrativeHistoryFixtures()) {
             request.add(1, projectAssistant(cleanup, assistant))
         }
@@ -2035,6 +2043,106 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `the sent strong format card suffix reserves an explicit reply template`() = runBlocking {
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "雨落在窗沿。").copy(narrativeMode = mode)
+            val story = "她收起雨伞。"
+            val sample = PromptTemplates.narrativeModeHistoryReply("[正文]", mode)
+            val reply = PromptTemplates.narrativeModeHistoryReply(story, mode)
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                assertNarrativeReplyDeltas(
+                    listOf(reply), listOf(reply), reply,
+                    formatCard = "用自然的叙述描写场景。",
+                    previousAssistant = prior, experimental = experimental, toolCall = toolCall,
+                    strongPrompt = "输出模板：\n$sample",
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(reply), listOf(story), story,
+                    previousAssistant = prior, experimental = experimental, toolCall = toolCall,
+                    strongPrompt = "请勿输出以下历史标签：\n输出模板：\n$sample",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `text array SSE preserves a separate newline after the issued mode title`() = runBlocking {
+        val prompt = PromptTemplates.narrativeModeSystemPrompt(ChatNarrativeMode.FOCUS)
+        val title = prompt.lineSequence().first()
+        val story = "她收起雨伞。"
+        val request = messages + ChatApiMessage.text("system", prompt)
+        val response = sse(listOf(
+            ordinaryArrayDelta(title),
+            ordinaryArrayDelta("\n"),
+            ordinaryArrayDelta("她收起", "雨伞。"),
+            chunk(reason = "stop"),
+            "[DONE]",
+        ))
+        for (experimental in listOf(false, true)) {
+            val chat = StreamingChatService(experimentalApiModeEnabled = { experimental }, allowCleartextHttp = { true })
+            val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.FOCUS, null)
+            cleanup.recordNarrativePrompt(prompt, null)
+            TaskResponseServer(response, "text/event-stream").use { server ->
+                val events = withTimeout(5_000) { chat.streamChat("array-delta", request, model(server)).toList() }
+                val previews = if (experimental) events.filterIsInstance<StreamEvent.ContentPreview>().map { it.text }
+                else events.filterIsInstance<StreamEvent.Delta>().runningFold("") { prefix, delta ->
+                    prefix + delta.text
+                }.drop(1)
+                assertEquals(listOf(title, "$title\n", "$title\n$story"), previews)
+                assertEquals(listOf("", "", story), previews.map { cleanup.completedBody(it, streaming = true) })
+                assertEquals(story, cleanup.completedBody(previews.last(), interrupted = true))
+                val completed = events.filterIsInstance<StreamEvent.Delta>().joinToString("") { it.text }
+                assertEquals(story, cleanup.completedBody(completed))
+                assertEquals(StreamEvent.Done, events.last())
+            }
+            TaskResponseServer(response, "text/event-stream").use { server ->
+                val events = withTimeout(5_000) { chat.streamText(request, model(server)).toList() }
+                val completed = events.filterIsInstance<StreamEvent.Delta>().joinToString("") { it.text }
+                assertEquals("$title\n$story", completed)
+                assertEquals(StreamEvent.Done, events.last())
+            }
+        }
+    }
+
+    @Test
+    fun `a paired tool part does not prevent cleanup of a second projected orphan close`(): Unit = runBlocking {
+        val firstStory = "她抬头。"
+        val secondStory = "他推开门。"
+        val pair = PromptTemplates.narrativeModeHistoryReply(firstStory, ChatNarrativeMode.FOCUS)
+        val close = pair.substringAfterLast('\n')
+        val orphan = "$secondStory\n$close"
+        assertMultipartNarrativeReply(listOf(pair, orphan), "$firstStory\n$secondStory")
+        assertMultipartNarrativeReply(
+            listOf(pair, orphan), "$firstStory\n$orphan", userText = "请在结尾逐字写出以下标记：\n$close",
+        )
+        val fencedExample = listOf("这是 XML 代码：\n~~~xml", orphan, "~~~")
+        assertMultipartNarrativeReply(listOf(pair) + fencedExample, "$firstStory\n" + fencedExample.joinToString("\n"))
+        val quotedExample = listOf("她说：“我在展示一段代码。", orphan, "例子结束。”")
+        assertMultipartNarrativeReply(listOf(pair) + quotedExample, "$firstStory\n" + quotedExample.joinToString("\n"))
+    }
+
+    @Test
+    fun `a hidden opening comment stays in the reply while the issued title is removed`() = runBlocking {
+        for (mode in ChatNarrativeMode.entries) {
+            val prompt = PromptTemplates.narrativeModeSystemPrompt(mode)
+            val heading = prompt.lineSequence().first()
+            val comment = "<!-- 舞台注记 -->"
+            val story = "她收起雨伞。"
+            val raw = "$comment\n$heading\n$story"
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                assertNarrativeReplyDeltas(
+                    listOf(comment, "\n$heading\n$story"), listOf(comment, "$comment\n$story"), "$comment\n$story",
+                    narrativePrompt = prompt, experimental = experimental, toolCall = toolCall,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(raw), raw, narrativePrompt = prompt, experimental = experimental,
+                    toolCall = toolCall, currentUserText = "请逐字保留这行标题：\n$heading",
+                )
+            }
+        }
+    }
+
+    @Test
     fun `an explanation delivered in the next tool call preserves the literal example`(): Unit = runBlocking {
         val sample = PromptTemplates.narrativeModeHistoryReply("示例正文。", ChatNarrativeMode.FOCUS)
         val explanation = "以上标签仅用于演示历史记录格式。"
@@ -2135,6 +2243,21 @@ class ExperimentalToolTransportTest {
         })
     }.toString()
 
+    private fun ordinaryArrayDelta(vararg parts: String): String = buildJsonObject {
+        put("choices", buildJsonArray {
+            add(buildJsonObject {
+                put("delta", buildJsonObject {
+                    put("content", buildJsonArray {
+                        for (part in parts) add(buildJsonObject {
+                            put("type", "text")
+                            put("text", part)
+                        })
+                    })
+                })
+            })
+        })
+    }.toString()
+
     private fun narrativeHistoryFixtures(): List<ChatMessage> =
         ChatNarrativeMode.entries.map { mode ->
             ChatMessage.create("fixture", MessageRole.ASSISTANT, "早先的故事。").copy(narrativeMode = mode)
@@ -2176,6 +2299,7 @@ class ExperimentalToolTransportTest {
         toolCall: Boolean = false,
         fixtureHistory: Boolean = true,
         previousUserText: String? = null,
+        strongPrompt: String? = null,
     ) {
         val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, formatCard)
         previousUserText?.let { cleanup.recordNarrativePrompt("", it) }
@@ -2199,7 +2323,18 @@ class ExperimentalToolTransportTest {
             requestMessages.add(1, history)
         }
         val acknowledgement = PromptTemplates.CCB_POST_USER_ACK_ASSISTANT_PROMPT.trimIndent().trim()
-        requestMessages.add(ChatApiMessage.text("assistant", acknowledgement))
+        val strongSuffix = strongPrompt?.let { text ->
+            FormatCardUserToolPolicy.strongPromptSystemSuffix(
+                listOf(FormatCardUserToolConfig.strongPromptSuffix().copy(text = text)),
+            )
+        }
+        if (strongSuffix == null) {
+            requestMessages.add(ChatApiMessage.text("assistant", acknowledgement))
+        } else {
+            val sentUser = requestMessages.removeAt(requestMessages.indexOfLast { it.role == "user" })
+            appendCurrentUserAndCcbTailMessages(requestMessages, sentUser, strongSuffix)
+            cleanup.recordAuthoredOutput(strongSuffix)
+        }
         val rawPreviews = deltaTexts.runningFold("", String::plus).drop(1)
         val deltas = deltaTexts.mapIndexed { index, delta ->
             if (toolCall) {
@@ -2244,7 +2379,7 @@ class ExperimentalToolTransportTest {
                     .getValue("description").jsonPrimitive.content
                 Json.parseToJsonElement(description + "\"}]").jsonArray
             } else payload.getValue("messages").jsonArray
-            val sourceTexts = listOfNotNull(narrativePrompt, narrativeTail, currentUserText, previousUserText, cardRequirements) +
+            val sourceTexts = listOfNotNull(narrativePrompt, narrativeTail, currentUserText, previousUserText, cardRequirements, strongSuffix) +
                 historyMessages.map { it.content.jsonPrimitive.content }
             for (source in sourceTexts) {
                 assertTrue("Expected source in serialized reply request", context.any {

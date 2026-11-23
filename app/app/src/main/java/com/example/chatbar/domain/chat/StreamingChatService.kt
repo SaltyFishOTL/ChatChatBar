@@ -1022,7 +1022,7 @@ class StreamingChatService(
                 is JsonPrimitive -> part.contentOrNull ?: ""
                 else -> ""
             }
-        }.takeIf(String::isNotBlank)
+        }.takeIf(String::isNotEmpty)
         else -> null
     }
 
