@@ -32,6 +32,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -77,12 +78,18 @@ class NarrativeHistoryWireTest {
         verifyTransport(Transport.EXPERIMENTAL_TOOL)
     }
 
+    @Test fun experimentalToolCleansAnEmbeddedClosingCallBeforeOrdinaryContinuation() = runBlocking {
+        verifyReply(
+            Transport.EXPERIMENTAL_TOOL, stop = false, continuation = "She notices the rain has stopped.",
+        )
+    }
+
     private suspend fun verifyTransport(transport: Transport) {
         verifyReply(transport, stop = true)
         verifyReply(transport, stop = false)
     }
 
-    private suspend fun verifyReply(transport: Transport, stop: Boolean) {
+    private suspend fun verifyReply(transport: Transport, stop: Boolean, continuation: String? = null) {
         val app = ChatBarApp.instance
         val settings = app.settingsRepository.getAppSettings()
         val card = CharacterCard.create("Synthetic narrative wire")
@@ -90,13 +97,24 @@ class NarrativeHistoryWireTest {
         val mode = if (stop) ChatNarrativeMode.FOCUS else ChatNarrativeMode.ADVANCE
         val prior = "Previous synthetic scene."
         val prose = "She opens the door and walks into the courtyard."
-        val reply = PromptTemplates.narrativeModeHistoryReply(prose, mode)
         val template = PromptTemplates.narrativeModeHistoryReply("[story]", mode).prependIndent("> ")
-        val input = if (stop) "Continue the scene." else
+        val authorsTemplate = !stop && continuation == null
+        val input = if (!authorsTemplate) "Continue the scene." else
             "Use exactly this XML shape, replace [story] with new prose and keep both tags:\n$template"
-        val expected = if (stop) prose else reply
+        val reply = PromptTemplates.narrativeModeHistoryReply(prose, mode)
+        val secondScene = "A bird flies past the entrance."
+        val parts = if (continuation == null) listOf(reply) else listOf(
+            reply.substringBeforeLast('\n'),
+            "$secondScene\n${reply.substringAfterLast('\n')}",
+            continuation,
+        )
+        val expected = when {
+            continuation != null -> listOf(prose, secondScene, continuation).joinToString("\n")
+            authorsTemplate -> reply
+            else -> prose
+        }
         val modelName = "Synthetic narrative wire ${transport.name}"
-        HeldNarrativeReplyServer(reply, tool = transport == Transport.EXPERIMENTAL_TOOL).use { server ->
+        HeldNarrativeReplyServer(parts, tool = transport == Transport.EXPERIMENTAL_TOOL).use { server ->
             val model = ModelConfig.create(modelName, server.baseUrl, "fixture-key", "fixture-model")
             val session = ChatSession.create(card.id, modelName).copy(
                 modelId = model.id, narrativeMode = mode, longTermMemoryEnabled = false,
@@ -122,7 +140,9 @@ class NarrativeHistoryWireTest {
                 val messages = sentMessages(request, transport)
                 assertTrue(messages.any { it.hasMessage("assistant", PromptTemplates.narrativeModeHistoryReply(prior, mode)) })
                 assertTrue(messages.any { it.hasMessage("user", input) })
-                rule.waitUntil(20_000) { vm.streamingMessage.value?.displayContent == expected }
+                // Experimental live preview initially carries the first tool call only.
+                val preview = if (continuation == null) expected else prose
+                rule.waitUntil(20_000) { vm.streamingMessage.value?.displayContent == preview }
                 assertFalse("The provider's terminal event must remain held during preview", server.terminalSent.get())
                 assertTrue(vm.isResponding.value)
 
@@ -169,7 +189,7 @@ class NarrativeHistoryWireTest {
         jsonObject["role"]?.jsonPrimitive?.content == role &&
             (jsonObject["content"] as? JsonPrimitive)?.content == content
 
-    private class HeldNarrativeReplyServer(reply: String, tool: Boolean) : AutoCloseable {
+    private class HeldNarrativeReplyServer(parts: List<String>, tool: Boolean) : AutoCloseable {
         private val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
         private val terminal = CountDownLatch(1)
         val baseUrl = "http://127.0.0.1:${server.localPort}/v1"
@@ -185,7 +205,7 @@ class NarrativeHistoryWireTest {
                         .substringAfter(':').trim().toInt()
                     val bytes = ByteArray(length) { input.read().also { check(it >= 0) }.toByte() }
                     requestBody.complete(bytes.toString(Charsets.UTF_8))
-                    val first = "data: ${delta(reply, tool)}\n\n".toByteArray(Charsets.UTF_8)
+                    val first = "data: ${delta(parts, tool)}\n\n".toByteArray(Charsets.UTF_8)
                     val reason = if (tool) "tool_calls" else "stop"
                     val last = ("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"$reason\"}]}\n\n" +
                         "data: [DONE]\n\n").toByteArray(Charsets.UTF_8)
@@ -213,12 +233,25 @@ class NarrativeHistoryWireTest {
             worker.join(1_000)
         }
 
-        private fun delta(reply: String, tool: Boolean): String {
+        private fun delta(parts: List<String>, tool: Boolean): String {
             val frame = if (tool) {
-                val argument = buildJsonObject { put("content", reply) }.toString()
-                """{"tool_calls":[{"index":0,"id":"fixture","type":"function","function":{"name":"game_content","arguments":${JsonPrimitive(argument)}}}]}"""
+                buildJsonObject {
+                    put("tool_calls", buildJsonArray {
+                        parts.forEachIndexed { index, part ->
+                            add(buildJsonObject {
+                                put("index", index)
+                                put("id", "fixture-$index")
+                                put("type", "function")
+                                put("function", buildJsonObject {
+                                    put("name", "game_content")
+                                    put("arguments", buildJsonObject { put("content", part) }.toString())
+                                })
+                            })
+                        }
+                    })
+                }.toString()
             } else {
-                """{"content":${JsonPrimitive(reply)}}"""
+                buildJsonObject { put("content", parts.single()) }.toString()
             }
             return """{"choices":[{"delta":$frame}]}"""
         }
