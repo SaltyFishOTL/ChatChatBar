@@ -1286,6 +1286,45 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `sent narrative heading is removed immediately before an eligible trailer`() = runBlocking {
+        val mode = ChatNarrativeMode.ADVANCE
+        val tail = PromptTemplates.narrativeModeTailSystemPrompt(mode, null)
+        val heading = tail.lineSequence().first()
+        val story = "门外亮了起来。"
+        val fence = "```"
+        val status = "\r\n\r\n${fence}status\r\n地点：门外  \r\n$fence"
+        val statusCard = "每次回复末尾必须输出以下状态栏：\n${fence}status\n地点：[当前位置]\n$fence"
+        val dashes = "—".repeat(22)
+        val label = "（横线为选项包裹格式，必须完整输出）"
+        val actions = "$dashes$label\n**【行动选项】**\n\n1. **[稍候]()**\n\n2. **[离开]()**\n$label$dashes"
+        val prefix = "$story\n$heading"
+        for ((trailer, card) in listOf(status to statusCard, "\n\n$actions" to actions)) {
+            assertNarrativeReplyDeltas(
+                listOf(prefix, trailer), listOf(story, story + trailer), story + trailer,
+                formatCard = card, experimental = false, narrativeTail = tail,
+            )
+            val wrapped = PromptTemplates.narrativeModeHistoryReply(prefix + trailer, mode)
+            assertNarrativeReplyDeltas(
+                listOf(wrapped), listOf(story + trailer), story + trailer,
+                formatCard = card, narrativeTail = tail, toolCall = true,
+            )
+        }
+
+        val literalReplies = listOf(
+            "$prefix\n她穿过了门。$status" to null,
+            "$story\n\n~~~text\n$heading\n~~~$status" to null,
+            "$prefix$status" to "请逐字保留标题 $heading",
+            "$prefix\n<!--内部注释-->" to null,
+        )
+        for ((literal, userText) in literalReplies) {
+            assertNarrativeReplyDeltas(
+                listOf(literal), listOf(literal), literal, formatCard = statusCard,
+                experimental = false, narrativeTail = tail, currentUserText = userText,
+            )
+        }
+    }
+
+    @Test
     fun `an exact bare pair from the sent user input survives while independent echoes are removed`() = runBlocking {
         val mode = ChatNarrativeMode.FOCUS
         val literal = PromptTemplates.narrativeModeHistoryReply("她推开了门。", mode)

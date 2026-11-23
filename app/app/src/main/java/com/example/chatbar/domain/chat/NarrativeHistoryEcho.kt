@@ -201,13 +201,47 @@ object NarrativeHistoryEcho {
                 body, formatOutput, interrupted, lengths, streaming, projectedDuplicateOpenings,
                 authoredPairs = authoredPairs,
                 cleanExposedBody = { inner ->
-                    inner.substring(withoutEchoedHeading(inner, headings, provisional, ::isAuthored))
+                    val exposed = inner.substring(withoutEchoedHeading(inner, headings, provisional, ::isAuthored))
+                    withoutHeadingBeforeTrailer(exposed, headings, provisional, formatOutput)
                 },
             )
-            if (cleaned != body) return cleaned
-            val closings = projectedClosings.filterNot(::isAuthored)
-            return withoutOrphanClosing(body, closings, provisional, formatOutput, ::isAuthored)
+            val unwrapped = if (cleaned != body) cleaned else {
+                val closings = projectedClosings.filterNot(::isAuthored)
+                withoutOrphanClosing(body, closings, provisional, formatOutput, ::isAuthored)
+            }
+            return withoutHeadingBeforeTrailer(unwrapped, headings, provisional, formatOutput)
         }
+    }
+
+    private fun withoutHeadingBeforeTrailer(
+        text: String, headings: List<String>, provisional: Boolean, formatOutput: FormatOutput,
+    ): String {
+        if (headings.none { it in text }) return text
+        val literals by lazy(LazyThreadSafetyMode.NONE) { classifyLiterals(text, includeUnclosed = provisional) }
+        val suffixRanges by lazy(LazyThreadSafetyMode.NONE) { literals.replySuffixRanges(formatOutput, provisional) }
+        var cursor = text.length
+        var removeFrom = -1
+        var preserveFrom = -1
+        while (cursor > 0) {
+            val end = (cursor - 1 downTo 0).firstOrNull { !text[it].isWhitespace() }?.plus(1) ?: break
+            val start = lineStart(text, end)
+            cursor = start
+            if (text.substring(start, end) !in headings || !literals.isUnprotected(start)) {
+                if (removeFrom >= 0) break
+                continue
+            }
+            if (removeFrom < 0) {
+                val lineBreak = text.indexOfAny(charArrayOf('\r', '\n'), end)
+                if (lineBreak < 0 || !hasOnlyReplySuffix(
+                        text, lineBreak, suffixRanges, literals, provisional, formatOutput, requireTrailer = true,
+                    )
+                ) continue
+                preserveFrom = lineBreak
+            }
+            removeFrom = start
+        }
+        if (removeFrom < 0) return text
+        return text.substring(0, removeFrom).trimEnd('\r', '\n') + text.substring(preserveFrom)
     }
 
     private fun declaredUserPairs(text: String?): Set<String> {
@@ -923,16 +957,19 @@ object NarrativeHistoryEcho {
         literals: ReplyLiterals,
         provisional: Boolean,
         formatOutput: FormatOutput,
+        requireTrailer: Boolean = false,
     ): Boolean {
         var next = start
+        var foundTrailer = false
         for (range in suffixRanges) {
             if (range.first < start || range.last < next) continue
             if (range.first > next && !text.subSequence(next, range.first).isBlank()) break
             next = range.last + 1
+            if (requireTrailer && range !in literals.commentRanges) foundTrailer = true
         }
         val remainder = text.substring(next).trimStart()
-        if (remainder.isEmpty()) return true
-        if (provisional && commentOpening.startsWith(remainder.trimEnd())) return true
+        if (remainder.isEmpty()) return !requireTrailer || foundTrailer
+        if (provisional && commentOpening.startsWith(remainder.trimEnd())) return !requireTrailer || foundTrailer
         if (!provisional && !formatOutput.declaresAnnotatedActions) return false
 
         val position = text.length - remainder.length
