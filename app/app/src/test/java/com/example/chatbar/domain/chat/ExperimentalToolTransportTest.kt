@@ -1704,6 +1704,72 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `issued wrapper and heading both leave a recognized status trailer intact`() = runBlocking {
+        for ((mode, experimental, toolCall) in listOf(
+            Triple(ChatNarrativeMode.FOCUS, false, false),
+            Triple(ChatNarrativeMode.ADVANCE, true, false),
+            Triple(ChatNarrativeMode.FOCUS, true, true),
+        )) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "早先的故事。").copy(narrativeMode = mode)
+            val body = "门外的灯亮了。"
+            val wrapped = PromptTemplates.narrativeModeHistoryReply(body, mode)
+            val tail = PromptTemplates.narrativeModeTailSystemPrompt(mode, mode)
+            val heading = tail.lineSequence().first()
+            val status = "${MarkdownCodeFences.legacyStatusOpening}\n时间：晚上\n${MarkdownCodeFences.legacyStatusLabel}```"
+            val raw = "$wrapped\n$heading\n$status"
+            val expected = "$body\n$status"
+            assertNarrativeReplyDeltas(
+                listOf(raw), listOf(expected), expected,
+                previousAssistant = prior, currentUserText = "继续故事。", narrativeTail = tail,
+                experimental = experimental, toolCall = toolCall,
+            )
+            val close = wrapped.substringAfterLast('\n')
+            for (orphan in listOf("$body\n$close\n$heading\n$status", "$body\n$heading\n$close\n$status")) {
+                assertNarrativeReplyDeltas(
+                    listOf(orphan), listOf(expected), expected,
+                    previousAssistant = prior, currentUserText = "继续故事。", narrativeTail = tail,
+                    experimental = experimental, toolCall = toolCall,
+                )
+            }
+            val quote = "$wrapped\n> $heading\n$status"
+            assertNarrativeReplyDeltas(
+                listOf(quote), listOf(quote), quote,
+                previousAssistant = prior, currentUserText = "继续故事。", narrativeTail = tail,
+                experimental = experimental, toolCall = toolCall,
+            )
+            if (toolCall) {
+                val continuation = "灯光照亮了石阶。"
+                assertMultipartNarrativeReply(
+                    listOf(raw, continuation), "$expected\n$continuation", narrativePrompt = tail,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `an exact user pair with a lightly indented opening is preserved`() = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "早先的故事。").copy(narrativeMode = mode)
+        val pair = PromptTemplates.narrativeModeHistoryReply("示例原文。", mode)
+        val literals = listOf("  $pair", pair.prependIndent("  "))
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            for (literal in literals) {
+                val request = "请逐字复述下面三行，保留标签和缩进。\n$literal"
+                assertNarrativeReplyDeltas(
+                    listOf(literal), listOf(literal), literal, previousAssistant = prior, currentUserText = request,
+                    experimental = experimental, toolCall = toolCall,
+                )
+                val body = "门外的灯亮了。"
+                val echo = "  ${PromptTemplates.narrativeModeHistoryReply(body, mode)}"
+                assertNarrativeReplyDeltas(
+                    listOf(echo), listOf(body), body, previousAssistant = prior, currentUserText = request,
+                    experimental = experimental, toolCall = toolCall,
+                )
+            }
+        }
+    }
+
+    @Test
     fun `validated call boundaries clean issued headings`(): Unit = runBlocking {
         val mode = ChatNarrativeMode.FOCUS
         val prompt = PromptAssembler().assembleCachePromptLayers(

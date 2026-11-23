@@ -222,6 +222,7 @@ object NarrativeHistoryEcho {
                 body, formatOutput, interrupted, lengths, streaming, projectedDuplicateOpenings,
                 allowedOpenings = projectedOpenings + formatOutput.counterexampleOpenings,
                 authoredPairs = authoredPairs,
+                trailerHeadings = headings,
                 cleanExposedBody = { inner ->
                     val exposed = inner.substring(withoutEchoedHeading(inner, headings, provisional, ::isAuthored))
                     withoutHeadingBeforeTrailer(exposed, headings, provisional, formatOutput)
@@ -230,10 +231,15 @@ object NarrativeHistoryEcho {
                     part.substring(withoutEchoedHeading(part, headings, provisional, ::isAuthored, isJoinedLiteral))
                 }.takeIf { headings.isNotEmpty() },
             )
-            val unwrapped = if (cleaned != body) cleaned else {
-                val closings = projectedClosings.filterNot(::isAuthoredClosing)
-                withoutOrphanClosing(body, closings, provisional, formatOutput, ::isAuthoredClosing)
+            if (cleaned != body) {
+                return withoutHeadingBeforeTrailer(cleaned, headings, provisional, formatOutput)
             }
+            val closings = projectedClosings.filterNot(::isAuthoredClosing)
+            val withoutTrailerHeading = withoutHeadingBeforeTrailer(body, headings, provisional, formatOutput)
+            val unwrapped = withoutOrphanClosing(
+                withoutTrailerHeading, closings, provisional, formatOutput, ::isAuthoredClosing,
+            )
+            if (unwrapped == withoutTrailerHeading) return unwrapped
             return withoutHeadingBeforeTrailer(unwrapped, headings, provisional, formatOutput)
         }
     }
@@ -242,8 +248,22 @@ object NarrativeHistoryEcho {
         text: String, headings: List<String>, provisional: Boolean, formatOutput: FormatOutput,
     ): String {
         if (headings.none { it in text }) return text
-        val literals by lazy(LazyThreadSafetyMode.NONE) { classifyLiterals(text, includeUnclosed = provisional) }
-        val suffixRanges by lazy(LazyThreadSafetyMode.NONE) { literals.replySuffixRanges(formatOutput, provisional) }
+        val literals = classifyLiterals(text, includeUnclosed = provisional)
+        val heading = headingBeforeTrailer(
+            text, headings, provisional, formatOutput, literals, literals.replySuffixRanges(formatOutput, provisional),
+        ) ?: return text
+        return text.substring(0, heading.first).trimEnd('\r', '\n') + text.substring(heading.last + 1)
+    }
+
+    private fun headingBeforeTrailer(
+        text: String,
+        headings: List<String>,
+        provisional: Boolean,
+        formatOutput: FormatOutput,
+        literals: ReplyLiterals,
+        suffixRanges: List<IntRange>,
+        isJoinedLiteral: (Int) -> Boolean = { false },
+    ): IntRange? {
         var cursor = text.length
         var removeFrom = -1
         var preserveFrom = -1
@@ -251,7 +271,7 @@ object NarrativeHistoryEcho {
             val end = (cursor - 1 downTo 0).firstOrNull { !text[it].isWhitespace() }?.plus(1) ?: break
             val start = lineStart(text, end)
             cursor = start
-            if (text.substring(start, end) !in headings || !literals.isUnprotected(start)) {
+            if (text.substring(start, end) !in headings || !literals.isUnprotected(start) || isJoinedLiteral(start)) {
                 if (removeFrom >= 0) break
                 continue
             }
@@ -265,24 +285,29 @@ object NarrativeHistoryEcho {
             }
             removeFrom = start
         }
-        if (removeFrom < 0) return text
-        return text.substring(0, removeFrom).trimEnd('\r', '\n') + text.substring(preserveFrom)
+        return if (removeFrom < 0) null else removeFrom until preserveFrom
     }
 
     private fun declaredUserPairs(text: String?): Set<String> {
         if (text == null || wrappers.none { it.opening in text }) return emptySet()
+        fun startsLine(offset: Int): Boolean {
+            val start = lineStart(text, offset)
+            return offset - start <= 3 && (start until offset).all { text[it] == ' ' }
+        }
         return buildSet {
             for (family in wrapperFamilyTokens.values) {
                 val tags = family.findAll(text).toList()
                 for ((index, tag) in tags.withIndex()) {
                     val wrapper = wrappers.firstOrNull { it.opening == tag.value } ?: continue
-                    if (lineStart(text, tag.range.first) != tag.range.first) continue
+                    if (!startsLine(tag.range.first)) continue
                     val closing = wrapperBoundary(wrapper, tags.asSequence().drop(index + 1)).closing ?: continue
                     val end = closing.range.last + 1
                     if (end < text.length && !text[end].isHistoryLineBreak()) continue
                     val pair = text.substring(tag.range.first, end)
-                    val singleLine = lineStart(text, closing.range.first) == tag.range.first
-                    if (singleLine || wrapper.isStandalonePair(pair)) add(pair)
+                    val singleLine = lineStart(text, closing.range.first) == lineStart(text, tag.range.first)
+                    val standalonePair = text.getOrNull(tag.range.last + 1).isHistoryLineBreak() &&
+                        startsLine(closing.range.first)
+                    if (singleLine || standalonePair) add(pair)
                 }
             }
         }
@@ -644,13 +669,15 @@ object NarrativeHistoryEcho {
         projectedDuplicateOpenings: Set<String> = emptySet(),
         allowedOpenings: Set<String>? = null,
         authoredPairs: Set<String> = emptySet(),
+        trailerHeadings: List<String> = emptyList(),
         cleanExposedBody: (String) -> String = { it },
         cleanPartHeading: ((String, (Int) -> Boolean) -> String)? = null,
     ): String {
         fun clean(part: String) = cleanReply(
             part, streaming, interrupted, formatOutput = formatOutput,
             projectedDuplicateOpenings = projectedDuplicateOpenings,
-            allowedOpenings = allowedOpenings, authoredPairs = authoredPairs, cleanExposedBody = cleanExposedBody,
+            allowedOpenings = allowedOpenings, authoredPairs = authoredPairs, trailerHeadings = trailerHeadings,
+            cleanExposedBody = cleanExposedBody,
         ).body
         if (partLengths.size > 1 && partLengths.sumOf(Int::toLong) + partLengths.size - 1 == text.length.toLong()) {
             var offset = 0
@@ -667,7 +694,8 @@ object NarrativeHistoryEcho {
             val wholeReply = cleanReply(
                 text, streaming, interrupted, requirePair = true, formatOutput = formatOutput,
                 projectedDuplicateOpenings = projectedDuplicateOpenings,
-                allowedOpenings = allowedOpenings, authoredPairs = authoredPairs, cleanExposedBody = cleanExposedBody,
+                allowedOpenings = allowedOpenings, authoredPairs = authoredPairs, trailerHeadings = trailerHeadings,
+                cleanExposedBody = cleanExposedBody,
             )
             if (wholeReply.matchedOuterPair) return wholeReply.body
             // Independent wrappers and groups of calls can coexist in the same tool reply.
@@ -696,7 +724,7 @@ object NarrativeHistoryEcho {
                     part, streaming, interrupted,
                     requirePair = requirePair, formatOutput = formatOutput,
                     projectedDuplicateOpenings = projectedDuplicateOpenings, allowedOpenings = allowedOpenings,
-                    authoredPairs = authoredPairs, cleanExposedBody = cleanExposedBody,
+                    authoredPairs = authoredPairs, trailerHeadings = trailerHeadings, cleanExposedBody = cleanExposedBody,
                     isJoinedLiteral = ::isJoinedLiteral,
                 )
                 if (first == last && !requirePair && cleaned.body == part && cleanPartHeading != null) {
@@ -764,6 +792,7 @@ object NarrativeHistoryEcho {
         isJoinedLiteral: ((index: Int, opening: Boolean) -> Boolean)? = null,
         allowedOpenings: Set<String>? = null,
         authoredPairs: Set<String> = emptySet(),
+        trailerHeadings: List<String> = emptyList(),
         cleanExposedBody: (String) -> String = { it },
     ): CleanedReply {
         val first = text.indexOfFirst { !it.isWhitespace() }
@@ -814,6 +843,15 @@ object NarrativeHistoryEcho {
         val suffixRanges by lazy(LazyThreadSafetyMode.NONE) {
             literals.replySuffixRanges(formatOutput, streaming || interrupted)
         }
+        val trailerHeading by lazy(LazyThreadSafetyMode.NONE) {
+            if (trailerHeadings.none { it in body }) null else headingBeforeTrailer(
+                body, trailerHeadings, streaming || interrupted, formatOutput, literals, suffixRanges,
+            ) { isJoinedLiteral?.invoke(bodyStart + it, true) == true }
+        }
+        // A sent heading may separate a genuine end marker from the recognized status or action trailer.
+        fun headingAfterClose(suffixStart: Int): IntRange? = trailerHeading?.takeIf {
+            suffixStart <= it.first && body.subSequence(suffixStart, it.first).isBlank()
+        }
         fun bodyBeforeClose(position: Int): String {
             val trimmed = body.substring(0, position).trimEnd()
             val trailingLiteral = literals.roleplayLiteralCode.firstOrNull {
@@ -829,7 +867,7 @@ object NarrativeHistoryEcho {
                 hasOnlyReplySuffix(
                     body, tag.range.last + 1, suffixRanges, literals, streaming || interrupted,
                     formatOutput,
-                )
+                ) || headingAfterClose(tag.range.last + 1) != null
 
         val terminal = visibleTags.lastOrNull()?.takeIf { tag ->
             tag.value in wrapper.closings && !literals.isLazyQuoteLine(tag.range.first) && endsReply(tag)
@@ -867,7 +905,8 @@ object NarrativeHistoryEcho {
             val result = cleanReply(
                 inner, streaming, interrupted, requirePair = requireInnerPair, formatOutput = formatOutput,
                 isJoinedLiteral = isJoinedLiteral?.let { joined -> { index, opening -> joined(bodyStart + index, opening) } },
-                allowedOpenings = allowedOpenings, authoredPairs = authoredPairs, cleanExposedBody = cleanExposedBody,
+                allowedOpenings = allowedOpenings, authoredPairs = authoredPairs, trailerHeadings = trailerHeadings,
+                cleanExposedBody = cleanExposedBody,
             )
             return if (result.matchedOuterPair) result.body + inner.takeLastWhile(Char::isWhitespace) else result.body
         }
@@ -888,7 +927,9 @@ object NarrativeHistoryEcho {
                     matchedOuterPair = true,
                 )
             }
-            val tail = body.substring(afterClosing)
+            val tail = headingAfterClose(afterClosing)?.let { heading ->
+                body.substring(afterClosing, heading.first).trimEnd('\r', '\n') + body.substring(heading.last + 1)
+            } ?: body.substring(afterClosing)
             val markerLineStart = lineStart(body, position)
             val markerStartsLine = body.subSequence(markerLineStart, position).isBlank()
             val suffixSharesLine = tail.lineSequence().first().isNotBlank()
