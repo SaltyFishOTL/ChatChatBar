@@ -1,6 +1,7 @@
 package com.example.chatbar.domain.chat
 
 import com.example.chatbar.data.local.entity.ChatNarrativeMode
+import com.example.chatbar.data.local.entity.FormatPromptPosition
 import com.example.chatbar.domain.prompt.PromptTemplates
 
 /** Removes request-only history wrappers when the model echoes them around its new reply. */
@@ -27,7 +28,7 @@ object NarrativeHistoryEcho {
     private data class UserOutput(
         val literal: LiteralOutput = LiteralOutput(),
         val templateOpenings: Set<String> = emptySet(),
-        val counterexampleClosingStarts: Set<Int> = emptySet(),
+        val counterexampleTagStarts: Set<Int> = emptySet(),
         val counterexampleOpenings: Set<String> = emptySet(),
     )
     private enum class ClosingEvidence { NONE, ONE_LITERAL, PROTECTED }
@@ -220,7 +221,7 @@ object NarrativeHistoryEcho {
     private val paragraphBreak = Regex("\\r?\\n[ \\t]*\\r?\\n")
     private val bareCarriageReturn = Regex("\\r(?!\\n)")
     private val proseDelimiters = mapOf(
-        '「' to '」', '『' to '』', '｢' to '｣', '“' to '”', '‘' to '’', '«' to '»', '"' to '"', '\'' to '\'',
+        '「' to '」', '『' to '』', '｢' to '｣', '“' to '”', '‘' to '’', '„' to '“', '«' to '»', '"' to '"', '\'' to '\'',
     )
     private val leadingApostropheContraction = Regex("t(?:is|was|were|will|would)(?![a-z])", RegexOption.IGNORE_CASE)
     private const val logQuotation = "(?:literal|verbatim)[ \\t]+quot(?:ation|e)[ \\t]+(?:copied[ \\t]+)?from[ \\t]+(?:the[ \\t]+)?(?:history[ \\t]+)?log"
@@ -267,7 +268,7 @@ object NarrativeHistoryEcho {
         private val formatOutput: FormatOutput = FormatOutput(),
         private val formatCard: String? = null,
         private val repairOpenings: Set<String>? = null,
-        private val repairLiteralSources: List<String> = emptyList(),
+        private val repairLiteralSources: List<Pair<String, Set<Int>>> = emptyList(),
         private val repairProtectedClosings: Map<String, Set<String>> = emptyMap(),
         private val repairStandaloneClosings: Set<String> = emptySet(),
     ) {
@@ -297,12 +298,15 @@ object NarrativeHistoryEcho {
         }
 
         fun recordDispatchedCharacterCore(renderedCore: String, hasCustomInstructions: Boolean) =
-            recordDispatchedCharacterOutput(renderedCore, hasCustomInstructions)
+            recordDispatchedEditableOutput(renderedCore, hasCustomInstructions)
 
         fun recordDispatchedPostHistory(renderedTail: String, hasCustomInstructions: Boolean) =
-            recordDispatchedCharacterOutput(renderedTail, hasCustomInstructions)
+            recordDispatchedEditableOutput(renderedTail, hasCustomInstructions)
 
-        private fun recordDispatchedCharacterOutput(renderedSource: String, hasCustomInstructions: Boolean) {
+        fun recordDispatchedSupplementarySettings(renderedSettings: String) =
+            recordDispatchedEditableOutput(renderedSettings)
+
+        private fun recordDispatchedEditableOutput(renderedSource: String, hasCustomInstructions: Boolean = true) {
             if (!enabled || !hasCustomInstructions || renderedSource.isBlank()) return
             recordCurrentOutput(declaredUserOutput(renderedSource, requireExplicitCopy = true))
         }
@@ -340,7 +344,7 @@ object NarrativeHistoryEcho {
         private fun authoredClosingEvidence(token: String): ClosingEvidence {
             if (currentLiteralOutput.closings.any { it.startsWith(token) }) return ClosingEvidence.PROTECTED
             return closingEvidence(token, sequence {
-                for ((source, output) in authoredSources) yield(source to output.counterexampleClosingStarts)
+                for ((source, output) in authoredSources) yield(source to output.counterexampleTagStarts)
                 formatCard?.let { yield(it to formatOutput.counterexampleClosingStarts) }
             })
         }
@@ -455,8 +459,7 @@ object NarrativeHistoryEcho {
             if (!enabled) return text
             val provisional = streaming || interrupted
             if (repairOpenings != null) {
-                val sources = repairLiteralSources.map { it to emptySet<Int>() }
-                fun authored(token: String): ClosingEvidence = closingEvidence(token, sources.asSequence())
+                fun authored(token: String): ClosingEvidence = closingEvidence(token, repairLiteralSources.asSequence())
                 val repairClosings = wrappers.filter { it.opening in repairOpenings && it.opening !in repairProtectedClosings }
                     .flatMap { it.closings }.plus(repairStandaloneClosings).distinct()
                 fun withoutRepairOrphan(part: String, isJoinedLiteral: (Int) -> Boolean = { false }): String =
@@ -564,7 +567,7 @@ object NarrativeHistoryEcho {
     private fun declaredUserOutput(text: String, requireExplicitCopy: Boolean = false): UserOutput {
         if (wrappers.none { it.opening in text } && wrapperClosings.none { it in text }) return UserOutput()
         val templateOpenings = mutableSetOf<String>()
-        val counterexampleClosingStarts = mutableSetOf<Int>()
+        val counterexampleTagStarts = mutableSetOf<Int>()
         val counterexampleOpenings = mutableSetOf<String>()
         val standaloneOpenings = mutableSetOf<String>()
         val standaloneClosings = mutableSetOf<String>()
@@ -594,7 +597,7 @@ object NarrativeHistoryEcho {
                             val beforeLead = lead?.takeIf { explicitRequest }?.let { previousVisibleLine(literals.markdown, it.first) }
                             if (literals.prohibitsWrapper(lead, after) ||
                                 beforeLead?.let { literals.prohibitsWrapper(it, after) } == true
-                            ) counterexampleClosingStarts += start
+                            ) counterexampleTagStarts += start
                             else if (explicitRequest) standaloneClosings += tag.value
                         }
                         continue
@@ -632,7 +635,8 @@ object NarrativeHistoryEcho {
                         val copy = exactQuotedPair(text, literals, lead, start, closing) ?: continue
                         if (literals.prohibitsWrapper(previousVisibleLine(literals.markdown, lead.first), end)) {
                             counterexampleOpenings += wrapper.opening
-                            counterexampleClosingStarts += closing.range.first
+                            counterexampleTagStarts += start
+                            counterexampleTagStarts += closing.range.first
                         } else add(copy)
                         continue
                     }
@@ -646,7 +650,8 @@ object NarrativeHistoryEcho {
                     if (!atLineStart && !explicitCopy) continue
                     if (visiblePair && literals.prohibitsWrapper(prohibitionLead, end)) {
                         counterexampleOpenings += wrapper.opening
-                        counterexampleClosingStarts += closing.range.first
+                        counterexampleTagStarts += start
+                        counterexampleTagStarts += closing.range.first
                         continue
                     }
                     val pair = text.substring(start, end)
@@ -699,11 +704,12 @@ object NarrativeHistoryEcho {
             val previous = previousVisibleLine(literals.markdown, lead.first)
             if (literals.prohibitsWrapper(previous, end)) {
                 counterexampleOpenings += wrapper.opening
-                counterexampleClosingStarts += closing.range.first
+                counterexampleTagStarts += opening.range.first
+                counterexampleTagStarts += closing.range.first
             } else templateOpenings += wrapper.opening
         }
         return UserOutput(LiteralOutput(pairs, standaloneOpenings, standaloneClosings), templateOpenings,
-            counterexampleClosingStarts, counterexampleOpenings)
+            counterexampleTagStarts, counterexampleOpenings)
     }
 
     /** An explicit copy directive applies to a whole quoted pair with explicit line prefixes. */
@@ -777,9 +783,22 @@ object NarrativeHistoryEcho {
             enabled = true, formatOutput = formatCard?.let(::declaredOutput) ?: FormatOutput(), formatCard = formatCard,
         )
 
+    internal fun forDispatchedRequest(
+        narrativeMode: ChatNarrativeMode?,
+        formatCard: String?,
+        position: FormatPromptPosition,
+        hasCurrentUser: Boolean,
+    ): RequestCleanup = forRequest(
+        narrativeMode,
+        formatCard.takeIf { position.includesStart || position.includesEnd && hasCurrentUser },
+    )
+
     internal fun forFormatRepair(formatCard: String?, original: String, userText: String? = null): RequestCleanup {
         val output = formatCard?.let(::declaredOutput) ?: FormatOutput()
-        val sources = listOfNotNull(original, userText)
+        val sources = listOfNotNull(
+            original to emptySet(),
+            userText?.let { it to declaredUserOutput(it).counterexampleTagStarts },
+        )
         val candidates = wrappers.filter {
             it.opening in output.counterexampleOpenings && it.opening !in output.declaredOpenings
         }
@@ -790,12 +809,13 @@ object NarrativeHistoryEcho {
         val delimiterTokens = sameFamily.flatMapTo(mutableSetOf()) { listOf(it.opening) + it.closings }
         // Delimiters inside a literal are independent of a newly emitted outer pair.
         // Keep the stricter source check for orphan closers, where there is no matching opener.
-        val visibleDelimiters = sources.flatMap { source ->
+        val visibleDelimiters = sources.flatMap { (source, prohibitedTagStarts) ->
             if (delimiterTokens.none { it in source }) return@flatMap emptyList()
             val tags = wrapperFamilyTokens.values.flatMap { it.findAll(source).toList() }
             val literals = classifyLiterals(source, tags)
             tags.filter {
-                it.value in delimiterTokens && literals.isVisibleWrapperTag(source, it, includeStandaloneLazyTags = true)
+                it.value in delimiterTokens && it.range.first !in prohibitedTagStarts &&
+                    literals.isVisibleWrapperTag(source, it, includeStandaloneLazyTags = true)
             }
                 .map { it.value }
         }
@@ -2364,10 +2384,18 @@ object NarrativeHistoryEcho {
                         closing = null
                     }
                 }
-                open >= 0 && symbol == text[open] -> depth++
+                open >= 0 && symbol == text[open] && !isParagraphQuoteContinuation(markdown, index) -> depth++
             }
         }
         if (includeUnclosed && open >= 0) add(open..text.lastIndex)
+    }
+
+    private fun isParagraphQuoteContinuation(markdown: String, opening: Int): Boolean {
+        // Conventional multi-paragraph English quotation repeats the opening mark and closes only once.
+        if (markdown[opening] !in "“‘" || !hasMarkerPadding(markdown, opening)) return false
+        val currentLine = lineStart(markdown, opening)
+        val previous = previousVisibleLine(markdown, currentLine) ?: return false
+        return paragraphBreak.containsMatchIn(markdown.subSequence(previous.last + 1, currentLine))
     }
 
     /** Null while there is no later delimiter. A new opening does not complete this quote. */

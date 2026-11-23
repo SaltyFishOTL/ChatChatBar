@@ -3042,11 +3042,45 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 worldBookOutlets = wbOutlets
                             )
                         }
-                    narrativeEcho = NarrativeHistoryEcho.forRequest(requestNarrativeMode, renderedFormatCardContent)
                     // 当前输入不属于历史；完整上一轮作为末尾热区，其余消息留在稳定缓存之后。
                     val regenTargetUserMsg = resumedUserMessage ?: if (alternativeTargetMessageId != null) {
                         contextMsgs.lastOrNull { it.role == MessageRole.USER }
                     } else null
+                    val currentUserContent = when {
+                        persistUserMessage -> renderSessionText(finalUserContent)
+                        regenTargetUserMsg != null -> renderSessionText(regenTargetUserMsg.displayContent)
+                        content.isNotBlank() -> renderSessionText(content)
+                        else -> null
+                    }
+                    val currentUserImages = when {
+                        persistUserMessage -> userMsgImages
+                        regenTargetUserMsg != null -> regenTargetUserMsg.images
+                        else -> emptyList()
+                    }
+                    val requestUserContent = currentUserContent?.let { text ->
+                        FormatCardUserToolPolicy.appendRequestSuffix(
+                            userContent = text,
+                            tools = activeFormatCard?.userTools.orEmpty(),
+                        )
+                    }
+                    val currentUserApiMessage = requestUserContent?.let { text ->
+                        if (currentUserImages.isNotEmpty() && modelConfig.isMultimodal) {
+                            try {
+                                val base64 = encodeImageToBase64(currentUserImages.first())
+                                ChatApiMessage.withImage(role = "user", text = text, imageBase64 = base64)
+                            } catch (e: Exception) {
+                                text.takeIf(String::isNotBlank)?.let { ChatApiMessage.text("user", it) }
+                            }
+                        } else {
+                            text.takeIf(String::isNotBlank)?.let { ChatApiMessage.text("user", it) }
+                        }
+                    }
+                    narrativeEcho = NarrativeHistoryEcho.forDispatchedRequest(
+                        requestNarrativeMode,
+                        renderedFormatCardContent,
+                        modelConfig.formatPromptPosition,
+                        hasCurrentUser = currentUserApiMessage != null,
+                    )
                     val latestMessageId = when {
                         persistUserMessage -> userMsg.id
                         regenTargetUserMsg != null -> regenTargetUserMsg.id
@@ -3124,6 +3158,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         promptLayers.coreSystemPrompt,
                         hasCustomInstructions = charCard.systemPrompt.isNotBlank(),
                     )
+                    narrativeEcho.recordDispatchedSupplementarySettings(promptLayers.supplementarySystemPrompt)
 
                     suspend fun addContextMessage(
                         msg: ChatMessage,
@@ -3223,85 +3258,34 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     )
 
                     // 3. 本次用户输入；随后加入可选强提示 System 和 CCB assistant 开写尾缀。
-                    val currentUserContent: String?
-                    val currentUserImages: List<String>
-                    val shouldAddUserPrompt: Boolean = when {
-                        persistUserMessage -> {
-                            currentUserContent = renderSessionText(finalUserContent)
-                            currentUserImages = userMsgImages
-                            true
-                        }
-                        regenTargetUserMsg != null -> {
-                            currentUserContent = renderSessionText(regenTargetUserMsg.displayContent)
-                            currentUserImages = regenTargetUserMsg.images
-                            true
-                        }
-                        content.isNotBlank() -> {
-                            currentUserContent = renderSessionText(content)
-                            currentUserImages = emptyList()
-                            true
-                        }
-                        else -> {
-                            currentUserContent = null
-                            currentUserImages = emptyList()
-                            false
-                        }
-                    }
                     narrativeEcho.recordNarrativePrompt(promptLayers.narrativeModeSystemPrompt, null)
-                    if (shouldAddUserPrompt && currentUserContent != null) {
-                        val requestUserContent = FormatCardUserToolPolicy.appendRequestSuffix(
-                            userContent = currentUserContent,
-                            tools = activeFormatCard?.userTools.orEmpty()
-                        )
+                    if (currentUserApiMessage != null && currentUserContent != null) {
                         val strongPromptSystemSuffix = FormatCardUserToolPolicy.strongPromptSystemSuffix(
                             activeFormatCard?.userTools.orEmpty()
                         )
-                        val currentUserApiMessage = if (
-                            currentUserImages.isNotEmpty() &&
-                            modelConfig.isMultimodal
-                        ) {
-                            try {
-                                val base64 = encodeImageToBase64(currentUserImages.first())
-                                ChatApiMessage.withImage(
-                                    role = "user",
-                                    text = requestUserContent,
-                                    imageBase64 = base64
-                                )
-                            } catch (e: Exception) {
-                                requestUserContent
-                                    .takeIf(String::isNotBlank)
-                                    ?.let { ChatApiMessage.text("user", it) }
-                            }
-                        } else if (requestUserContent.isNotBlank()) {
-                            ChatApiMessage.text("user", requestUserContent)
-                        } else {
-                            null
-                        }
-                        currentUserApiMessage?.let { userMessage ->
-                            val narrativeModeTail = PromptTemplates.narrativeModeTailSystemPrompt(
-                                requestNarrativeMode,
-                                ChatHistoryPromptPolicy.previousNarrativeMode(
-                                    contextMsgs,
-                                    alternativeTargetMessageId?.let {
-                                        chatRepository.getMessage(it, sessionId)
-                                    }
-                                )
+                        val narrativeModeTail = PromptTemplates.narrativeModeTailSystemPrompt(
+                            requestNarrativeMode,
+                            ChatHistoryPromptPolicy.previousNarrativeMode(
+                                contextMsgs,
+                                alternativeTargetMessageId?.let {
+                                    chatRepository.getMessage(it, sessionId)
+                                }
                             )
-                            appendCurrentUserAndCcbTailMessages(
-                                messages = apiMessages,
-                                userMessage = userMessage,
-                                strongPromptSystemSuffix = strongPromptSystemSuffix,
-                                postUserSystemPrompt = postUserSystemPrompt,
-                                narrativeModeSystemPrompt = narrativeModeTail
-                            )
-                            narrativeEcho.recordNarrativePrompt(narrativeModeTail, requestUserContent)
-                            narrativeEcho.recordCurrentLiteralTags(currentUserContent)
-                            narrativeEcho.recordDispatchedPostHistory(
-                                promptLayers.tailSystemPrompt,
-                                hasCustomInstructions = charCard.postHistoryInstructions.isNotBlank(),
-                            )
-                            narrativeEcho.recordAuthoredOutput(strongPromptSystemSuffix)
-                        }
+                        )
+                        appendCurrentUserAndCcbTailMessages(
+                            messages = apiMessages,
+                            userMessage = currentUserApiMessage,
+                            strongPromptSystemSuffix = strongPromptSystemSuffix,
+                            postUserSystemPrompt = postUserSystemPrompt,
+                            narrativeModeSystemPrompt = narrativeModeTail
+                        )
+                        narrativeEcho.recordNarrativePrompt(narrativeModeTail, requestUserContent)
+                        narrativeEcho.recordCurrentLiteralTags(currentUserContent)
+                        narrativeEcho.recordDispatchedPostHistory(
+                            promptLayers.tailSystemPrompt,
+                            hasCustomInstructions = charCard.postHistoryInstructions.isNotBlank(),
+                        )
+                        narrativeEcho.recordAuthoredOutput(strongPromptSystemSuffix)
                     }
 
                     ChatRequestMemoryPolicy.requireArchiveIncluded(apiMessages, renderedMemoryArchive)
