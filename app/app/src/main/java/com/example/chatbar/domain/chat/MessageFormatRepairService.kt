@@ -50,10 +50,12 @@ class MessageFormatRepairService(
             val preamble = systemPrompt.lineSequence().first()
             val sentenceEnd = preamble.indexOfFirst { it in ".。!?！？" }
             val firstSentence = if (sentenceEnd < 0) preamble else preamble.take(sentenceEnd + 1)
-            val continuations = if (messageBoundary != null && authoredSections.none { firstSentence in it }) {
+            val hasAuthoredIntroduction = authoredSections.any { firstSentence in it }
+            val continuations = if (messageBoundary != null && !hasAuthoredIntroduction) {
                 mapOf(messageBoundary to setOf(listOf(firstSentence), listOf(preamble)))
             } else emptyMap()
-            return NarrativeHistoryEcho.RepairDispatch(boundaries, authoredSections, continuations)
+            val fullUnlabelledIntroduction = preamble.takeIf { it != firstSentence && !hasAuthoredIntroduction }
+            return NarrativeHistoryEcho.RepairDispatch(boundaries, authoredSections, continuations, fullUnlabelledIntroduction)
         }
     }
 

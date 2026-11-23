@@ -4644,6 +4644,177 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `only a sent active WorldBook can reserve an expressly requested standalone XML close`() = runBlocking {
+        val closer = "</历史回复>"
+        val instruction = "Print the literal closing tag only on its own line:\n$closer"
+        val story = "She folded the paper."
+        val raw = "$story\n$closer"
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "They crossed the bridge.").copy(narrativeMode = mode)
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                for ((worldBook, rag, user) in listOf(
+                    Triple(instruction, null, "Continue the tale."),
+                    Triple("The log stores a sample marker:\n$closer", null, "Check the sigil."),
+                    Triple(null, instruction, "Check the sigil."),
+                )) {
+                    assertNarrativeReplyDeltas(
+                        listOf(raw), listOf(story), story, previousAssistant = prior, currentUserText = user,
+                        worldBookEntry = worldBook, ragReferenceText = rag, experimental = experimental, toolCall = toolCall,
+                        requestNarrativeMode = mode,
+                    )
+                }
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(raw), raw, previousAssistant = prior, currentUserText = instruction,
+                    experimental = experimental, toolCall = toolCall, requestNarrativeMode = mode,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(story, "\n$closer"), listOf(story, raw), raw, previousAssistant = prior,
+                    currentUserText = "Check the sigil.", worldBookEntry = instruction,
+                    experimental = experimental, toolCall = toolCall, requestNarrativeMode = mode,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `a visible display caption can introduce a literal terminal mode title`() = runBlocking {
+        for (mode in ChatNarrativeMode.entries) {
+            val prompt = PromptTemplates.narrativeModeSystemPrompt(mode)
+            val heading = prompt.lineSequence().first()
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                for (sentence in listOf("She switched off the display.", "The screen shows a different story:", "屏幕的亮度调高了。")) {
+                    assertNarrativeReplyDeltas(
+                        listOf("$sentence\n$heading"), listOf(sentence), sentence, narrativePrompt = prompt,
+                        experimental = experimental, toolCall = toolCall,
+                    )
+                }
+                for (caption in listOf(
+                    "She read the title aloud:", "The screen displays only this title:",
+                    "设备的屏幕上只显示了这一行标题：",
+                )) {
+                    val raw = "$caption\n$heading"
+                    assertNarrativeReplyDeltas(
+                        listOf(raw), listOf(raw), raw, narrativePrompt = prompt, experimental = experimental, toolCall = toolCall,
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `unlabelled exact switched-mode directive needs actual issued authority and separate prose`() = runBlocking {
+        val prose = "门终于开了。"
+        for (mode in ChatNarrativeMode.entries) {
+            val previous = ChatNarrativeMode.entries.first { it != mode }
+            val issued = PromptTemplates.narrativeModeTailSystemPrompt(mode, previous)
+            val switch = issued.lineSequence().drop(1).first()
+            val raw = "$switch\n$prose"
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "门还没有打开。").copy(narrativeMode = previous)
+            for ((experimental, toolCall) in listOf(false to false, true to true)) {
+                for (candidate in listOf(
+                    "> $switch\n\n$prose", "~~~text\n$switch\n~~~\n$prose", "$switch as cited below.\n$prose",
+                    switch.take(25) + "\n$prose",
+                )) {
+                    assertNarrativeReplyDeltas(
+                        listOf(candidate), listOf(candidate), candidate, narrativeTail = issued, previousAssistant = prior,
+                        experimental = experimental, toolCall = toolCall,
+                    )
+                }
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(raw), raw, narrativeTail = PromptTemplates.narrativeModeTailSystemPrompt(mode, mode),
+                    previousAssistant = prior, experimental = experimental, toolCall = toolCall,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(raw), raw, narrativeTail = issued, previousAssistant = prior.copy(narrativeMode = mode),
+                    experimental = experimental, toolCall = toolCall,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(raw), raw, narrativeTail = issued, currentUserText = "Copy this text verbatim:\n$raw",
+                    previousAssistant = prior,
+                    experimental = experimental, toolCall = toolCall,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(prose), prose, narrativeTail = issued, currentUserText = "Continue.", previousAssistant = prior,
+                    experimental = experimental, toolCall = toolCall,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `truncated interior stock lines leave the short uncertain list fragment intact`() = runBlocking {
+        val prose = "门开了。"
+        for (mode in ChatNarrativeMode.entries) {
+            val prompt = PromptTemplates.narrativeModeSystemPrompt(mode)
+            val (heading, instruction) = prompt.lines()
+            val fragment = "1. 镜"
+            val raw = "$prose\n$heading\n$instruction\n\n$fragment"
+            val expected = "$prose\n$fragment"
+            for (experimental in listOf(false, true)) {
+                val authored = "$prose\n~~~text\n$heading\n$instruction\n\n$fragment\n~~~"
+                assertNarrativeReplyDeltas(
+                    listOf(authored), listOf(authored), authored, narrativePrompt = prompt, experimental = experimental,
+                    finishReason = "length",
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(expected), expected, narrativePrompt = prompt, experimental = experimental,
+                    finishReason = "length",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `a newly generated own-line frame preserves intentional body line endings and hard-break spaces`() = runBlocking {
+        val bodies = listOf(
+            "\n\r\nThe door closed.  \r\n    She turned the key.  \r\n\n",
+            "\nThe door closed.  \nShe turned the key.\n",
+            "\r\nThe door closed.\r\nShe turned the key.\r\n",
+        )
+        for (mode in ChatNarrativeMode.entries) {
+            val earlier = ChatMessage.create("fixture", MessageRole.ASSISTANT, "An earlier paragraph.").copy(narrativeMode = mode)
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                for (body in bodies) {
+                    val raw = PromptTemplates.narrativeModeHistoryReply(body, mode)
+                    assertNarrativeReplyDeltas(
+                        listOf(raw), listOf(raw), raw, fixtureHistory = false, currentUserText = "Continue.",
+                        experimental = experimental, toolCall = toolCall, requestNarrativeMode = mode,
+                    )
+                    assertNarrativeReplyDeltas(
+                        listOf(raw), listOf(body), body, previousAssistant = earlier, currentUserText = "Continue.",
+                        experimental = experimental, toolCall = toolCall, requestNarrativeMode = mode,
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `historical incidental title text cannot reserve an entire newly issued echo`() = runBlocking {
+        val scene = "She raised the sail."
+        for (mode in ChatNarrativeMode.entries) {
+            val issued = PromptTemplates.narrativeModeTailSystemPrompt(mode, null)
+            val title = issued.lineSequence().first()
+            val raw = "$issued\n$scene"
+            for ((experimental, toolCall) in listOf(false to false, true to true)) {
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(scene), scene, narrativeTail = issued,
+                    previousUserText = "Yesterday we discussed the title $title in an example.", currentUserText = "Continue.",
+                    experimental = experimental, toolCall = toolCall,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(raw), raw, narrativeTail = issued, previousUserText = "Print this title verbatim: $title.",
+                    currentUserText = "Continue.", experimental = experimental, toolCall = toolCall,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(raw), raw, narrativeTail = issued,
+                    currentUserText = "Copy this text verbatim:\n$raw", experimental = experimental, toolCall = toolCall,
+                )
+            }
+        }
+    }
+
+    @Test
     fun `text array SSE preserves a separate newline after the issued mode title`() = runBlocking {
         val prompt = PromptTemplates.narrativeModeSystemPrompt(ChatNarrativeMode.FOCUS)
         val title = prompt.lineSequence().first()
@@ -5541,6 +5712,22 @@ class ExperimentalToolTransportTest {
             original, null, null, parts, "$first\n$next", experimental = true, tool = true,
             expectedFirstPreview = first,
         )
+    }
+
+    @Test
+    fun `repair recognizes the complete unlabelled system introduction while preserving the ambiguous short sentence`() = runBlocking {
+        val original = "The door is closed."
+        val revised = "The old door is closed and latched."
+        val full = PromptTemplates.MESSAGE_FORMAT_REPAIR_SYSTEM_PROMPT.trim().lineSequence().first()
+        val short = full.substringBefore('。') + "。"
+        val raw = "$full\n$revised"
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            for (literal in listOf("$short\n$revised", "~~~text\n$full\n~~~\n$revised", "> $full\n\n$revised", "$full\n\n")) {
+                assertRepairBoundaryReply(original, null, null, listOf(literal), literal, experimental, toolCall)
+            }
+            assertRepairBoundaryReply("$full\n$original", null, null, listOf(raw), raw, experimental, toolCall)
+            assertRepairBoundaryReply(original, null, null, listOf(raw), revised, experimental, toolCall)
+        }
     }
 
     private suspend fun assertRepairBoundaryReply(
