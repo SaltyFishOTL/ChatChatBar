@@ -334,22 +334,30 @@ object NarrativeHistoryEcho {
             private var seenLength = 0
             private var bodyStart: Int? = null
             private var requiresFullCleanup = false
+            private var multipart = false
 
             fun appendedBody(text: String, previousLength: Int, partLengths: List<Int> = emptyList()): String {
                 if (!enabled) return text
-                if (previousLength == 0 || previousLength != seenLength || previousLength !in 0..text.length) {
+                val reset = previousLength == 0 || previousLength != seenLength || previousLength !in 0..text.length
+                if (reset) {
                     bodyStart = null
                     requiresFullCleanup = false
+                    multipart = false
                 }
                 seenLength = text.length
-                if (partLengths.isNotEmpty()) requiresFullCleanup = true
+                if (partLengths.isNotEmpty()) {
+                    multipart = true
+                    requiresFullCleanup = true
+                }
+                val added = (if (reset) 0 else previousLength) until text.length
                 val from = bodyStart
-                if (!requiresFullCleanup && from != null && (previousLength until text.length).all { text[it].isPlainPreviewBodyCharacter() }) {
+                if (!requiresFullCleanup && from != null && added.all { text[it].isPlainPreviewBodyCharacter() }) {
                     return text.substring(from)
                 }
                 if (from != null) requiresFullCleanup = true
                 val cleaned = completedBody(text, partLengths = partLengths, streaming = true)
-                if (requiresFullCleanup) return cleaned
+                val mayHaveClosedInlineLiteral = !multipart && added.any { text[it] == '`' }
+                if (requiresFullCleanup && !mayHaveClosedInlineLiteral) return cleaned
 
                 val openings = repairOpenings ?: projectedOpenings
                 val opening = openings.firstOrNull { text.startsWith(it) && text.getOrNull(it.length).isHistoryLineBreak() }
@@ -366,10 +374,12 @@ object NarrativeHistoryEcho {
                     (opening == null || opening !in formatOutput.declaredOpenings &&
                         opening !in currentLiteralOutput.openings && opening !in authoredTemplateOpenings &&
                         authoredPairs.none { it.startsWith(opening) }) &&
-                    (candidateStart until text.length).all { text[it].isPlainPreviewBodyCharacter() } &&
+                    ((candidateStart until text.length).all { text[it].isPlainPreviewBodyCharacter() } ||
+                        opening != null && mayHaveClosedInlineLiteral && text.hasPlainPreviewWithInlineClosingTag(candidateStart)) &&
                     cleaned.length == text.length - candidateStart &&
                     text.regionMatches(candidateStart, cleaned, 0, cleaned.length)
-                if (canReuse) bodyStart = candidateStart else requiresFullCleanup = true
+                if (canReuse) bodyStart = candidateStart
+                requiresFullCleanup = !canReuse
                 return cleaned
             }
         }
@@ -1828,6 +1838,19 @@ object NarrativeHistoryEcho {
         isLetterOrDigit() || this in " .,!?;:，。！？；：、"
 
     private fun Char.isPlainPreviewBodyCharacter(): Boolean = isHistoryLineBreak() || isPlainPreviewCharacter()
+
+    private fun String.hasPlainPreviewWithInlineClosingTag(from: Int): Boolean {
+        // Ordinary single-line prose anchors the span outside Markdown block syntax. Once a
+        // single exact closing tag is enclosed in backticks, plain appends cannot reclassify it.
+        if (getOrNull(from)?.isLetterOrDigit() != true) return false
+        val openingTick = indexOf('`', from)
+        if (openingTick < 0 || (from until openingTick).any { !this[it].isPlainPreviewCharacter() }) return false
+        val closingTick = indexOf('`', openingTick + 1)
+        val matchesTag = wrapperClosings.any {
+            closingTick == openingTick + 1 + it.length && regionMatches(openingTick + 1, it, 0, it.length)
+        }
+        return matchesTag && (closingTick + 1 until length).all { this[it].isPlainPreviewBodyCharacter() }
+    }
 
     private fun Char?.isHistoryLineBreak(): Boolean = this == '\n' || this == '\r'
 

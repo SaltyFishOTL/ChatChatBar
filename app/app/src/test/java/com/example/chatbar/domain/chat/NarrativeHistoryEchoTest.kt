@@ -824,6 +824,28 @@ class NarrativeHistoryEchoTest {
         assertEquals(body, cleanup.completedBody("$opening\n$body\n${closing.dropLast(1)}", interrupted = true))
     }
 
+    @Test fun streamingAfterAnInlineClosingTagMatchesAuthoritativeCleanupAcrossChunkSplits() {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val closing = "</历史回复>"
+        val cleanup = requestWithNarrativeHistory(ChatNarrativeMode.FOCUS, null)
+        val prose = "The manual prints `$closing`.\n她翻过一页。\nThe room grew quiet."
+        for (body in listOf(prose, "$prose\n\n> Closing tag example:\n$closing")) {
+            val raw = "$opening\n$body\n$closing"
+            for (size in listOf(1, 2, 7, 29, raw.length)) {
+                val preview = cleanup.streamingPreview()
+                var offset = 0
+                for (chunk in raw.chunked(size)) {
+                    val next = offset + chunk.length
+                    val prefix = raw.substring(0, next)
+                    assertEquals(cleanup.completedBody(prefix, streaming = true), preview.appendedBody(prefix, offset))
+                    offset = next
+                }
+                assertEquals(body, preview.appendedBody(raw, -1))
+                assertEquals(body, cleanup.completedBody(raw))
+            }
+        }
+    }
+
     @Test fun lazyQuoteClosingExampleRemainsLiteralInAJoinedToolReply() {
         val open = "<历史回复 模式=\"聚焦\">"
         val close = "</历史回复>"
