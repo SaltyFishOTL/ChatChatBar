@@ -346,7 +346,7 @@ class ModelConfigurationTest {
         )
     }
 
-    @Test fun httpsModelStillInheritsGlobalApiKey() {
+    @Test fun onlyOfficialSiliconFlowModelInheritsGlobalApiKey() {
         val settings = AppSettings(
             siliconFlowApiKey = "global-key",
             allowCleartextModelApi = true
@@ -354,8 +354,9 @@ class ModelConfigurationTest {
 
         assertEquals(
             "global-key",
-            resolveEffectiveModelApiKey("", "https://example.test/v1", settings)
+            resolveEffectiveModelApiKey("", SILICON_FLOW_LLM_ENDPOINT, settings)
         )
+        assertEquals("", resolveEffectiveModelApiKey("", "https://example.test/v1", settings))
     }
 
     private fun model(

@@ -5,16 +5,25 @@ import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.data.local.entity.withCurrentWebSearchDefaults
 import com.example.chatbar.data.local.entity.withNormalizedAppearance
+import com.example.chatbar.domain.backup.LocalDataMaintenance
+import com.example.chatbar.domain.model.SILICON_FLOW_LLM_ENDPOINT
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /**
  * 设置仓库 - 管理应用全局设置和玩家角色设定（以单例形式存储）
  */
-class SettingsRepository(private val storage: JsonFileStorage) {
+class SettingsRepository(
+    private val storage: JsonFileStorage,
+    private val llmAccounts: LlmApiAccountRepository? = null,
+    private val canMigrateLlmKeys: () -> Boolean = { true }
+) {
     private val settingsMutex = Mutex()
 
     companion object {
@@ -26,6 +35,8 @@ class SettingsRepository(private val storage: JsonFileStorage) {
     val appSettings: Flow<AppSettings> = _appSettings.asStateFlow()
     val currentAppSettings: AppSettings
         get() = _appSettings.value
+    private val _siliconFlowMigrationPending = MutableStateFlow(false)
+    val siliconFlowMigrationPending = _siliconFlowMigrationPending.asStateFlow()
 
     private val _playerSetting = MutableStateFlow(PlayerSetting())
     val playerSetting: Flow<PlayerSetting> = _playerSetting.asStateFlow()
@@ -48,7 +59,20 @@ class SettingsRepository(private val storage: JsonFileStorage) {
     private suspend fun getAppSettingsLocked(): AppSettings {
         val loaded = storage.loadSingleton(APP_SETTINGS_TYPE, AppSettings.serializer())
             ?: AppSettings().also { saveAppSettingsLocked(it) }
-        return migrateAppSettings(loaded)
+        return migrateAppSettings(loaded).let { normalized ->
+            if (llmAccounts == null || normalized.siliconFlowApiKey.isBlank() || !canMigrateLlmKeys()) {
+                return@let normalized
+            }
+            try {
+                saveAppSettingsLocked(normalized)
+                _appSettings.value
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                _siliconFlowMigrationPending.value = true
+                normalized
+            }
+        }
     }
 
     suspend fun saveAppSettings(settings: AppSettings) {
@@ -64,12 +88,51 @@ class SettingsRepository(private val storage: JsonFileStorage) {
     }
 
     suspend fun saveAppSettingsDraft(baseline: AppSettings, draft: AppSettings): AppSettings =
-        updateAppSettings { latest -> mergeSettingsDraft(AppSettings.serializer(), baseline, draft, latest) }
+        updateAppSettings { latest ->
+            val merged = mergeSettingsDraft(AppSettings.serializer(), baseline, draft, latest)
+            if (baseline.siliconFlowApiKey != draft.siliconFlowApiKey) {
+                merged.copy(siliconFlowApiKey = draft.siliconFlowApiKey, siliconFlowLlmAccountId = null)
+            } else merged
+        }
 
-    private suspend fun saveAppSettingsLocked(settings: AppSettings) {
+    suspend fun setSiliconFlowApiKey(apiKey: String) = updateAppSettings {
+        it.copy(siliconFlowApiKey = apiKey, siliconFlowLlmAccountId = null)
+    }
+
+    suspend fun retrySiliconFlowKeyMigration() = settingsMutex.withLock {
+        _appSettings.value = getAppSettingsLocked()
+    }
+
+    suspend fun removeLlmApiAccount(id: String, models: ModelRepository) = settingsMutex.withLock {
+        val raw = storage.loadSingleton(APP_SETTINGS_TYPE, AppSettings.serializer())
+        check(raw?.siliconFlowLlmAccountId != id) { "请先在模型与连接中更换或清除硅基流动默认密钥" }
+        models.removeLlmApiAccount(id)
+    }
+
+    private suspend fun saveAppSettingsLocked(settings: AppSettings) = withContext(NonCancellable) {
         val normalized = settings.withNormalizedAppearance()
-        storage.saveSingleton(APP_SETTINGS_TYPE, normalized, AppSettings.serializer())
-        _appSettings.value = normalized
+        val accounts = llmAccounts
+        LocalDataMaintenance.enter().use {
+            var migrationPending = false
+            val persisted = if (accounts != null && normalized.siliconFlowApiKey.isNotBlank() && canMigrateLlmKeys()) {
+                try {
+                    val account = accounts.adoptLegacy(
+                        "default:siliconflow", "硅基流动 · 旧默认账户", SILICON_FLOW_LLM_ENDPOINT, normalized.siliconFlowApiKey
+                    )
+                    normalized.copy(siliconFlowApiKey = "", siliconFlowLlmAccountId = account.id)
+                } catch (error: Exception) {
+                    // Unrelated settings can still be saved while a legacy key awaits migration.
+                    // Never introduce a new plaintext key when the protected store is unavailable.
+                    val old = storage.loadSingleton(APP_SETTINGS_TYPE, AppSettings.serializer())
+                    if (old?.siliconFlowApiKey != normalized.siliconFlowApiKey) throw error
+                    migrationPending = true
+                    normalized
+                }
+            } else normalized
+            storage.saveSingleton(APP_SETTINGS_TYPE, persisted, AppSettings.serializer())
+            _appSettings.value = persisted
+            _siliconFlowMigrationPending.value = migrationPending
+        }
     }
 
     private suspend fun migrateAppSettings(settings: AppSettings): AppSettings {
@@ -79,7 +142,10 @@ class SettingsRepository(private val storage: JsonFileStorage) {
         if (migrated == settings) {
             return settings
         }
-        saveAppSettingsLocked(migrated)
+        // Apply ordinary compatibility defaults first. The protected-key migration owns its
+        // separate write and can fail without losing this legacy input.
+        storage.saveSingleton(APP_SETTINGS_TYPE, migrated, AppSettings.serializer())
+        _appSettings.value = migrated
         return migrated
     }
 

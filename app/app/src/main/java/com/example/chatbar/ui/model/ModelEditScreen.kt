@@ -29,6 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.example.chatbar.data.local.entity.LlmApiAccount
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.chatbar.data.local.entity.FormatPromptPosition
 import com.example.chatbar.data.local.entity.ModelTemplate
@@ -60,8 +61,9 @@ fun ModelEditScreen(
     viewModel: ModelEditViewModel = viewModel(key = modelId, factory = ModelEditViewModelFactory(modelId))
 ) {
     val multimodalModels by viewModel.availableMultimodalModels.collectAsState()
+    val apiAccounts by viewModel.apiAccounts.collectAsState()
     var showAddParam by remember { mutableStateOf(false) }
-    val canSave = viewModel.displayName.isNotBlank() && viewModel.baseUrl.isNotBlank() &&
+    val canSave = !viewModel.savingModel && viewModel.displayName.isNotBlank() && viewModel.baseUrl.isNotBlank() &&
         viewModel.modelName.isNotBlank()
     val context = LocalContext.current
     var lastBackPressAt by remember { mutableStateOf(0L) }
@@ -116,17 +118,29 @@ fun ModelEditScreen(
                     placeholder = "选择接口预设"
                 )
             }
-            CbField("Base URL") {
-                CbInput(viewModel.baseUrl, { viewModel.baseUrl = it }, placeholder = "https://api.openai.com/v1")
-            }
-            CbField("API Key", description = "留空时使用设置里的全局默认 API Key。") {
-                CbInput(
-                    viewModel.apiKey,
-                    { viewModel.apiKey = it },
-                    placeholder = "可留空，默认使用全局 API Key",
-                    secure = true
+            val accountOptions = listOf(LlmAccountOption(null)) + apiAccounts.map { LlmAccountOption(it) }
+            val boundAccount = apiAccounts.firstOrNull { it.id == viewModel.llmAccountId }
+            CbField("对话 API 账户", description = "在管理 → 设置 → 模型与连接中添加账户，同一账户可用于多个模型。") {
+                CbSelect(
+                    value = accountOptions.firstOrNull { it.account?.id == viewModel.llmAccountId },
+                    options = accountOptions,
+                    optionLabel = { it.account?.let { account -> "${account.displayName} · ${account.baseUrl}" } ?: "未绑定账户" },
+                    onValueChange = { viewModel.selectLlmAccount(it.account) },
+                    placeholder = if (viewModel.llmAccountId == null) "选择账户" else "当前账户不可用，请重新选择",
+                    enabled = !viewModel.savingModel
                 )
             }
+            if (viewModel.llmAccountId != null) {
+                CbField("Base URL") { CbText(boundAccount?.baseUrl ?: viewModel.baseUrl) }
+            } else {
+                CbField("Base URL") {
+                    CbInput(viewModel.baseUrl, { viewModel.baseUrl = it }, placeholder = "https://api.openai.com/v1")
+                }
+                CbField("API Key", description = "保存后会创建对应的命名账户。硅基流动接口可留空以使用其默认 Key。") {
+                    CbInput(viewModel.apiKey, { viewModel.apiKey = it }, placeholder = "填写此接口的 Key", secure = true)
+                }
+            }
+            viewModel.accountSaveError?.let { CbText(it, color = ChatBarTheme.colors.destructive) }
             CbField("模型标识") {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     CbInput(
@@ -364,6 +378,7 @@ private fun PresetGrid(existingKeys: Set<String>, onAdd: (CommonParamPreset) -> 
 }
 
 private data class VisionOption(val id: String?, val label: String)
+private data class LlmAccountOption(val account: LlmApiAccount?)
 private enum class ParamType(val label: String) { Number("数字"), Boolean("布尔"), String("文本") }
 private data class CommonParamPreset(
     val key: String,

@@ -1,19 +1,16 @@
-<?xml version="1.0" encoding="utf-8"?><!--
-   Sample data extraction rules file; uncomment and customize as necessary.
-   See https://developer.android.com/about/versions/12/backup-restore#xml-changes
-   for details.
--->
+<?xml version="1.0" encoding="utf-8"?>
 <data-extraction-rules>
     <cloud-backup>
-        <!-- TODO: Use <include> and <exclude> to control what is backed up.
-        <include .../>
-        <exclude .../>
-        -->
+        <!-- Legacy records can retain credentials until device-local migration succeeds. -->
+        <exclude domain="file" path="entities/app_settings.json" />
+        <exclude domain="file" path="entities/.app-settings-staging" />
+        <exclude domain="file" path="entities/model_configs" />
+        <exclude domain="file" path="entities/retrieval_model_config" />
     </cloud-backup>
-    <!--
     <device-transfer>
-        <include .../>
-        <exclude .../>
+        <exclude domain="file" path="entities/app_settings.json" />
+        <exclude domain="file" path="entities/.app-settings-staging" />
+        <exclude domain="file" path="entities/model_configs" />
+        <exclude domain="file" path="entities/retrieval_model_config" />
     </device-transfer>
-    -->
 </data-extraction-rules>
