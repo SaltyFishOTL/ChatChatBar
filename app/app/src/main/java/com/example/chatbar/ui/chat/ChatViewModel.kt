@@ -3728,7 +3728,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             val message = chatRepository.getMessage(messageId, sessionId) ?: return@launch
             if (imagePath !in message.images) return@launch
             val remaining = message.images.filterNot { it == imagePath }
-            if (remaining.isEmpty() && message.content.isBlank()) {
+            if (remaining.isEmpty() && message.displayContent.isBlank() &&
+                MessageAlternativeVersionPolicy.versions(message).none { it.content.isNotBlank() }
+            ) {
                 deleteMessage(messageId, message)
             } else {
                 val updatedMessage = message.copy(

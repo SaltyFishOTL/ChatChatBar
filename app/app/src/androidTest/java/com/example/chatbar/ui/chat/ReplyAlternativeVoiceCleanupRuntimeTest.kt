@@ -12,6 +12,7 @@ import com.example.chatbar.data.repository.ChatRepository
 import com.example.chatbar.data.repository.VoiceMessageRepository
 import com.example.chatbar.domain.backup.*
 import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
+import com.example.chatbar.domain.chat.MessageFormatRepairPolicy
 import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
 import com.example.chatbar.domain.rag.RagRepository
 import com.example.chatbar.domain.rag.VectorSearchEngine
@@ -43,6 +44,79 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
     @Test fun clearingLastTextSegmentCleansRemovedVersionVoiceAndAnchorFromBackup() = verify(viaSegmentEdit = true)
     @Test fun clearingLastTextSegmentWithSharedImageKeepsImageAndSurvivingVoice() =
         verify(viaSegmentEdit = true, segmentWithImage = true)
+
+    @Test fun deletingLastImageFromBlankActiveReplyKeepsOtherVersions() = runBlocking<Unit> {
+        val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
+        val card = CharacterCard.create("Synthetic image removal")
+        val session = ChatSession.create(card.id, "Synthetic image removal").copy(
+            longTermMemoryEnabled = false, automaticImageGenerationEnabled = false
+        )
+        val store = ViewModelStore()
+        fun createImage() = File(app.filesDir, "images/chat_img_" + UUID.randomUUID() + ".png").also {
+            it.parentFile!!.mkdirs()
+            it.writeBytes(byteArrayOf(1, 2, 3))
+        }
+        val sharedImage = createImage()
+        val standaloneImage = createImage()
+        val audio = File(app.filesDir, "audio/generated/" + session.id + "/retained.mp3").also {
+            it.parentFile!!.mkdirs()
+            it.writeText("synthetic retained voice")
+        }
+        val first = ChatMessage.create(session.id, MessageRole.ASSISTANT, "Surviving reply")
+        val repaired = MessageFormatRepairPolicy.replaceCurrentDisplayContent(first, "Formatted reply",
+            MessageFormatRepairPolicy.completedRepairNotice(first.content, "Formatted reply"))
+        val a = requireNotNull(MessageFormatRepairPolicy.restoreOriginal(repaired))
+        val reply = MessageAlternativeVersionPolicy.append(a, "Current reply", "B")
+        val imageOnly = ChatMessage.create(session.id, MessageRole.USER, "", images = listOf(standaloneImage.path))
+        val clip = GeneratedVoiceMessage.create(
+            sessionId = session.id, messageId = reply.id, messageVersionId = MessageAlternativeVersionPolicy.activeVersionId(a),
+            anchorId = null, sourceOrder = 0, sourceSegmentKind = VoiceGenerationPolicy.WHOLE_MESSAGE_SOURCE_KIND,
+            sourceSpeakerName = "", sourceText = a.content, taggedText = a.content, characterId = "fixture",
+            characterName = "Synthetic", voice = FishAudioVoiceBinding("fixture", "Synthetic"), fishModelId = "fixture",
+            audioPath = audio.path, durationMs = 1, byteLength = audio.length()
+        )
+        try {
+            app.characterRepository.save(card)
+            app.chatRepository.createSession(session)
+            app.chatRepository.addMessage(reply)
+            app.chatRepository.addMessage(imageOnly)
+            app.voiceMessageRepository.save(clip)
+            val vm = withContext(Dispatchers.Main) {
+                ViewModelProvider(store, ChatViewModelFactory(session.id))[ChatViewModel::class.java]
+            }
+            withTimeout(15_000) { vm.messages.first { rows -> rows.any { it.id == reply.id } } }
+            withContext(Dispatchers.Main) { vm.editMessage(reply.id, "", listOf(sharedImage.path)) }
+            withTimeout(15_000) { vm.messages.first { rows ->
+                rows.any { it.id == reply.id && it.displayContent.isEmpty() && it.images == listOf(sharedImage.path) }
+            } }
+            withContext(Dispatchers.Main) { vm.deleteImage(reply.id, sharedImage.path) }
+            withTimeout(15_000) { vm.messages.first { rows -> rows.none { sharedImage.path in it.images } } }
+            val coldChats = ChatRepository(JsonFileStorage(app))
+            val retained = requireNotNull(coldChats.getMessage(reply.id, session.id)) { "Image removal deleted the entire reply" }
+            assertEquals(listOf(a.content, ""), retained.alternatives)
+            assertEquals("B", MessageAlternativeVersionPolicy.activeVersionId(retained))
+            val retainedA = MessageAlternativeVersionPolicy.select(retained, 0)
+            assertEquals("Formatted reply", MessageFormatRepairPolicy.redoRepair(retainedA)?.displayContent)
+            assertEquals(clip, VoiceMessageRepository(JsonFileStorage(app)).get(clip.id))
+            assertEquals("synthetic retained voice", audio.readText())
+            withTimeout(15_000) { while (sharedImage.exists()) delay(25) }
+
+            withContext(Dispatchers.Main) { vm.deleteImage(imageOnly.id, standaloneImage.path) }
+            withTimeout(15_000) { vm.messages.first { rows -> rows.none { it.id == imageOnly.id } } }
+            assertNull(ChatRepository(JsonFileStorage(app)).getMessage(imageOnly.id, session.id))
+            assertFalse(standaloneImage.exists())
+        } finally {
+            withContext(Dispatchers.Main) { store.clear() }
+            app.chatRepository.deleteMessagesForSession(session.id)
+            app.voiceMessageRepository.deleteForSession(session.id)
+            app.chatRepository.deleteSessionRecord(session.id)
+            app.characterRepository.delete(card.id)
+            sharedImage.delete()
+            standaloneImage.delete()
+            audio.delete()
+        }
+    }
+
     @Test fun clearingOnlyAlternativeThroughSegmentDeletesMessageAndVoice() = verify(viaSegmentEdit = true, last = true)
     @Test fun clearingOnlyAlternativePreservesAudioReferencedByIndependentMessage() = verify(viaSegmentEdit = true, last = true, sharedAudio = true)
     @Test fun clearingLastTextSegmentRejectsLateVoiceAndAnchorRecreation() = verify(viaSegmentEdit = true, lateVoice = true, lateAnchor = true, staleUi = true)

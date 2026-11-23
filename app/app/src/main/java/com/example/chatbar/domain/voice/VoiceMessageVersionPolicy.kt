@@ -45,35 +45,21 @@ object VoiceMessageVersionPolicy {
         }
     }
 
+    /** A legacy recording without an owner needs evidence before it can choose between replies. */
     fun inferLegacyVersionId(
         message: ChatMessage,
         voice: GeneratedVoiceMessage,
         legacyState: VoiceAnchorState?
-    ): String {
+    ): String? {
         val versions = MessageAlternativeVersionPolicy.versions(message)
-        val activeVersionId = MessageAlternativeVersionPolicy.activeVersionId(message)
-        val stateVersion = legacyState?.let { state ->
-            versions.firstOrNull { it.content == state.displayContentSnapshot }
+        val anchoredVersion = legacyState?.takeIf { state ->
+            state.anchors.any { it.id == voice.anchorId }
+        }?.let { state ->
+            versions.singleOrNull { it.content == state.displayContentSnapshot }
         }
-        if (
-            voice.anchorId != null &&
-            legacyState?.anchors?.any { it.id == voice.anchorId } == true
-        ) {
-            return stateVersion?.id ?: activeVersionId
-        }
-        val matchingVersions = versions.filter { version ->
-            versionContainsVoice(version, voice)
-        }
-        val matchingVersionIds = matchingVersions.mapTo(mutableSetOf(), MessageVersionSnapshot::id)
-        return when {
-            stateVersion?.id in matchingVersionIds ->
-                checkNotNull(stateVersion).id
-            activeVersionId in matchingVersionIds ->
-                activeVersionId
-            matchingVersions.isNotEmpty() -> matchingVersions.first().id
-            stateVersion != null -> stateVersion.id
-            else -> activeVersionId
-        }
+        return anchoredVersion?.id
+            ?: versions.singleOrNull { isCompatibleVersion(it, voice) }?.id
+            ?: versions.singleOrNull()?.id
     }
 
     internal fun compatibleVersionId(message: ChatMessage, voice: GeneratedVoiceMessage): String? =
@@ -88,13 +74,13 @@ object VoiceMessageVersionPolicy {
 
     internal fun isCompatibleVersion(version: MessageVersionSnapshot, voice: GeneratedVoiceMessage): Boolean =
         (voice.legacyVersionContentHash == null || voice.legacyVersionContentHash == contentHash(version.content)) &&
-        versionContainsVoice(version, voice, requireMatchingSpeaker = true)
+        versionContainsVoice(version, voice)
 
     internal fun legacyVersionContentHash(voice: GeneratedVoiceMessage, version: MessageVersionSnapshot?): String? =
         voice.legacyVersionContentHash ?: version?.takeIf {
             voice.messageVersionId.isNullOrBlank() &&
                 voice.sourceSegmentKind != VoiceGenerationPolicy.WHOLE_MESSAGE_SOURCE_KIND &&
-                versionContainsVoice(it, voice, requireMatchingSpeaker = true)
+                versionContainsVoice(it, voice)
         }?.let { contentHash(it.content) }
 
     fun anchorIdForVoice(
@@ -143,8 +129,7 @@ object VoiceMessageVersionPolicy {
 
     private fun versionContainsVoice(
         version: MessageVersionSnapshot,
-        voice: GeneratedVoiceMessage,
-        requireMatchingSpeaker: Boolean = false
+        voice: GeneratedVoiceMessage
     ): Boolean {
         if (voice.sourceSegmentKind == VoiceGenerationPolicy.WHOLE_MESSAGE_SOURCE_KIND) {
             return (
@@ -158,7 +143,7 @@ object VoiceMessageVersionPolicy {
             includeNarration = true
         ).any { segment ->
             segment.kind.name == voice.sourceSegmentKind &&
-                (!requireMatchingSpeaker || normalize(segment.speakerName.orEmpty()) == normalize(voice.sourceSpeakerName)) &&
+                normalize(segment.speakerName.orEmpty()) == normalize(voice.sourceSpeakerName) &&
                 normalize(segment.spokenText) == normalize(voice.sourceText)
         }
     }

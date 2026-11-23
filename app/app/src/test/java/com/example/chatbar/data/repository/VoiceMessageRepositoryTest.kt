@@ -79,6 +79,68 @@ class VoiceMessageRepositoryTest {
     }
 
     @Test
+    fun `raw inline legacy recording is playable only on the reply with its recorded speaker`() = runBlocking {
+        for (schema in 5..7) {
+            val context = TestContext(temp.newFolder("legacy-v$schema"))
+            val input = File(context.filesDir, "archive.json")
+            input.writeText(
+                """{
+                  "schemaVersion":$schema,"id":"slot","sessionId":"source","name":"Legacy","createdAt":1,
+                  "messages":[{"id":"m","sessionId":"source","role":"ASSISTANT",
+                    "content":"<n=\"Bob\"/>[Hello]()\n<n=\"Casey\"/>[Shared]()",
+                    "alternatives":["<n=\"Alice\"/>[Hello]()\n<n=\"Casey\"/>[Shared]()",
+                      "<n=\"Bob\"/>[Hello]()\n<n=\"Casey\"/>[Shared]()"],
+                    "alternativeVersionIds":["A","B"],"currentAlternativeVersionId":"B",
+                    "currentAlternativeIndex":1,"createdAt":1,"updatedAt":1}],
+                  "voiceMessages":[
+                    {"id":"clip","sessionId":"source","messageId":"m","sourceOrder":0,
+                     "sourceSegmentKind":"DIALOGUE","sourceSpeakerName":"Alice","sourceText":"Hello",
+                     "taggedText":"Hello","characterId":"speaker","characterName":"Alice",
+                     "voice":{"referenceId":"fixture","title":"Synthetic"},"fishModelId":"fixture",
+                     "audioPath":"clip","durationMs":1,"byteLength":5,"createdAt":1,"updatedAt":1},
+                    {"id":"shared","sessionId":"source","messageId":"m","sourceOrder":1,
+                     "sourceSegmentKind":"DIALOGUE","sourceSpeakerName":"Casey","sourceText":"Shared",
+                     "taggedText":"Shared","characterId":"shared-speaker","characterName":"Casey",
+                     "voice":{"referenceId":"fixture","title":"Synthetic"},"fishModelId":"fixture",
+                     "audioPath":"shared","durationMs":1,"byteLength":5,"createdAt":1,"updatedAt":1}],
+                  "audioResources":{"clip":{"fileName":"clip.mp3","data":"YXVkaW8="},
+                    "shared":{"fileName":"shared.mp3","data":"c2hhcmU="}}
+                }""".trimIndent()
+            )
+            val raw = input.readBytes()
+            val slot = input.inputStream().use(SaveSlotJsonTransfer::read)
+            val message = slot.messages.single().copy(sessionId = "target")
+            val chats = ChatRepository(JsonFileStorage(context))
+            val voices = VoiceMessageRepository(JsonFileStorage(context), chats::getMessage)
+            val recordings = slot.voiceMessages.map { voice ->
+                val audio = File(context.filesDir, voice.id + ".mp3")
+                audio.writeBytes(java.util.Base64.getDecoder().decode(slot.audioResources.getValue(voice.audioPath).data))
+                voice.copy(audioPath = audio.path)
+            }
+            chats.replaceMessagesForSession(message.sessionId, listOf(message))
+            voices.restoreForSession(message.sessionId, recordings, listOf(message))
+
+            val coldChats = ChatRepository(JsonFileStorage(context))
+            val cold = VoiceMessageRepository(JsonFileStorage(context), coldChats::getMessage)
+            val onB = requireNotNull(coldChats.getMessage(message.id, message.sessionId))
+            assertTrue("v$schema must not display Alice on Bob's reply", cold.placementsForMessage(onB).isEmpty())
+            val restored = cold.listForSession(message.sessionId).associateBy { it.id }
+            assertEquals("A", restored.getValue("clip").messageVersionId)
+            assertNull(restored.getValue("shared").messageVersionId)
+            cold.withCurrentPlaybackQueue(restored.values.toList(), coldChats) { assertTrue(it.isEmpty()) }
+
+            val onA = requireNotNull(coldChats.updateMessageIfUnchanged(onB, MessageAlternativeVersionPolicy.select(onB, 0)))
+            assertEquals(0, cold.placementsForMessage(onA).single().segmentIndex)
+            cold.withCurrentPlaybackQueue(restored.values.toList(), coldChats) { queue ->
+                assertEquals(listOf("clip"), queue.map { it.id })
+            }
+            assertEquals("audio", File(restored.getValue("clip").audioPath).readText())
+            assertEquals("share", File(restored.getValue("shared").audioPath).readText())
+            assertArrayEquals(raw, input.readBytes())
+        }
+    }
+
+    @Test
     fun `previously placed legacy line does not follow a different reply after deletion and archive restore`() =
         verifySharedLegacyLine(openFirst = true)
 

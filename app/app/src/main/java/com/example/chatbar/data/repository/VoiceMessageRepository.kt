@@ -618,10 +618,9 @@ class VoiceMessageRepository(
         }.mapTo(mutableSetOf(), GeneratedVoiceMessage::id)
         if (legacyState == null && legacyVoiceIds.isEmpty()) return
 
-        val activeVersionId = MessageAlternativeVersionPolicy.activeVersionId(message)
         val legacyStateVersionId = legacyState?.let { state ->
-            versions.firstOrNull { it.content == state.displayContentSnapshot }?.id
-                ?: activeVersionId
+            versions.singleOrNull { it.content == state.displayContentSnapshot }?.id
+                ?: versions.singleOrNull()?.id
         }
         if (legacyState != null && legacyStateVersionId != null) {
             val migratedKey = VoiceAnchorStateKey(message.sessionId, message.id, legacyStateVersionId)
@@ -643,6 +642,7 @@ class VoiceMessageRepository(
                         ?: return@map voice.copy(anchorId = null)
                 } else {
                     VoiceMessageVersionPolicy.inferLegacyVersionId(message, voice, legacyState)
+                        ?: return@map voice
                 }
                 val version = versions.firstOrNull { it.id == versionId }
                 val key = VoiceAnchorStateKey(message.sessionId, message.id, versionId)
@@ -671,7 +671,7 @@ class VoiceMessageRepository(
             }
         }
         persistChangedVoicesLocked(_voices.value, changed)
-        if (legacyState != null) {
+        if (legacyStateVersionId != null) {
             deleteAnchorLocked(legacyKey)
         }
     }
