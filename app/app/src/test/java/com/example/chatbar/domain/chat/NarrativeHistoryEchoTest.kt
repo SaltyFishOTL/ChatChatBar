@@ -35,6 +35,63 @@ class NarrativeHistoryEchoTest {
     }
 
     @Test
+    fun pairedPlainActionOptionsStayOutsideTheEchoInPreviewStopAndDone() {
+        val story = "门开了。"
+        val tails = listOf(
+            "---\n1. 进门\n2. 等候\n---",
+            "---\n**【行动选项】**\n\n1.**进门**\n\n2.**等候**\n\n3.**敲门**\n---",
+        )
+        for (mode in ChatNarrativeMode.entries) {
+            val cleanup = NarrativeHistoryEcho.forRequest(mode, null)
+            val opening = "<历史回复 模式=\"${mode.shortLabel}\">"
+            val closing = "</历史回复>"
+            for (newLine in listOf("\n", "\r\n")) for (tail in tails) {
+                val options = tail.replace("\n", newLine)
+                val wrapped = "$opening$newLine$story$newLine$closing"
+                val parts = listOf(wrapped, options)
+                for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+                    assertEquals("$story$newLine$newLine$options", cleanup.completedBody(
+                        "$wrapped$newLine$newLine$options", streaming = streaming, interrupted = interrupted,
+                    ))
+                    assertEquals("$story\n$options", cleanup.completedBody(
+                        parts.joinToString("\n"), streaming = streaming, interrupted = interrupted,
+                        partLengths = parts.map(String::length),
+                    ))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun literalDashBlocksAndAnOwnedTemplateKeepTheirWrapper() {
+        val mode = ChatNarrativeMode.FOCUS
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val closing = "</历史回复>"
+        val pair = "$opening\n标签示例\n$closing"
+        val options = "---\n1. 进门\n2. 等候\n---"
+        val literals = listOf(
+            "---\n这些是示例后的说明。\n---",
+            "---\n1.2 meters\n2.5 seconds\n---",
+            "---\n1. 进门\n2. 等候",
+            "---\n1. 进门\n随后解释示例。\n2. 等候\n---",
+            options.lineSequence().joinToString("\n") { "> $it" },
+            options.lineSequence().joinToString("\n") { "    $it" },
+            "- 示例\n" + options.lineSequence().joinToString("\n") { "  $it" },
+            "```markdown\n$options\n```",
+        )
+        val cleanup = NarrativeHistoryEcho.forRequest(mode, null)
+        val declared = NarrativeHistoryEcho.forRequest(mode, "本轮输出模板：$opening{正文}$closing")
+        for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+            for (literal in literals) {
+                val raw = "$pair\n\n$literal"
+                assertEquals(raw, cleanup.completedBody(raw, streaming = streaming, interrupted = interrupted))
+            }
+            val owned = "$pair\n\n$options"
+            assertEquals(owned, declared.completedBody(owned, streaming = streaming, interrupted = interrupted))
+        }
+    }
+
+    @Test
     fun aSplitTrailingCommentOpenerDoesNotRestoreTheWrapperInPreviewOrStop() {
         val open = "<历史回复 模式=\"聚焦\">"
         val close = "</历史回复>"

@@ -265,10 +265,11 @@ object NarrativeHistoryEcho {
         }
         val suffixRanges by lazy(LazyThreadSafetyMode.NONE) {
             val status = literals.fences.filter { it.topLevel && it.legacyStatus }.map { it.range }
-            val options = roleplayAnnotatedActionRanges(literals.markdown).filter { range ->
+            val options = (roleplayAnnotatedActionRanges(literals.markdown).asSequence() +
+                roleplayListedActionRanges(literals.markdown)).filter { range ->
                 literals.ranges.none { range.first in it || range.last in it } &&
                     !literals.isMarkdownContainerLine(range.first) && !literals.isMarkdownContainerLine(range.last)
-            }
+            }.toList()
             (literals.commentRanges + status + options).sortedBy { it.first }
         }
         fun endsReply(tag: MatchResult): Boolean =

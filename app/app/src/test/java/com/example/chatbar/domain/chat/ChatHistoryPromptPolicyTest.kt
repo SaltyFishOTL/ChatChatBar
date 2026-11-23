@@ -189,6 +189,37 @@ class ChatHistoryPromptPolicyTest {
     }
 
     @Test
+    fun pairedPlainActionOptionsStayVisibleAndReplayWithOneHistoryWrapper() {
+        val mode = ChatNarrativeMode.ADVANCE
+        val story = "门开了。"
+        val options = "---\n1. 进门\n2. 等候\n---"
+        val body = "$story\n\n$options"
+        val reply = PromptTemplates.narrativeModeHistoryReply(story, mode) + "\n\n$options"
+        val cleanup = NarrativeHistoryEcho.forRequest(mode, null)
+        val rawDraft = message(MessageRole.ASSISTANT, reply).copy(narrativeMode = mode)
+        val stop = requireNotNull(InterruptedReplyPolicy.persistableDraft(
+            rawDraft.copy(content = cleanup.completedBody(reply, interrupted = true)),
+        ))
+        val done = rawDraft.copy(content = ChatHistoryPromptPolicy.requirePersistableAssistantBody(
+            cleanup.completedBody(reply),
+        ))
+        for (assistant in listOf(stop, done)) {
+            assertEquals(body, assistant.displayContent)
+            val segments = parseRoleplayTextSegments(assistant.displayContent)
+            assertEquals(listOf(RoleplaySegmentKind.NARRATION, RoleplaySegmentKind.STATUS), segments.map { it.kind })
+            assertEquals("1. 进门\n2. 等候", segments.last().displayText)
+            assertTrue(segments.last().statusDefaultExpanded)
+
+            val previous = ChatHistoryPromptPolicy.sourceText(assistant, true, ChatHistoryPromptZone.PREVIOUS_TURN)
+            val earlier = ChatHistoryPromptPolicy.sourceText(assistant, true, ChatHistoryPromptZone.EARLIER_HISTORY)
+            assertEquals(JsonPrimitive(PromptTemplates.narrativeModeHistoryReply(body, mode)),
+                ChatApiMessage.text("assistant", ChatHistoryPromptPolicy.renderedHistoryText(assistant, previous)).content)
+            assertEquals(JsonPrimitive(PromptTemplates.narrativeModeHistoryReply(story, mode)),
+                ChatApiMessage.text("assistant", ChatHistoryPromptPolicy.renderedHistoryText(assistant, earlier)).content)
+        }
+    }
+
+    @Test
     fun statusOnlyPreviousAssistantRemainsAvailableWhileEarlierHistoryCanBeOmitted() {
         val statusOnly = """
             ```status

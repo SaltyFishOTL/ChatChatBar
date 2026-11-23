@@ -314,6 +314,26 @@ private fun splitCodeFenceSegments(visible: VisibleRoleplayText): List<RoleplayT
 }
 
 private val dashFencePattern = Regex("(?m)^[ \t]*---[ \t]*$")
+private val actionOptionsHeading = Regex(" {0,3}${Regex.escape("**【行动选项】**")}[ \\t]*")
+private val numberedActionOption = Regex(" {0,3}([1-9][0-9]{0,8})\\.(?:[ \\t]+|(?=\\*\\*))\\S.*")
+
+/** A plain dash fence also wraps arbitrary prose, so only explicit ordered options identify a reply suffix. */
+internal fun roleplayListedActionRanges(text: String): Sequence<IntRange> =
+    dashFencePattern.findAll(text)
+        .filter { marker ->
+            val indent = marker.value.substringBefore("---")
+            indent.length <= 3 && '\t' !in indent
+        }
+        .zipWithNext()
+        .mapNotNull { (opening, closing) ->
+            val lines = text.subSequence(opening.range.last + 1, closing.range.first)
+                .lineSequence().filter { it.isNotBlank() }.toList()
+            val options = if (lines.firstOrNull()?.let(actionOptionsHeading::matches) == true) lines.drop(1) else lines
+            val listed = options.size >= 2 && options.withIndex().all { (index, option) ->
+                numberedActionOption.matchEntire(option)?.groupValues?.get(1) == (index + 1).toString()
+            }
+            if (listed) opening.range.first..closing.range.last else null
+        }
 
 private fun splitDashFenceSegments(
     segment: RoleplayTextSegment,
@@ -429,7 +449,7 @@ private val annotatedActionBoundary = Regex(
     "(?m)^ {0,3}(—{22}$annotatedActionLabel|$annotatedActionLabel—{22})[ \\t]*(?=\\r?\\n|\\z)",
 )
 private val annotatedActionBodyStart = Regex(
-    "(?:[ \\t]*\\r?\\n)* {0,3}\\*\\*【行动选项】\\*\\*[ \\t]*\\r?\\n" +
+    "(?:[ \\t]*\\r?\\n)*${actionOptionsHeading.pattern}\\r?\\n" +
         "(?:[ \\t]*\\r?\\n)* {0,3}1\\.[ \\t]*\\S",
 )
 
