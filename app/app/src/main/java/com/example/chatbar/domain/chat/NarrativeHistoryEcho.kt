@@ -428,7 +428,7 @@ object NarrativeHistoryEcho {
             }
 
             val headings = narrativeHeadings.filterNot(::isAuthoredHeading)
-            val supersededOpenings = currentCounterexampleOpenings - currentTemplateOpenings
+            val supersededOpenings = (currentCounterexampleOpenings - currentTemplateOpenings).intersect(authoredTemplateOpenings)
             val activeTemplates = authoredTemplateOpenings - supersededOpenings
             val replyFormat = if (activeTemplates.isEmpty()) formatOutput else {
                 formatOutput.copy(declaredOpenings = formatOutput.declaredOpenings + activeTemplates)
@@ -454,7 +454,7 @@ object NarrativeHistoryEcho {
                 body, replyFormat, interrupted, lengths, streaming, projectedDuplicateOpenings,
                 projectedInnerOpenings = projectedInnerOpenings,
                 projectedPaddedFrames = projectedPaddedFrames,
-                allowedOpenings = projectedOpenings + formatOutput.counterexampleOpenings + currentCounterexampleOpenings,
+                allowedOpenings = projectedOpenings + formatOutput.counterexampleOpenings + supersededOpenings,
                 literalOutput = currentLiteralOutput.copy(pairs = activePairs),
                 trailerHeadings = headings,
                 cleanExposedBody = { inner ->

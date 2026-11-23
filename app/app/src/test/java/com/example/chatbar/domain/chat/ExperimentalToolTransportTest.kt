@@ -2467,6 +2467,7 @@ class ExperimentalToolTransportTest {
             }
             assertNarrativeReplyDeltas(listOf(framed), listOf(framed), framed, previousAssistant = prior,
                 previousUserText = earlier, currentUserText = negative, formatCard = "Output template:\n$sample", experimental = false)
+            assertNarrativeReplyStates(framed, framed, experimental = false, fixtureHistory = false, currentUserText = negative)
         }
     }
 
