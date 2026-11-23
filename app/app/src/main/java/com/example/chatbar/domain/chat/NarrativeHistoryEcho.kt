@@ -413,7 +413,12 @@ object NarrativeHistoryEcho {
             val body = text.substring(reply.body)
             val preservedPrefix = text.substring(0, reply.prefixEnd)
             val lengths = if (reply.body == text.indices) partLengths else partLengths.trimTo(reply.body, text.length)
-            val closings by lazy(LazyThreadSafetyMode.NONE) { projectedClosings.filterNot(::isAuthoredClosing) }
+            val closings by lazy(LazyThreadSafetyMode.NONE) {
+                val cardClosings = formatCard?.let { card ->
+                    wrapperClosings.filter { token -> formatOutput.counterexampleClosingStarts.any { card.startsWith(token, it) } }
+                }.orEmpty()
+                (projectedClosings + cardClosings).filterNot(::isAuthoredClosing)
+            }
             val cleaned = cleanCompletedBody(
                 body, replyFormat, interrupted, lengths, streaming, projectedDuplicateOpenings,
                 projectedInnerOpenings = projectedInnerOpenings,
@@ -569,7 +574,8 @@ object NarrativeHistoryEcho {
                     } else lead
                     val visiblePair = literals.isUnprotected(start) && literals.isUnprotected(closing.range.first)
                     val singleLine = lineStart(text, closing.range.first) == line
-                    if (!atLineStart && (!singleLine || !visiblePair)) continue
+                    val explicitCopy = visiblePair && (requestedInlineCopy || requestedMultilineCopy)
+                    if (!atLineStart && !explicitCopy) continue
                     if (visiblePair && literals.prohibitsWrapper(prohibitionLead, end)) {
                         counterexampleClosingStarts += closing.range.first
                         continue
@@ -577,8 +583,7 @@ object NarrativeHistoryEcho {
                     val pair = text.substring(start, end)
                     val standalonePair = atLineStart && text.getOrNull(tag.range.last + 1).isHistoryLineBreak() &&
                         startsLine(closing.range.first)
-                    val explicitMultilineCopy = requestedMultilineCopy && visiblePair && !singleLine
-                    if (singleLine || standalonePair || explicitMultilineCopy) add(pair)
+                    if (singleLine || standalonePair || explicitCopy) add(pair)
                     if (!standalonePair || !visiblePair || visibleLead == null) continue
                     val templateBody = text.substring(tag.range.last + 1, closing.range.first).trim()
                     val slot = userTemplateSlotFromInstruction(visibleLead)
@@ -843,9 +848,8 @@ object NarrativeHistoryEcho {
             }
                 ?: return text
         } else return text
+        if (hasOrphanClosingCaption(end, position)) return text
         val before = end.substring(0, lineStart(end, position))
-        val lastBodyCharacter = before.trimEnd().lastOrNull()
-        if (lastBodyCharacter == ':' || lastBodyCharacter == '：') return text
         if (close == null || close.range.last == end.lastIndex) return before.trimEnd('\r', '\n')
         val suffixStart = close.range.last + 1
         if (!hasOnlyReplySuffix(
@@ -855,6 +859,13 @@ object NarrativeHistoryEcho {
         ) return text
         val suffix = text.substring(suffixStart)
         return if (suffix.lineSequence().first().isNotBlank()) before + suffix else before.trimEnd('\r', '\n') + suffix
+    }
+
+    private fun hasOrphanClosingCaption(text: String, position: Int, before: Int = position): Boolean {
+        var previous = lineStart(text, position) - 1
+        while (previous >= 0 && text[previous].isWhitespace()) previous--
+        val character = text.getOrNull(previous)
+        return previous < before && (character == ':' || character == '：')
     }
 
     private fun declaredOutput(formatCard: String): FormatOutput {
@@ -1221,7 +1232,9 @@ object NarrativeHistoryEcho {
                     ) {
                         cleanPartOrphan?.invoke(body) {
                             val localIndex = selection.body.first + it
-                            isJoinedLiteral(localIndex, true) || joinedLiterals.isLazyListItemLine(start + localIndex)
+                            val joinedIndex = start + localIndex
+                            isJoinedLiteral(localIndex, true) || joinedLiterals.isLazyListItemLine(joinedIndex) ||
+                                hasOrphanClosingCaption(text, joinedIndex, before = start)
                         } ?: body
                     } else body
                     return cleaned.copy(body = part.substring(0, selection.prefixEnd) + unwrapped)

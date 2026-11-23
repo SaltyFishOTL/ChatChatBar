@@ -2343,6 +2343,54 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `a verbatim directive on an opening line can reserve the following multiline pair`(): Unit = runBlocking {
+        val close = "</历史回复>"
+        for (mode in listOf(ChatNarrativeMode.FOCUS, ChatNarrativeMode.ADVANCE)) {
+            val open = "<历史回复 模式=\"${mode.shortLabel}\">"
+            val body = "Keep this exactly."
+            val literal = "$open\n$body\n$close"
+            val request = "Copy the following text verbatim: $literal"
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Earlier scene.").copy(narrativeMode = mode)
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                val prefix = "$open\n${body.take(6)}"
+                assertNarrativeReplyDeltas(
+                    listOf(prefix, literal.dropLast(1).drop(prefix.length), ">"), listOf(prefix, literal.dropLast(1), literal), literal,
+                    previousAssistant = prior, currentUserText = request, experimental = experimental, toolCall = toolCall,
+                )
+            }
+            assertNarrativeReplyStates(literal, body, previousAssistant = prior, experimental = false,
+                currentUserText = "Here is a reference: $literal")
+            assertNarrativeReplyStates(literal, body, previousAssistant = prior, experimental = false,
+                currentUserText = "Do not output the following history tags:\n$request")
+            assertNarrativeReplyStates("$open\n$literal\n$close", literal, previousAssistant = prior, experimental = false,
+                currentUserText = request)
+        }
+    }
+
+    @Test
+    fun `a sent prohibited format example supplies orphan closing evidence without prior history`(): Unit = runBlocking {
+        val body = "It begins now."
+        val close = "</历史回复>"
+        val reply = "$body\n$close"
+        for (mode in listOf(ChatNarrativeMode.FOCUS, ChatNarrativeMode.ADVANCE)) {
+            val example = PromptTemplates.narrativeModeHistoryReply("wrong", mode)
+            val card = "The following is a counterexample:\n$example\nDo not output these history tags in your reply."
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                assertNarrativeReplyDeltas(
+                    listOf("$body\n${close.dropLast(1)}", ">"), listOf(body, body), body,
+                    formatCard = card, fixtureHistory = false, experimental = experimental, toolCall = toolCall,
+                )
+            }
+            assertNarrativeReplyStates(reply, reply, experimental = false, fixtureHistory = false)
+            assertNarrativeReplyStates(reply, reply, experimental = false, fixtureHistory = false, formatCard = "Reference values only: $example")
+            assertNarrativeReplyStates(reply, reply, experimental = false, fixtureHistory = false,
+                formatCard = card, currentUserText = "The footer may contain the literal tag `$close`.")
+            assertNarrativeReplyStates(reply, reply, experimental = false, fixtureHistory = false,
+                formatCard = "$card\nThe example marker is also written here for reference: `$close`.")
+        }
+    }
+
+    @Test
     fun `projected orphan padding is distinct from Markdown code indentation`(): Unit = runBlocking {
         val previous = ChatMessage.create("fixture", MessageRole.ASSISTANT, "旧故事。")
         val closing = "</历史回复>"
@@ -3339,6 +3387,75 @@ class ExperimentalToolTransportTest {
             } as StreamEvent.Delta
             assertFalse(server.tailSent)
             return checkNotNull(reader).invoke().ifEmpty { listOf(first.text) }
+        }
+    }
+
+    @Test
+    fun `a caption and a literal closing tag in separate validated tool calls remain intact in repair and main chat`() = runBlocking {
+        val original = "End tag: &lt;/历史回复&gt;."
+        val caption = "The literal closing tag is:"
+        val close = "</历史回复>"
+        val follow = "The explanation follows."
+        val sample = PromptTemplates.narrativeModeHistoryReply("wrong", ChatNarrativeMode.FOCUS)
+        val card = "Decode written entities in literal examples.\n\nThe following is a counterexample:\n$sample"
+        val complete = repairToolFrame(caption, 1, buildJsonObject { put("content", close) }.toString())
+        val stopped = heldRepairPrefix(complete, card, original)
+        assertEquals(listOf(caption, close), stopped)
+        val cleanup = NarrativeHistoryEcho.forFormatRepair(card, original)
+        val literal = "$caption\n$close"
+        assertEquals(literal, cleanup.completedBody(stopped.joinToString("\n"), interrupted = true, partLengths = stopped.map(String::length)))
+        for ((parts, expected) in listOf(
+            listOf(caption, close) to literal,
+            listOf(caption, close, follow) to "$literal\n$follow",
+            listOf("It begins now.", close) to "It begins now.",
+            listOf(caption, "> $close") to "$caption\n> $close",
+            listOf(caption, "```xml\n$close\n```") to "$caption\n```xml\n$close\n```",
+        )) {
+            assertMultipartNarrativeReply(parts, expected)
+            val chunks = parts.mapIndexed { index, part ->
+                chunk(buildJsonObject { put("content", part) }.toString(), "game_content", index = index)
+            } + listOf(chunk(reason = "tool_calls"), "[DONE]")
+            TaskResponseServer(sse(chunks), "text/event-stream").use { server ->
+                val events = withTimeout(5_000) {
+                    MessageFormatRepairService(service()).streamRepair(original, card, null, model(server)).toList()
+                }
+                assertEquals(StreamEvent.Done, events.last())
+                val deltas = events.filterIsInstance<StreamEvent.Delta>()
+                val body = deltas.joinToString("") { it.text }
+                val lengths = deltas.last().toolReplyPartLengths
+                assertEquals(parts.map(String::length), lengths)
+                assertEquals(expected, cleanup.completedBody(body, streaming = true, partLengths = lengths))
+                assertEquals(expected, cleanup.completedBody(body, interrupted = true, partLengths = lengths))
+                assertEquals(expected, cleanup.completedBody(body, partLengths = lengths))
+            }
+        }
+        for ((index, arguments) in listOf(1 to """{"content":"unfinished""", 2 to buildJsonObject { put("content", close) }.toString())) {
+            val retained = heldRepairPrefix(repairToolFrame(caption, index, arguments), card, original)
+            assertEquals(listOf(caption), retained)
+        }
+        val malformed = repairToolFrame(caption, 1, """{"content":42}""")
+        TaskResponseServer(sse(listOf(malformed, chunk(reason = "tool_calls"), "[DONE]")), "text/event-stream").use { server ->
+            val events = withTimeout(5_000) {
+                MessageFormatRepairService(service()).streamRepair(original, card, null, model(server)).toList()
+            }
+            assertEquals(listOf(StreamEvent.Delta(caption)), events.filterIsInstance<StreamEvent.Delta>())
+            assertTrue(events.last() is StreamEvent.Error)
+            assertFalse(events.any { it is StreamEvent.Done })
+        }
+        var reader: (() -> List<String>)? = null
+        GatedExperimentalResponse(sse(listOf(complete)), sse(listOf(chunk(reason = "tool_calls"), "[DONE]"))).use { server ->
+            val ordinary = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.FOCUS, null)
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Earlier scene.").copy(narrativeMode = ChatNarrativeMode.FOCUS)
+            val request = messages.toMutableList().apply { add(1, projectAssistant(ordinary, prior)) }
+            val first = withTimeout(5_000) {
+                service().streamChat("captioned-tool-stop", request, model(server.baseUrl), onToolReplyPrefixReader = { reader = it })
+                    .first { it is StreamEvent.Delta }
+            }
+            assertEquals(StreamEvent.Delta(caption), first)
+            assertFalse(server.tailSent)
+            val parts = checkNotNull(reader).invoke()
+            assertEquals(listOf(caption, close), parts)
+            assertEquals(literal, ordinary.completedBody(parts.joinToString("\n"), interrupted = true, partLengths = parts.map(String::length)))
         }
     }
 
