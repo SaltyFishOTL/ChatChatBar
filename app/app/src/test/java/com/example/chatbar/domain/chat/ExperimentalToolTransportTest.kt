@@ -992,6 +992,75 @@ class ExperimentalToolTransportTest {
         }
     }
 
+    @Test
+    fun `ordinary SSE keeps a same line template with punctuation after its bold label`() = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val story = "门外亮了起来。"
+        val wrapped = PromptTemplates.narrativeModeHistoryReply(story, mode)
+        val example = PromptTemplates.narrativeModeHistoryReply("Example body", mode)
+        for (label in listOf("**本轮输出模板**：", "**Required output template**: ")) {
+            assertNarrativeReplyStates(wrapped, expected = wrapped, formatCard = "$label$example", experimental = false)
+            assertNarrativeReplyStates(wrapped, expected = story, formatCard = "`$label` $example", experimental = false)
+        }
+    }
+
+    @Test
+    fun `ordinary SSE recognizes only a connected prohibition before a metadata example`() = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val story = "门外亮了起来。"
+        val wrapped = PromptTemplates.narrativeModeHistoryReply(story, mode)
+        val example = PromptTemplates.narrativeModeHistoryReply("Example body", mode)
+        val prohibition = "Do not include the following history tags in your reply:"
+        val bridge = "For reference, the following illustrates the provider's history metadata."
+        val label = "**本轮输出模板**："
+        for (sample in listOf(example, "$label$example", "输出模板：\n```xml\n$example\n```")) {
+            assertNarrativeReplyStates(
+                wrapped, expected = story, formatCard = "$prohibition\n$bridge\n$sample", experimental = false,
+            )
+        }
+        for (card in listOf(
+            "$prohibition\n\n$bridge\n$label$example",
+            "$prohibition\n$bridge\n\n$label$example",
+            "$prohibition\nKeep doing this for the rest of the story.\n$label$example",
+            "> $prohibition\n\n$bridge\n$label$example",
+            "$prohibition\n> $bridge\n\n$label$example",
+        )) {
+            assertNarrativeReplyStates(wrapped, expected = wrapped, formatCard = card, experimental = false)
+        }
+    }
+
+    @Test
+    fun `ordinary SSE cleans a balanced double transport pair witnessed in the request`() = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val story = "门外亮了起来。"
+        val old = PromptTemplates.narrativeModeHistoryReply("雨落在窗沿。", mode)
+        val previous = ChatMessage.create("fixture", MessageRole.ASSISTANT, old).copy(narrativeMode = mode)
+        val inner = PromptTemplates.narrativeModeHistoryReply(story, mode)
+        val echoed = PromptTemplates.narrativeModeHistoryReply(inner, mode)
+        val partial = echoed.substringBeforeLast("\n</历史回复>")
+        assertNarrativeReplyDeltas(
+            listOf(partial, "\n</历史回复>"), listOf(inner, story), story,
+            previousAssistant = previous, experimental = false,
+        )
+        assertNarrativeReplyStates(echoed, expected = inner, experimental = false)
+        assertNarrativeReplyStates(echoed, expected = inner,
+            previousAssistant = previous.copy(narrativeMode = ChatNarrativeMode.ADVANCE), experimental = false)
+        assertNarrativeReplyStates(echoed, expected = echoed, formatCard = "输出模板：$inner",
+            previousAssistant = previous, experimental = false)
+        assertEquals(old, previous.displayContent)
+    }
+
+    @Test
+    fun `main SSE preserves list item code while removing the actual closing tag`(): Unit = runBlocking {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val close = "</历史回复>"
+        for (listMarker in listOf("-", "1.")) {
+            val story = "以下是代码片段：\n\n$listMarker     $close"
+            assertNarrativeReplyStates("$opening\n$story\n$close", expected = story, experimental = false)
+            assertMultipartNarrativeReply(listOf("$opening\n$story", close), expected = story)
+        }
+    }
+
     private suspend fun assertNarrativeReplyStates(
         raw: String,
         expected: String,
@@ -1048,6 +1117,13 @@ class ExperimentalToolTransportTest {
                 }.toList()
             }
             assertEquals(rawPreviews, previews)
+            if (!experimental && previousAssistant != null) {
+                val request = Json.parseToJsonElement(server.requestBody).jsonObject.getValue("messages").jsonArray
+                assertEquals(
+                    requestMessages[1].content.jsonPrimitive.content,
+                    request[1].jsonObject.getValue("content").jsonPrimitive.content,
+                )
+            }
             assertEquals(StreamEvent.Done, events.last())
             val completed = events.filterIsInstance<StreamEvent.Delta>().joinToString("") { it.text }
             assertEquals(rawPreviews.last(), completed)
@@ -1167,6 +1243,8 @@ private class GatedExperimentalResponse(prefix: String, tail: String) : AutoClos
     val baseUrl = "http://127.0.0.1:${server.localPort}/v1"
     @Volatile var tailSent = false
         private set
+    @Volatile var requestBody = ""
+        private set
     private val worker = thread(isDaemon = true, name = "experimental-preview-fixture") {
         server.accept().use { socket ->
             socket.soTimeout = 5_000
@@ -1177,14 +1255,11 @@ private class GatedExperimentalResponse(prefix: String, tail: String) : AutoClos
                 check(byte >= 0)
                 headers.append(byte.toChar())
             }
-            var remaining = headers.lines().first { it.startsWith("Content-Length:", true) }
+            val requestLength = headers.lines().first { it.startsWith("Content-Length:", true) }
                 .substringAfter(':').trim().toInt()
-            val buffer = ByteArray(4096)
-            while (remaining > 0) {
-                val read = input.read(buffer, 0, minOf(buffer.size, remaining))
-                check(read > 0)
-                remaining -= read
-            }
+            val requestBytes = input.readNBytes(requestLength)
+            check(requestBytes.size == requestLength)
+            requestBody = requestBytes.toString(Charsets.UTF_8)
             val prefixBytes = prefix.toByteArray(Charsets.UTF_8)
             val tailBytes = tail.toByteArray(Charsets.UTF_8)
             val output = socket.getOutputStream()

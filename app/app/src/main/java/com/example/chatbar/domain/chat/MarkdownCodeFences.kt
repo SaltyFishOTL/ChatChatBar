@@ -4,7 +4,8 @@ package com.example.chatbar.domain.chat
 object MarkdownCodeFences {
     private val fenceLine = Regex("^ {0,3}(`{3,}|~{3,})(.*)$")
     private val quotePrefix = Regex(" {0,3}>[ \\t]?")
-    private val listPrefix = Regex(" {0,3}([-+*]|[0-9]{1,9}[.)])(?: {1,4}(?=[^ \\t\\r])|[ \\t]*\\r?$)")
+    // Five or more spaces leave four for code inside the item.
+    private val listPrefix = Regex(" {0,3}([-+*]|[0-9]{1,9}[.)])(?: {1,4}(?=[^ \\t\\r])| (?= {4} *[^ \\t\\r])|[ \\t]*\\r?$)")
     private val thematicBreak = Regex(" {0,3}(?:(?:-[ \\t]*){3,}|(?:\\*[ \\t]*){3,}|(?:_[ \\t]*){3,})\\r?")
     private val heading = Regex("^ {0,3}#{1,6}(?:[ \\t]|$)")
     private val setextUnderline = Regex(" {0,3}(?:=+|-+)[ \\t]*")

@@ -40,7 +40,7 @@ object NarrativeHistoryEcho {
         " {0,3}(\\*\\*|)(?:(?:本轮)?输出(?:模板|格式)|本轮的固定输出模板|请按以下格式输出|" +
             "每次回复必须使用此固定模板|请(?:完整|逐字)保留首尾标签|" +
             "(?:(?:required|exact|fixed)[ \\t]+)?output template(?:[ \\t]+\\(keep both tags verbatim\\))?)" +
-            "[ \\t]*[：:]\\1[ \\t]*",
+            "(?:[ \\t]*[：:]\\1|\\1[ \\t]*[：:])[ \\t]*",
         RegexOption.IGNORE_CASE,
     )
     private val formatTemplateAffirmation = Regex(
@@ -95,6 +95,13 @@ object NarrativeHistoryEcho {
         " {0,3}$forbidTemplateTags[。.!]?[ \\t]*",
         RegexOption.IGNORE_CASE,
     )
+    private val metadataExampleBridge = Regex(
+        " {0,3}(?:for (?:reference|context)[,:][ \\t]+)?(?:the following|this)[ \\t]+" +
+            "(?:illustrates|shows|is (?:an example|an illustration) of)[ \\t]+" +
+            "(?:the provider's |the model's |internal |request-only |the )?" +
+            "(?:history metadata|historical metadata|history tags|metadata tags)[.!:]?[ \\t]*",
+        RegexOption.IGNORE_CASE,
+    )
     private val statusFenceInfo = Regex("(text|status)(?=$|[ \\t(（]).*", RegexOption.IGNORE_CASE)
     private val paragraphBreak = Regex("\\r?\\n[ \\t]*\\r?\\n")
     private val bareCarriageReturn = Regex("\\r(?!\\n)")
@@ -130,11 +137,13 @@ object NarrativeHistoryEcho {
         val declaresLegacyHistoryWrapper: Boolean
             get() = legacyWrapper.opening in formatOutput.declaredOpenings
 
-        /** Record the wrapper actually put around a single-pair reply in this request. */
+        /** Record double framing that entered this request around a stored single pair. */
         fun recordHistoryProjection(body: String, projection: String) {
-            if (formatOutput.singlePairOpenings.isEmpty()) return
             for (wrapper in wrappers) {
-                if (wrapper.opening in formatOutput.singlePairOpenings &&
+                val declaredSinglePair = wrapper.opening in formatOutput.singlePairOpenings
+                val undeclaredTransportPair = wrapper != legacyWrapper &&
+                    wrapper.opening !in formatOutput.declaredOpenings && wrapper.isStandalonePair(body)
+                if ((declaredSinglePair || undeclaredTransportPair) &&
                     wrapper.opening !in projectedDuplicateOpenings &&
                     projection == "${wrapper.opening}\n$body\n${wrapper.closings.first()}" &&
                     wrapper.hasExactlyOnePair(body)
@@ -203,7 +212,7 @@ object NarrativeHistoryEcho {
                     previousVisibleLine(literals.markdown, standaloneLabel.first)
                 }
                 val after = nextNonblankLine(literals.markdown, matchedEnd + 1)
-                if (literals.matchesVisibleLine(lead, formatCounterexampleLead) ||
+                if (literals.isCounterexampleBefore(lead, standaloneLabel?.first ?: prefixStart) ||
                     literals.matchesVisibleLine(after, formatCounterexampleTail)
                 ) continue
                 add(wrapper.opening)
@@ -221,7 +230,7 @@ object NarrativeHistoryEcho {
                 ) continue
                 val before = previousVisibleLine(literals.markdown, label.first)
                 val after = nextNonblankLine(literals.markdown, fence.range.last + 1)
-                if (literals.matchesVisibleLine(before, formatCounterexampleLead) ||
+                if (literals.isCounterexampleBefore(before, label.first) ||
                     literals.matchesVisibleLine(after, formatCounterexampleTail)
                 ) continue
 
@@ -281,12 +290,28 @@ object NarrativeHistoryEcho {
     private fun ReplyLiterals.matchesVisibleLine(line: IntRange?, pattern: Regex): Boolean =
         visibleLine(line)?.let(pattern::matches) == true
 
+    private fun ReplyLiterals.isCounterexampleBefore(lead: IntRange?, blockStart: Int): Boolean {
+        if (lead == null) return false
+        val instruction = visibleLine(lead) ?: return false
+        if (formatCounterexampleLead.matches(instruction)) return true
+        if (!metadataExampleBridge.matches(instruction) || !onNextLine(lead, blockStart)) return false
+        val prohibition = previousVisibleLine(markdown, lead.first) ?: return false
+        return onNextLine(prohibition, lead.first) && matchesVisibleLine(prohibition, formatCounterexampleLead)
+    }
+
+    private fun ReplyLiterals.onNextLine(line: IntRange, nextStart: Int): Boolean =
+        markdown.substring(line.last + 1, nextStart).removePrefix("\r") == "\n"
+
     private fun ReplyLiterals.isUnprotected(position: Int): Boolean =
         ranges.none { position in it } && !isMarkdownContainerLine(position, includeStandaloneLazyTags = true)
 
     private fun Wrapper.hasExactlyOnePair(text: String): Boolean =
         text.startsWith(opening) && closings.any(text::endsWith) &&
             wrapperFamilyTokens.getValue(name).findAll(text).count() == 2
+
+    private fun Wrapper.isStandalonePair(text: String): Boolean =
+        text.startsWith(opening) && text.getOrNull(opening.length).isHistoryLineBreak() &&
+            closings.any { text.endsWith(it) && text.getOrNull(text.length - it.length - 1).isHistoryLineBreak() }
 
     private fun MarkdownCodeFences.Block.statusInfo(): String? =
         info.lowercase().takeIf { topLevel && marker == '`' && markerLength == 3 && (it.isEmpty() || it in typedStatusInfos) }
@@ -552,7 +577,15 @@ object NarrativeHistoryEcho {
             }
             if (declared) return CleanedReply(text, matchedOuterPair = true)
             if (afterClosing == end.length) {
-                return CleanedReply(leadingContent + bodyBeforeClose(position), matchedOuterPair = true)
+                val innerBody = bodyBeforeClose(position)
+                val duplicatedTransport = wrapper != legacyWrapper && wrapper.opening !in formatOutput.declaredOpenings &&
+                    wrapper.opening in projectedDuplicateOpenings && openingStart == first &&
+                    wrapper.isStandalonePair(start.trimEnd()) && wrapper.isStandalonePair(innerBody) &&
+                    wrapper.hasExactlyOnePair(innerBody)
+                val cleaned = if (duplicatedTransport) {
+                    cleanReply(innerBody, streaming, interrupted, requirePair = true).body
+                } else innerBody
+                return CleanedReply(leadingContent + cleaned, matchedOuterPair = true)
             }
             val tail = body.substring(afterClosing)
             val markerLineStart = lineStart(body, position)
@@ -687,10 +720,7 @@ object NarrativeHistoryEcho {
     }
 
     internal fun isStandaloneLegacyHistoryWrapper(text: String): Boolean {
-        if (!text.startsWith(legacyWrapper.opening) ||
-            !text.getOrNull(legacyWrapper.opening.length).isHistoryLineBreak() ||
-            legacyWrapper.closings.none { text.endsWith(it) && text.getOrNull(text.length - it.length - 1).isHistoryLineBreak() }
-        ) return false
+        if (!legacyWrapper.isStandalonePair(text)) return false
         return cleanReply(text, streaming = false, interrupted = false, requirePair = true).matchedOuterPair
     }
 
