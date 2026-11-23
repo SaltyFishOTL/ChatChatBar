@@ -317,11 +317,47 @@ class NarrativeHistoryWireTest {
         stopAfterCompleteToolCalls: Boolean = false,
         legacyFirst: Boolean? = null,
         toolIndexes: List<Int>? = null,
-    ) {
-        val app = ChatBarApp.instance
-        val settings = app.settingsRepository.getAppSettings()
+    ) = runReplyFixture(buildReplyFixture(
+        transport, stop, continuation, literal, stopAfterCompleteToolCalls, legacyFirst, toolIndexes,
+    ))
+
+    private data class ReplyFixture(
+        val transport: Transport,
+        val stop: Boolean,
+        val mode: ChatNarrativeMode,
+        val card: CharacterCard,
+        val modelName: String,
+        val parts: List<String>,
+        val prior: String,
+        val priorLegacy: String?,
+        val historicalUser: String?,
+        val includePrior: Boolean,
+        val rebuildInitial: Boolean,
+        val customCore: String,
+        val renderedTail: String,
+        val supplementaryTemplate: String?,
+        val renderedSupplementary: String?,
+        val selectedFormatCard: FormatCard?,
+        val input: String,
+        val expected: String,
+        val preview: String,
+        val toolIndexes: List<Int>?,
+        val reasoningWitness: String?,
+        val finishReason: String?,
+        val disconnectedText: String,
+        val checksStrongDenial: Boolean,
+    )
+
+    private fun buildReplyFixture(
+        transport: Transport,
+        stop: Boolean,
+        continuation: String?,
+        literal: LiteralCase?,
+        stopAfterCompleteToolCalls: Boolean,
+        legacyFirst: Boolean?,
+        toolIndexes: List<Int>?,
+    ): ReplyFixture {
         val cardName = "Synthetic narrative wire"
-        val store = ViewModelStore()
         val mode = if (stop && legacyFirst == null) ChatNarrativeMode.FOCUS else ChatNarrativeMode.ADVANCE
         val prior = if (literal == LiteralCase.ADJACENT_AUTHORED) "旧文。" else "Previous synthetic scene."
         val rebuildInitial = literal == LiteralCase.UNSENT_GREETING_CARD
@@ -493,79 +529,92 @@ class NarrativeHistoryWireTest {
         val reasoningWitness = "Provider has sent every synthetic call.".takeIf {
             stopAfterCompleteToolCalls || literal == LiteralCase.TOOL_SPLIT_CAPTION || literal == LiteralCase.BOUNDED_LOG_QUOTATION
         }
-        HeldNarrativeReplyServer(parts, tool = transport == Transport.EXPERIMENTAL_TOOL, reasoningWitness = reasoningWitness,
-            toolIndexes = toolIndexes, finishReason = "length".takeIf { literal == LiteralCase.PADDED_OPENER }).use { server ->
-            val createdModel = ModelConfig.create(modelName, server.baseUrl, "fixture-key", "fixture-model")
-            val model = if (rebuildInitial) createdModel.copy(formatPromptPosition = FormatPromptPosition.END) else createdModel
-            val session = ChatSession.create(card.id, modelName).copy(
-                modelId = model.id, narrativeMode = mode, longTermMemoryEnabled = false,
+        // Experimental live preview initially carries the first tool call only.
+        val preview = when {
+            toolIndexes != null -> prose
+            literal == LiteralCase.TOOL_SPLIT_CAPTION -> splitCaption
+            literal == LiteralCase.BOUNDED_LOG_QUOTATION -> quoteLead
+            continuation != null || stopAfterCompleteToolCalls -> prose
+            else -> expected
+        }
+        return ReplyFixture(
+            transport = transport, stop = stop, mode = mode, card = card, modelName = modelName, parts = parts,
+            prior = prior, priorLegacy = priorLegacy, historicalUser = historicalUser, includePrior = includePrior,
+            rebuildInitial = rebuildInitial, customCore = customCore, renderedTail = customTail.replace("{{char}}", cardName),
+            supplementaryTemplate = supplementaryTemplate,
+            renderedSupplementary = supplementaryTemplate?.replace("{{char}}", cardName),
+            selectedFormatCard = selectedFormatCard, input = input, expected = expected, preview = preview,
+            toolIndexes = toolIndexes, reasoningWitness = reasoningWitness,
+            finishReason = "length".takeIf { literal == LiteralCase.PADDED_OPENER }, disconnectedText = disconnectedText,
+            checksStrongDenial = literal == LiteralCase.STRONG_SUFFIX_DENIAL,
+        )
+    }
+
+    private suspend fun runReplyFixture(fixture: ReplyFixture) {
+        val app = ChatBarApp.instance
+        val settings = app.settingsRepository.getAppSettings()
+        val store = ViewModelStore()
+        HeldNarrativeReplyServer(
+            fixture.parts, tool = fixture.transport == Transport.EXPERIMENTAL_TOOL,
+            reasoningWitness = fixture.reasoningWitness, toolIndexes = fixture.toolIndexes,
+            finishReason = fixture.finishReason,
+        ).use { server ->
+            val createdModel = ModelConfig.create(fixture.modelName, server.baseUrl, "fixture-key", "fixture-model")
+            val model = if (fixture.rebuildInitial) createdModel.copy(formatPromptPosition = FormatPromptPosition.END) else createdModel
+            val session = ChatSession.create(fixture.card.id, fixture.modelName).copy(
+                modelId = model.id, narrativeMode = fixture.mode, longTermMemoryEnabled = false,
                 automaticImageGenerationEnabled = false, audiobookModeEnabled = false,
-                formatCardId = selectedFormatCard?.id, supplementarySetting = supplementaryTemplate,
+                formatCardId = fixture.selectedFormatCard?.id, supplementarySetting = fixture.supplementaryTemplate,
             )
-            val greeting = ChatMessage.create(session.id, MessageRole.ASSISTANT, prior).takeIf { rebuildInitial }
+            val greeting = ChatMessage.create(session.id, MessageRole.ASSISTANT, fixture.prior).takeIf { fixture.rebuildInitial }
             var editor: ChatViewModel? = null
             try {
                 app.modelRepository.saveModel(model)
-                app.characterRepository.save(card)
-                selectedFormatCard?.let { app.formatCardRepository.save(it) }
+                app.characterRepository.save(fixture.card)
+                fixture.selectedFormatCard?.let { app.formatCardRepository.save(it) }
                 app.chatRepository.createSession(session)
                 greeting?.let { app.chatRepository.addMessage(it) }
-                historicalUser?.let { app.chatRepository.addMessage(ChatMessage.create(session.id, MessageRole.USER, it)) }
-                priorLegacy?.let {
+                fixture.historicalUser?.let { app.chatRepository.addMessage(ChatMessage.create(session.id, MessageRole.USER, it)) }
+                fixture.priorLegacy?.let {
                     app.chatRepository.addMessage(ChatMessage.create(session.id, MessageRole.ASSISTANT, it).copy(narrativeMode = ChatNarrativeMode.FOCUS))
                 }
-                if (includePrior) {
-                    app.chatRepository.addMessage(ChatMessage.create(session.id, MessageRole.ASSISTANT, prior).copy(narrativeMode = mode))
+                if (fixture.includePrior) {
+                    app.chatRepository.addMessage(ChatMessage.create(session.id, MessageRole.ASSISTANT, fixture.prior).copy(narrativeMode = fixture.mode))
                 }
                 app.settingsRepository.saveAppSettings(settings.copy(
                     allowCleartextModelApi = true, defaultEmbeddingId = null, defaultFormatCardId = null,
                     automaticFormatCheckEnabled = false, momentsEnabled = false, disableNarrativeModes = false,
-                    experimentalApiModeEnabled = transport.experimental,
+                    experimentalApiModeEnabled = fixture.transport.experimental,
                 ))
                 val vm = rule.runOnIdle {
                     ViewModelProvider(store, ChatViewModelFactory(session.id))[ChatViewModel::class.java]
                 }.also { editor = it }
-                val priorBodies = listOfNotNull(priorLegacy, historicalUser, prior.takeIf { includePrior })
+                val priorBodies = listOfNotNull(fixture.priorLegacy, fixture.historicalUser, fixture.prior.takeIf { fixture.includePrior })
                 rule.waitUntil(20_000) {
                     vm.isModelUsable.value && priorBodies.all { body -> vm.messages.value.any { it.displayContent == body } } &&
                         (greeting == null || vm.messages.value.any { it.id == greeting.id })
                 }
                 rule.runOnIdle {
                     if (greeting != null) vm.regenerateResponse(greeting.id)
-                    else assertTrue(vm.sendMessage(input))
+                    else assertTrue(vm.sendMessage(fixture.input))
                 }
                 val request = withTimeout(20_000) { server.requestBody.await() }
-                assertReplyRequest(
-                    request, transport, includePrior, PromptTemplates.narrativeModeHistoryReply(prior, mode),
-                    priorLegacy, historicalUser, customCore, customTail.replace("{{char}}", cardName),
-                    selectedFormatCard, input, rebuildInitial, supplementaryTemplate?.replace("{{char}}", cardName),
-                    checksStrongDenial = literal == LiteralCase.STRONG_SUFFIX_DENIAL,
-                )
-                // Experimental live preview initially carries the first tool call only.
-                val preview = when {
-                    toolIndexes != null -> prose
-                    literal == LiteralCase.TOOL_SPLIT_CAPTION -> splitCaption
-                    literal == LiteralCase.BOUNDED_LOG_QUOTATION -> quoteLead
-                    continuation != null || stopAfterCompleteToolCalls -> prose
-                    else -> expected
-                }
-                if (toolIndexes == null || 0 in toolIndexes) {
+                assertReplyRequest(request, fixture)
+                if (fixture.toolIndexes == null || 0 in fixture.toolIndexes) {
                     rule.waitUntil(20_000) {
                         val draft = vm.streamingMessage.value
-                        draft != null && draft.displayContent == preview &&
-                            (reasoningWitness == null || draft.reasoningContent == reasoningWitness)
+                        draft != null && draft.displayContent == fixture.preview &&
+                            (fixture.reasoningWitness == null || draft.reasoningContent == fixture.reasoningWitness)
                     }
                 }
                 assertFalse("The provider's terminal event must remain held during preview", server.terminalSent.get())
                 assertTrue(vm.isResponding.value)
 
-                if (stop) rule.runOnIdle { vm.cancelResponseGeneration() } else server.release()
+                if (fixture.stop) rule.runOnIdle { vm.cancelResponseGeneration() } else server.release()
                 rule.waitUntil(20_000) { !vm.isResponding.value }
-                assertEquals(!stop, server.terminalSent.get())
+                assertEquals(!fixture.stop, server.terminalSent.get())
                 val saved = ChatRepository(JsonFileStorage(app)).getMessages(session.id)
-                assertReplyStorage(
-                    saved, greeting?.id, priorBodies, historicalUser != null, input, expected, toolIndexes, disconnectedText,
-                )
+                assertReplyStorage(saved, greeting?.id, priorBodies, fixture)
             } finally {
                 try {
                     // The generating job, like memory maintenance, can outlive its ViewModel.
@@ -580,8 +629,8 @@ class NarrativeHistoryWireTest {
                         app.deletionCoordinator.deleteSession(session.id)
                     } finally {
                         app.settingsRepository.saveAppSettings(settings)
-                        selectedFormatCard?.let { app.formatCardRepository.delete(it.id) }
-                        app.characterRepository.delete(card.id)
+                        fixture.selectedFormatCard?.let { app.formatCardRepository.delete(it.id) }
+                        app.characterRepository.delete(fixture.card.id)
                         app.modelRepository.deleteModel(model.id)
                     }
                 }
@@ -589,55 +638,41 @@ class NarrativeHistoryWireTest {
         }
     }
 
-    private fun assertReplyRequest(
-        request: String,
-        transport: Transport,
-        includePrior: Boolean,
-        projectedPrior: String,
-        priorLegacy: String?,
-        historicalUser: String?,
-        customCore: String,
-        customTail: String,
-        selectedFormatCard: FormatCard?,
-        input: String,
-        rebuildInitial: Boolean,
-        supplementaryTemplate: String?,
-        checksStrongDenial: Boolean,
-    ) {
-        val messages = sentMessages(request, transport)
-        assertEquals(includePrior, messages.any { it.hasMessage("assistant", projectedPrior) })
-        priorLegacy?.let { body -> assertTrue(messages.any { it.hasMessage("assistant", body) }) }
-        historicalUser?.let { body -> assertTrue(messages.any { it.hasMessage("user", body) }) }
-        if (customCore.isNotEmpty()) {
+    private fun assertReplyRequest(request: String, fixture: ReplyFixture) {
+        val messages = sentMessages(request, fixture.transport)
+        assertEquals(fixture.includePrior, messages.any { it.hasMessage("assistant", PromptTemplates.narrativeModeHistoryReply(fixture.prior, fixture.mode)) })
+        fixture.priorLegacy?.let { body -> assertTrue(messages.any { it.hasMessage("assistant", body) }) }
+        fixture.historicalUser?.let { body -> assertTrue(messages.any { it.hasMessage("user", body) }) }
+        if (fixture.customCore.isNotEmpty()) {
             val first = Json.parseToJsonElement(request).jsonObject.getValue("messages").jsonArray.first().jsonObject
             assertEquals("system", first["role"]?.jsonPrimitive?.content)
-            assertTrue(customCore in first.getValue("content").jsonPrimitive.content)
+            assertTrue(fixture.customCore in first.getValue("content").jsonPrimitive.content)
         }
-        if (customTail.isNotEmpty()) {
-            val tailRole = if (transport.experimental) "system" else "assistant"
+        if (fixture.renderedTail.isNotEmpty()) {
+            val tailRole = if (fixture.transport.experimental) "system" else "assistant"
             assertTrue(messages.any { entry ->
                 entry.jsonObject["role"]?.jsonPrimitive?.content == tailRole &&
-                    (entry.jsonObject["content"] as? JsonPrimitive)?.content?.contains(customTail) == true
+                    (entry.jsonObject["content"] as? JsonPrimitive)?.content?.contains(fixture.renderedTail) == true
             })
         }
-        selectedFormatCard?.let { format ->
-            assertEquals(!rebuildInitial, messages.any { entry ->
+        fixture.selectedFormatCard?.let { format ->
+            assertEquals(!fixture.rebuildInitial, messages.any { entry ->
                 (entry.jsonObject["content"] as? JsonPrimitive)?.content?.contains(format.content) == true
             })
             for (configuredTool in format.userTools) assertTrue(messages.any { entry ->
                 (entry.jsonObject["content"] as? JsonPrimitive)?.content?.contains(configuredTool.text) == true
             })
         }
-        assertEquals(!rebuildInitial, messages.any { it.hasMessage("user", input) })
-        supplementaryTemplate?.let { marker ->
+        assertEquals(!fixture.rebuildInitial, messages.any { it.hasMessage("user", fixture.input) })
+        fixture.renderedSupplementary?.let { marker ->
             val setting = messages.indexOfFirst { it.jsonObject.getValue("content").jsonPrimitive.content.contains(marker) }
-            val sentUser = messages.indexOfFirst { it.hasMessage("user", input) }
+            val sentUser = messages.indexOfFirst { it.hasMessage("user", fixture.input) }
             assertTrue("The evaluated supplementary setting must precede the sent user", setting >= 0 && sentUser > setting)
         }
-        if (checksStrongDenial) {
-            val user = messages.indexOfFirst { it.hasMessage("user", input) }
-            val role = if (transport.experimental) "system" else "assistant"
-            val strongText = checkNotNull(selectedFormatCard).userTools.single().text
+        if (fixture.checksStrongDenial) {
+            val user = messages.indexOfFirst { it.hasMessage("user", fixture.input) }
+            val role = if (fixture.transport.experimental) "system" else "assistant"
+            val strongText = checkNotNull(fixture.selectedFormatCard).userTools.single().text
             val suffix = messages.indexOfFirst { it.hasMessage(role, strongText) }
             assertTrue("The sent strong denial follows the actual user", user >= 0 && suffix > user)
         }
@@ -647,26 +682,22 @@ class NarrativeHistoryWireTest {
         saved: List<ChatMessage>,
         greetingId: String?,
         priorBodies: List<String>,
-        hasHistoricalUser: Boolean,
-        input: String,
-        expected: String,
-        toolIndexes: List<Int>?,
-        disconnectedText: String,
+        fixture: ReplyFixture,
     ) {
         if (greetingId != null) {
             assertEquals(greetingId, saved.single().id)
-            assertEquals(expected, saved.single().displayContent)
+            assertEquals(fixture.expected, saved.single().displayContent)
             return
         }
         assertEquals(priorBodies.toSet(), saved.take(priorBodies.size).map(ChatMessage::displayContent).toSet())
         val newMessages = saved.drop(priorBodies.size).map(ChatMessage::displayContent)
-        if (toolIndexes == null) assertEquals(listOf(input, expected), newMessages) else {
-            assertEquals(input, newMessages.first())
+        if (fixture.toolIndexes == null) assertEquals(listOf(fixture.input, fixture.expected), newMessages) else {
+            assertEquals(fixture.input, newMessages.first())
             assertTrue(newMessages.last().startsWith("错误:"))
-            assertFalse(newMessages.last().contains(disconnectedText))
+            assertFalse(newMessages.last().contains(fixture.disconnectedText))
         }
         val savedPriorRoles = saved.take(priorBodies.size).map(ChatMessage::role)
-        val historicalUserCount = if (hasHistoricalUser) 1 else 0
+        val historicalUserCount = if (fixture.historicalUser != null) 1 else 0
         assertEquals(historicalUserCount, savedPriorRoles.count { it == MessageRole.USER })
         assertEquals(priorBodies.size - historicalUserCount, savedPriorRoles.count { it == MessageRole.ASSISTANT })
         assertEquals(listOf(MessageRole.USER, MessageRole.ASSISTANT), saved.drop(priorBodies.size).map(ChatMessage::role))
