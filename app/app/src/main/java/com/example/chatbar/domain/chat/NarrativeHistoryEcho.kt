@@ -185,6 +185,10 @@ object NarrativeHistoryEcho {
             "(?:never|do not) (?:put|wrap) it around (?:your|the) (?:reply|answer|response)[.!])[ \\t]*",
         RegexOption.IGNORE_CASE,
     )
+    private val standaloneClosingProhibition = Regex(
+        " {0,3}$forbidTemplateTags[。.:：]?[ \\t]*",
+        RegexOption.IGNORE_CASE,
+    )
     private val formatCounterexampleTail = Regex(
         " {0,3}$forbidTemplateTags[。.!]?[ \\t]*",
         RegexOption.IGNORE_CASE,
@@ -205,7 +209,7 @@ object NarrativeHistoryEcho {
         RegexOption.IGNORE_CASE,
     )
     private val literalClosingTagLead = Regex(
-        "(?:\\b(?:literal|example of(?: the)?)[ \\t]+(?:closing|history)[ -]tag|" +
+        "(?:\\b(?:(literal)|example of(?: the)?)[ \\t]+(?:closing|history)[ -]tag|" +
             "\\b(?:closing|history)[ -]tag[ \\t]+(?:example|sample)|" +
             "(?:结束|闭合|历史)标签(?:的)?(?:示例|样例))[ \\t]*[:：][ \\t]*$",
         RegexOption.IGNORE_CASE,
@@ -245,6 +249,7 @@ object NarrativeHistoryEcho {
         private val repairOpenings: Set<String>? = null,
         private val repairLiteralSources: List<String> = emptyList(),
         private val repairProtectedClosings: Map<String, Set<String>> = emptyMap(),
+        private val repairStandaloneClosings: Set<String> = emptySet(),
     ) {
         private val projectedOpenings = mutableSetOf<String>()
         private val projectedDuplicateOpenings = mutableSetOf<String>()
@@ -270,6 +275,15 @@ object NarrativeHistoryEcho {
         fun recordAuthoredOutput(source: String) {
             rememberAuthoredOutput(source)
             recordCurrentLiteralTags(source)
+        }
+
+        /** Only the rendered custom instruction layer can declare an output frame here. */
+        fun recordDispatchedPostHistory(renderedTail: String, hasCustomInstructions: Boolean) {
+            if (!enabled || !hasCustomInstructions || renderedTail.isBlank()) return
+            val output = declaredUserOutput(renderedTail, requireExplicitCopy = true)
+            authoredPairs += output.literal.pairs
+            authoredTemplateOpenings += output.templateOpenings
+            currentTemplateOpenings += output.templateOpenings
         }
 
         private fun rememberAuthoredOutput(source: String) {
@@ -416,7 +430,7 @@ object NarrativeHistoryEcho {
                 val sources = repairLiteralSources.map { it to emptySet<Int>() }
                 fun authored(token: String): ClosingEvidence = closingEvidence(token, sources.asSequence())
                 val repairClosings = wrappers.filter { it.opening in repairOpenings && it.opening !in repairProtectedClosings }
-                    .flatMap { it.closings }
+                    .flatMap { it.closings }.plus(repairStandaloneClosings).distinct()
                 fun withoutRepairOrphan(part: String, isJoinedLiteral: (Int) -> Boolean = { false }): String =
                     withoutOrphanClosing(part, repairClosings, provisional, formatOutput, ::authored, isJoinedLiteral)
                 val cleaned = cleanCompletedBody(
@@ -526,7 +540,7 @@ object NarrativeHistoryEcho {
         return if (removeFrom < 0) null else removeFrom until preserveFrom
     }
 
-    private fun declaredUserOutput(text: String): UserOutput {
+    private fun declaredUserOutput(text: String, requireExplicitCopy: Boolean = false): UserOutput {
         if (wrappers.none { it.opening in text } && wrapperClosings.none { it in text }) return UserOutput()
         val templateOpenings = mutableSetOf<String>()
         val counterexampleClosingStarts = mutableSetOf<Int>()
@@ -617,7 +631,7 @@ object NarrativeHistoryEcho {
                     val pair = text.substring(start, end)
                     val standalonePair = atLineStart && text.getOrNull(tag.range.last + 1).isHistoryLineBreak() &&
                         startsLine(closing.range.first)
-                    if (singleLine || standalonePair || explicitCopy) add(pair)
+                    if (explicitCopy || !requireExplicitCopy && (singleLine || standalonePair)) add(pair)
                     if (!standalonePair || !visiblePair || visibleLead == null) continue
                     val templateBody = text.substring(tag.range.last + 1, closing.range.first).trim()
                     val slot = userTemplateSlotFromInstruction(visibleLead)
@@ -747,8 +761,10 @@ object NarrativeHistoryEcho {
         val candidates = wrappers.filter {
             it.opening in output.counterexampleOpenings && it.opening !in output.declaredOpenings
         }
+        val explicitClosings = formatCard?.let(::explicitlyProhibitedStandaloneClosings).orEmpty()
         val candidateFamilies = candidates.mapTo(mutableSetOf(), Wrapper::name)
-        val sameFamily = wrappers.filter { it.name in candidateFamilies }
+        val sameFamily = wrappers.filter { it.name in candidateFamilies || it.closings.any { close -> close in explicitClosings } }
+        val declaredClosings = wrappers.filter { it.opening in output.declaredOpenings }.flatMap(Wrapper::closings)
         val delimiterTokens = sameFamily.flatMapTo(mutableSetOf()) { listOf(it.opening) + it.closings }
         // Delimiters inside a literal are independent of a newly emitted outer pair.
         // Keep the stricter source check for orphan closers, where there is no matching opener.
@@ -770,10 +786,29 @@ object NarrativeHistoryEcho {
         val protected = openings.associate { wrapper ->
             wrapper.opening to wrapper.closings.filterTo(mutableSetOf()) { it in visibleDelimiters }
         }.filterValues { it.isNotEmpty() }
+        val standaloneClosings = explicitClosings.filterTo(mutableSetOf()) { close ->
+            close !in declaredClosings && close !in visibleDelimiters &&
+                sameFamily.none { close in it.closings && it.name in authoredOpeningFamilies }
+        }
         return RequestCleanup(
-            enabled = openings.isNotEmpty(), formatOutput = output, repairOpenings = openings.mapTo(mutableSetOf(), Wrapper::opening),
-            repairLiteralSources = sources, repairProtectedClosings = protected,
+            enabled = openings.isNotEmpty() || standaloneClosings.isNotEmpty(),
+            formatOutput = output, repairOpenings = openings.mapTo(mutableSetOf(), Wrapper::opening),
+            repairLiteralSources = sources, repairProtectedClosings = protected, repairStandaloneClosings = standaloneClosings,
         )
+    }
+
+    private fun explicitlyProhibitedStandaloneClosings(card: String): Set<String> {
+        if (wrapperClosings.none { it in card }) return emptySet()
+        val tags = wrapperFamilyTokens.values.flatMap { it.findAll(card).toList() }
+        val literals = classifyLiterals(card, tags)
+        return tags.filter { tag ->
+            val start = lineStart(literals.markdown, tag.range.first)
+            val lead = previousVisibleLine(literals.markdown, start)
+            tag.value in wrapperClosings && literals.isStandaloneTagLine(tag.range.first, tag.value) &&
+                literals.isVisibleWrapperTag(card, tag, includeStandaloneLazyTags = true) &&
+                lead != null && literals.markdown.substring(lead.last + 1, start) in setOf("\n", "\r\n") &&
+                literals.matchesVisibleLine(lead, standaloneClosingProhibition)
+        }.mapTo(mutableSetOf()) { it.value }
     }
 
     private fun hasAuthoredHeading(source: String, token: String, issuedHeadings: Set<String>): Boolean {
@@ -1269,7 +1304,7 @@ object NarrativeHistoryEcho {
                         joinedLiterals.isMarkdownContainerLine(
                             joinedIndex,
                             includeStandaloneLazyTags = opening && !followsClosedWrapper && !afterClosedSection,
-                        ) || !opening && joinedLiterals.isCaptionedLazyClosing(joinedIndex)
+                        ) || !opening && joinedLiterals.isCaptionedClosing(joinedIndex, literalOutput.closings)
                 }
                 fun cleanSection(
                     section: String, sectionStart: Int, requireSectionPair: Boolean, afterClosedSection: Boolean = false,
@@ -1397,7 +1432,7 @@ object NarrativeHistoryEcho {
             literals.isVisibleWrapperTag(text, tag) &&
                 literals.isStandaloneTagLine(tag.range.first, tag.value) &&
                 !literals.isLazyListItemLine(tag.range.first) &&
-                (tag.value !in closings || !literals.isCaptionedLazyClosing(tag.range.first))
+                (tag.value !in closings || !literals.isCaptionedClosing(tag.range.first))
         }
         fun adjacent(end: Int, start: Int): Boolean {
             val gap = text.subSequence(end, start)
@@ -1539,8 +1574,7 @@ object NarrativeHistoryEcho {
         }
         val rawVisibleTags = familyTags.filter { tag ->
             literals.isVisibleWrapperTag(end, tag, allowIndentedParagraphTag = true) &&
-                (tag.value !in wrapper.closings || !literals.isCaptionedLazyClosing(tag.range.first)) &&
-                !literals.isRequestedClosingLine(tag.range.first, tag.value, literalOutput.closings) &&
+                (tag.value !in wrapper.closings || !literals.isCaptionedClosing(tag.range.first, literalOutput.closings)) &&
                 isJoinedLiteral?.invoke(bodyStart + tag.range.first, false) != true
         }
         val suffixRanges by lazy(LazyThreadSafetyMode.NONE) {
@@ -1724,8 +1758,7 @@ object NarrativeHistoryEcho {
                 (streaming || identifiable || interrupted && (suffix.length > 1 || aloneOnLine)) &&
                 wrapper.closings.any { suffix.length < it.length && it.startsWith(suffix) } &&
                 !isEscaped(end, lastTag) && !literals.isMarkdownContainerLine(lastTag) &&
-                !literals.isCaptionedLazyClosing(lastTag) &&
-                !literals.isRequestedClosingLine(lastTag, suffix, literalOutput.closings) &&
+                !literals.isCaptionedClosing(lastTag, literalOutput.closings) &&
                 !(openerOnOwnLine && lineStart(body, lastTag) == 0 &&
                     literals.isStandaloneTagLine(lastTag, suffix) &&
                     (literalOutput.openings + literalOutput.closings).any { it.startsWith(suffix) }) &&
@@ -1807,8 +1840,7 @@ object NarrativeHistoryEcho {
                     val skippedClosingFor = mutableSetOf<Int>()
                     for (tag in visible) {
                         if (tag.value.startsWith("</")) {
-                            if (literals.isCaptionedLazyClosing(tag.range.first) ||
-                                literals.isRequestedClosingLine(tag.range.first, tag.value, literalOutput.closings) ||
+                            if (literals.isCaptionedClosing(tag.range.first, literalOutput.closings) ||
                                 lineStart(literals.markdown, tag.range.first) in ignoredClosings
                             ) continue
                             val open = openings.lastOrNull() ?: continue
@@ -1870,27 +1902,25 @@ object NarrativeHistoryEcho {
     private fun ReplyLiterals.isLazyListItemLine(offset: Int): Boolean =
         lineStart(markdown, offset) in lazyListItemLineStarts
 
-    private fun ReplyLiterals.isCaptionedLazyClosing(offset: Int): Boolean {
+    private fun ReplyLiterals.isCaptionedClosing(offset: Int, requested: Set<String> = emptySet()): Boolean {
         val start = lineStart(markdown, offset)
         val lazyList = start in lazyListItemLineStarts
         val lazyQuote = start in lazyQuoteLineStarts
-        if ((!lazyList && !lazyQuote) || markdown.subSequence(start, offset).isNotBlank()) return false
+        val fromContainer = lazyList || lazyQuote
+        val hasPadding = if (fromContainer) markdown.subSequence(start, offset).isBlank() else hasMarkerPadding(markdown, offset)
+        if (!hasPadding) return false
         val lead = previousVisibleLine(markdown, start) ?: return false
-        if (!literalClosingTagLead.containsMatchIn(markdown.substring(lead))) return false
+        val caption = if (fromContainer) markdown.substring(lead) else visibleLine(lead)
+        val match = caption?.let(literalClosingTagLead::find) ?: return false
         if (lazyList) return true
-        // A caption inside the quoted paragraph identifies this one standalone literal tag.
-        // The following standalone tag can still close the transport envelope.
         if (markdown.substring(lead.last + 1, start) !in setOf("\n", "\r\n")) return false
         val tagLine = markdown.substring(offset, lineEnd(markdown, offset)).trimEnd()
-        return tagLine.isNotEmpty() && wrapperClosings.any { it.startsWith(tagLine) }
-    }
-
-    private fun ReplyLiterals.isRequestedClosingLine(offset: Int, token: String, requested: Set<String>): Boolean {
-        if (requested.none { it.startsWith(token) } || !isStandaloneTagLine(offset, token)) return false
-        val start = lineStart(markdown, offset)
-        val caption = previousVisibleLine(markdown, start) ?: return false
-        return markdown.substring(caption.last + 1, start) in setOf("\n", "\r\n") &&
-            visibleLine(caption)?.let(literalClosingTagLead::containsMatchIn) == true
+        // Unquoted prose needs a literal declaration or a matching request. A later token may still close the frame.
+        return tagLine.isNotEmpty() && if (lazyQuote || match.groups[1] != null) {
+            wrapperClosings.any { it.startsWith(tagLine) }
+        } else {
+            requested.any { it.startsWith(tagLine) }
+        }
     }
 
     private fun ReplyLiterals.isStandaloneTagLine(offset: Int, token: String): Boolean {

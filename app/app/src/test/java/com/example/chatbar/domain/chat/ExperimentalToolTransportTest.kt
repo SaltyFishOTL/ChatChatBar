@@ -4,6 +4,7 @@ import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatNarrativeMode
 import com.example.chatbar.data.local.entity.FormatCardUserToolConfig
+import com.example.chatbar.data.local.entity.FormatPromptPosition
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.domain.card.FormatCardUserToolPolicy
@@ -11,6 +12,7 @@ import com.example.chatbar.domain.prompt.AiTaskContext
 import com.example.chatbar.domain.prompt.AiTaskKind
 import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.ui.chat.appendCurrentUserAndCcbTailMessages
+import com.example.chatbar.ui.chat.buildCcbFinalTailSystemPrompt
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.util.concurrent.CountDownLatch
@@ -2929,6 +2931,100 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `scoped history wrapper keeps the clearly captioned literal closer on Preview and Stop`() = runBlocking {
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Earlier scene.").copy(narrativeMode = mode)
+            val caption = "The screen shows this literal closing tag:"
+            val close = "</历史回复>"
+            val body = "$caption\n$close"
+            val opening = PromptTemplates.narrativeModeHistoryReply("sample", mode).substringBefore('\n')
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                assertNarrativeReplyDeltas(
+                    listOf("$opening\n$caption\n</历史回", "复>"),
+                    listOf("$caption\n</历史回", body), body,
+                    previousAssistant = prior, experimental = experimental, toolCall = toolCall, finishReason = "length",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `scoped history wrapper keeps the literal closing tag inside a real closing pair`() = runBlocking {
+        val close = "</历史回复>"
+        val caption = "The screen shows this literal closing tag:"
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Earlier scene.").copy(narrativeMode = mode)
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                for (body in listOf(
+                    "$caption\n$close\nShe turned the page.",
+                    "$caption\r\n$close\r\nShe turned the page.",
+                    "$caption\n`$close`\nShe turned the page.",
+                    "$caption\n> $close\n\nShe turned the page.",
+                    "$caption\n\n$close\nShe turned the page.",
+                )) {
+                    val framed = PromptTemplates.narrativeModeHistoryReply(body, mode)
+                    // The blank line leaves a standalone tag ambiguous.
+                    val expected = if ("\n\n$close" in body) framed else body
+                    assertNarrativeReplyDeltas(
+                        listOf(framed), listOf(expected), expected,
+                        previousAssistant = prior, experimental = experimental, toolCall = toolCall,
+                    )
+                }
+                val genericCaption = "She turned the page:"
+                val framed = PromptTemplates.narrativeModeHistoryReply(genericCaption, mode)
+                assertNarrativeReplyDeltas(
+                    listOf(framed), listOf(genericCaption), genericCaption,
+                    previousAssistant = prior, experimental = experimental, toolCall = toolCall,
+                )
+                val noWitness = PromptTemplates.narrativeModeHistoryReply("$caption\n$close\nShe turned the page.", mode)
+                assertNarrativeReplyDeltas(
+                    listOf(noWitness), listOf(noWitness), noWitness, fixtureHistory = false,
+                    experimental = experimental, toolCall = toolCall,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `rendered character post-history output declaration preserves the actual reply frame`() = runBlocking {
+        val name = "Gatekeeper"
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Earlier scene.").copy(narrativeMode = mode)
+            val exact = PromptTemplates.narrativeModeHistoryReply("$name turned the page.", mode)
+            val source = "Copy this text verbatim:\n" +
+                PromptTemplates.narrativeModeHistoryReply("{{char}} turned the page.", mode)
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                for (history in listOf(null, "The token `</历史回复>` is printed.")) {
+                    assertNarrativeReplyDeltas(
+                        listOf(exact), listOf(exact), exact, previousAssistant = prior,
+                        currentUserText = "Continue.", previousUserText = history, experimental = experimental,
+                        toolCall = toolCall, characterPostHistoryInstructions = source,
+                    )
+                }
+                assertNarrativeReplyDeltas(
+                    listOf(exact), listOf(exact), exact, previousAssistant = prior,
+                    currentUserText = "Continue.", experimental = experimental, toolCall = toolCall,
+                    strongPrompt = source.replace("{{char}}", name),
+                )
+                val template = "Required output template (keep both tags verbatim):\n" +
+                    PromptTemplates.narrativeModeHistoryReply("[story]", mode)
+                assertNarrativeReplyDeltas(
+                    listOf(exact), listOf(exact), exact, previousAssistant = prior,
+                    currentUserText = "Continue.", experimental = experimental, toolCall = toolCall,
+                    characterPostHistoryInstructions = template,
+                )
+                for (control in listOf("", "The history format was:\n" + source.substringAfter('\n'))) {
+                    assertNarrativeReplyDeltas(
+                        listOf(exact), listOf("$name turned the page."), "$name turned the page.",
+                        previousAssistant = prior, currentUserText = "Continue.", experimental = experimental,
+                        toolCall = toolCall, characterPostHistoryInstructions = control,
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
     fun `text array SSE preserves a separate newline after the issued mode title`() = runBlocking {
         val prompt = PromptTemplates.narrativeModeSystemPrompt(ChatNarrativeMode.FOCUS)
         val title = prompt.lineSequence().first()
@@ -3175,6 +3271,7 @@ class ExperimentalToolTransportTest {
         fixtureHistory: Boolean = true,
         previousUserText: String? = null,
         strongPrompt: String? = null,
+        characterPostHistoryInstructions: String? = null,
         finishReason: String = if (toolCall) "tool_calls" else "stop",
     ) {
         val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, formatCard)
@@ -3205,12 +3302,27 @@ class ExperimentalToolTransportTest {
                 listOf(FormatCardUserToolConfig.strongPromptSuffix().copy(text = text)),
             )
         }
-        if (strongSuffix == null) {
+        val postHistory = characterPostHistoryInstructions?.let { source ->
+            PromptAssembler().assembleCachePromptLayers(
+                CharacterCard.create("Gatekeeper").copy(postHistoryInstructions = source),
+            ).tailSystemPrompt
+        }
+        val postUserPrompt = postHistory?.let {
+            buildCcbFinalTailSystemPrompt(it, "", FormatPromptPosition.END)
+        }
+        if (strongSuffix == null && postUserPrompt == null) {
             requestMessages.add(ChatApiMessage.text("assistant", acknowledgement))
         } else {
             val sentUser = requestMessages.removeAt(requestMessages.indexOfLast { it.role == "user" })
-            appendCurrentUserAndCcbTailMessages(requestMessages, sentUser, strongSuffix)
-            cleanup.recordAuthoredOutput(strongSuffix)
+            appendCurrentUserAndCcbTailMessages(requestMessages, sentUser, strongSuffix.orEmpty(), postUserPrompt.orEmpty())
+            if (characterPostHistoryInstructions != null && postHistory != null) {
+                cleanup.recordDispatchedPostHistory(postHistory, characterPostHistoryInstructions.isNotBlank())
+                if ("{{char}}" in characterPostHistoryInstructions) {
+                    assertTrue("Expected rendered character name", "Gatekeeper turned the page." in postHistory)
+                    assertFalse("Unexpected unrendered placeholder", "{{char}}" in postHistory)
+                }
+            }
+            strongSuffix?.let(cleanup::recordAuthoredOutput)
         }
         val rawPreviews = deltaTexts.runningFold("", String::plus).drop(1)
         val deltas = deltaTexts.mapIndexed { index, delta ->
@@ -3260,7 +3372,7 @@ class ExperimentalToolTransportTest {
                     .getValue("description").jsonPrimitive.content
                 Json.parseToJsonElement(description + "\"}]").jsonArray
             } else payload.getValue("messages").jsonArray
-            val sourceTexts = listOfNotNull(narrativePrompt, narrativeTail, currentUserText, previousUserText, cardRequirements, strongSuffix) +
+            val sourceTexts = listOfNotNull(narrativePrompt, narrativeTail, currentUserText, previousUserText, cardRequirements, strongSuffix, postUserPrompt) +
                 historyMessages.map { it.content.jsonPrimitive.content }
             for (source in sourceTexts) {
                 assertTrue("Expected source in serialized reply request", context.any {
@@ -3272,11 +3384,14 @@ class ExperimentalToolTransportTest {
             assertEquals(finishReason, completion?.finishReason)
             val completed = events.filterIsInstance<StreamEvent.Delta>().joinToString("") { it.text }
             assertEquals(rawPreviews.last(), completed)
-            for ((index, preview) in previews.withIndex()) {
-                assertEquals("Preview delta ${index + 1}", expectedPreviews[index], cleanup.completedBody(preview, streaming = true))
-                assertEquals("Stop delta ${index + 1}", expectedPreviews[index], cleanup.completedBody(preview, interrupted = true))
-            }
-            assertEquals("Done", expectedCompleted, cleanup.completedBody(completed, interrupted = finishReason == "length"))
+            val live = previews.map { cleanup.completedBody(it, streaming = true) }
+            val stopped = previews.map { cleanup.completedBody(it, interrupted = true) }
+            val done = cleanup.completedBody(completed, interrupted = finishReason == "length")
+            assertEquals(
+                "Reply Preview, Stop and Done",
+                listOf(expectedPreviews, expectedPreviews, listOf(expectedCompleted)),
+                listOf(live, stopped, listOf(done)),
+            )
         }
     }
 
@@ -3600,6 +3715,69 @@ class ExperimentalToolTransportTest {
             val parts = checkNotNull(reader).invoke()
             assertEquals(listOf(caption, close), parts)
             assertEquals(literal, ordinary.completedBody(parts.joinToString("\n"), interrupted = true, partLengths = parts.map(String::length)))
+        }
+    }
+
+    @Test
+    fun `an explicitly prohibited standalone repair closer is cleaned at completion`() = runBlocking {
+        assertStandaloneRepairProhibition(stop = false)
+    }
+
+    @Test
+    fun `an explicitly prohibited standalone repair closer is cleaned on Stop before terminal`() = runBlocking {
+        assertStandaloneRepairProhibition(stop = true)
+    }
+
+    private suspend fun assertStandaloneRepairProhibition(stop: Boolean) {
+        val close = "</历史回复>"
+        val body = "She turned the page."
+        val raw = "$body\n$close"
+        val original = "She opened the book."
+        val standalone = "Do not output the following history tags:\n$close"
+        for ((card, expected) in listOf(
+            standalone to body,
+            "Example of a history tag:\n$close" to raw,
+            "Do not output the following history tags:\n</聚焦模式>" to raw,
+            "> Do not output the following history tags:\n> $close" to raw,
+            "The following is a counterexample:\n" +
+                PromptTemplates.narrativeModeHistoryReply("wrong", ChatNarrativeMode.FOCUS) to body,
+        )) {
+            for (experimental in listOf(false, true)) {
+                val delta = if (experimental) {
+                    chunk(buildJsonObject { put("content", raw) }.toString(), "game_content")
+                } else {
+                    ordinaryDelta(raw)
+                }
+                GatedExperimentalResponse(
+                    sse(listOf(delta)), sse(listOf(chunk(reason = if (experimental) "tool_calls" else "stop"), "[DONE]")),
+                ).use { server ->
+                    var reader: (() -> List<String>)? = null
+                    val repair = MessageFormatRepairService(StreamingChatService(
+                        experimentalApiModeEnabled = { experimental }, allowCleartextHttp = { true },
+                    ))
+                    val events = repair.streamRepair(original, card, null, model(server.baseUrl)) { reader = it }
+                    val observed = if (stop) {
+                        val first = withTimeout(5_000) { events.first { it is StreamEvent.Delta } } as StreamEvent.Delta
+                        assertFalse(server.tailSent)
+                        assertEquals(raw, reader?.invoke()?.singleOrNull() ?: first.text)
+                        first.text
+                    } else {
+                        val completed = withTimeout(5_000) {
+                            events.onEach { if (it is StreamEvent.Delta) server.releaseTail() }.toList()
+                        }
+                        assertEquals(StreamEvent.Done, completed.last())
+                        completed.filterIsInstance<StreamEvent.Delta>().joinToString("") { it.text }
+                    }
+                    assertEquals(raw, observed)
+                    val cleanup = NarrativeHistoryEcho.forFormatRepair(card, original)
+                    assertTrue("Expected explicit card context in actual request", card.lineSequence().first() in server.requestBody)
+                    val terminalLabel = if (stop) "Stop" else "Done"
+                    assertEquals("Repair Preview and $terminalLabel", listOf(expected, expected), listOf(
+                        cleanup.completedBody(observed, streaming = true),
+                        cleanup.completedBody(observed, interrupted = stop),
+                    ))
+                }
+            }
         }
     }
 

@@ -3292,6 +3292,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             )
                             narrativeEcho.recordNarrativePrompt(narrativeModeTail, requestUserContent)
                             narrativeEcho.recordCurrentLiteralTags(currentUserContent)
+                            narrativeEcho.recordDispatchedPostHistory(
+                                promptLayers.tailSystemPrompt,
+                                hasCustomInstructions = charCard.postHistoryInstructions.isNotBlank(),
+                            )
                             narrativeEcho.recordAuthoredOutput(strongPromptSystemSuffix)
                         }
                     }
