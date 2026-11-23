@@ -36,20 +36,20 @@ object NarrativeHistoryEcho {
         " {0,3}(\\*\\*|)(?:(?:本轮)?输出(?:模板|格式)|本轮的固定输出模板|请按以下格式输出|" +
             "每次回复必须使用此固定模板|请(?:完整|逐字)保留首尾标签|" +
             "(?:(?:required|exact|fixed)[ \\t]+)?output template(?:[ \\t]+\\(keep both tags verbatim\\))?)" +
-            "[ \\t]*[:：]\\1[ \\t]*",
+            "[ \\t]*[：:]\\1[ \\t]*",
         RegexOption.IGNORE_CASE,
     )
     private val formatTemplateAffirmation = Regex(
         "[ \\t]*(?:（[ \\t]*标签是固定输出的一部分[ \\t]*）|\\([ \\t]*标签是固定输出的一部分[ \\t]*\\))[ \\t]*[。.]?[ \\t]*",
     )
     private val fencedTemplateLabel = Regex(
-        " {0,3}请严格按照以下固定模板作答，必须逐字保留首尾标签，不要输出代码围栏[:：][ \\t]*",
+        " {0,3}请严格按照以下固定模板作答，必须逐字保留首尾标签，不要输出代码围栏[：:][ \\t]*",
     )
     private val trailingStatusLabel = Regex(
-        " {0,3}(?:(?:required[ \\t]+)?trailing[ \\t]+status[ \\t]+(?:panel[ \\t]+)?template[:：]|" +
+        " {0,3}(?:(?:required[ \\t]+)?trailing[ \\t]+status[ \\t]+(?:panel[ \\t]+)?template[：:]|" +
             "(?:write the story first\\.[ \\t]+)?end every reply with (?:exactly )?one status panel after the story\\." +
             "(?:[ \\t]+keep the status fence(?: and replace the time)?\\.)?|" +
-            "每次回复末尾必须输出以下状态栏[:：])[ \\t]*",
+            "每次回复末尾必须输出以下状态栏[：:])[ \\t]*",
         RegexOption.IGNORE_CASE,
     )
     private val singlePairTemplateConstraint = Regex(
@@ -60,7 +60,7 @@ object NarrativeHistoryEcho {
     private const val trailingStatusOpening = "```status"
     private val formatTemplateFenceInfo = setOf("", "html", "xml")
     private val formatCounterexampleLead = Regex(
-        " {0,3}(?:以下是禁止输出的反例[。.:：]?|以下标签仅供举例，不要在回复中输出[:：]|" +
+        " {0,3}(?:以下是禁止输出的反例[。.:：]?|以下标签仅供举例，不要在回复中输出[：:]|" +
             "the following is a counterexample[.!:])[ \\t]*",
         RegexOption.IGNORE_CASE,
     )
@@ -76,7 +76,7 @@ object NarrativeHistoryEcho {
     )
     private val unfinishedPluralPossessor = Regex("(?:the|these|those|our|your|their)[ \\t]+[a-z]{2,}s")
     private val unfinishedPossessedWord = Regex("[a-z]{2,}")
-    private val chineseSpeechLead = Regex("[说說][ \\t]*[:：]?[ \\t]*$")
+    private val chineseSpeechLead = Regex("[说說][ \\t]*[：:]?[ \\t]*$")
     private val hanIdeograph = Regex("[\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uF900-\\uFAFF]")
     private val ordinaryProseFollowers = setOf(
         "after", "again", "all", "already", "aloud", "and", "as", "away", "before", "but",
