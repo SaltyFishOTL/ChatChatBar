@@ -3159,9 +3159,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         hasCustomInstructions = charCard.systemPrompt.isNotBlank(),
                     )
                     narrativeEcho.recordDispatchedCharacterSettingsHeadings(promptLayers.stableContextSystemPrompt)
+                    promptLayers.recordDispatchedWorldBookHeadings(narrativeEcho)
                     narrativeEcho.recordDispatchedSupplementarySettings(promptLayers.supplementarySystemPrompt)
                     narrativeEcho.recordDispatchedPlayerSettings(promptLayers.playerSystemPrompt)
-                    promptLayers.recordDispatchedWorldBookHeadings(narrativeEcho)
 
                     suspend fun addContextMessage(
                         msg: ChatMessage,

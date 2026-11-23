@@ -4954,6 +4954,118 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `actually sent character settings can declare a new XML reply template`() = runBlocking {
+        assertDispatchedXmlTemplates(fromWorldBook = false)
+    }
+
+    @Test
+    fun `actually sent active WorldBook can declare a new XML reply template`() = runBlocking {
+        assertDispatchedXmlTemplates(fromWorldBook = true)
+    }
+
+    private suspend fun assertDispatchedXmlTemplates(fromWorldBook: Boolean) {
+        val mode = ChatNarrativeMode.FOCUS
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "The old door closed.").copy(narrativeMode = mode)
+        val template = PromptTemplates.narrativeModeHistoryReply("[Story]", mode)
+        val instruction = "Use the following XML template for each reply and keep both tags verbatim:\n$template"
+        val fresh = "The widow opened the shutters."
+        val raw = PromptTemplates.narrativeModeHistoryReply(fresh, mode)
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            assertNarrativeReplyDeltas(
+                listOf(raw), listOf(fresh), fresh, previousAssistant = prior, currentUserText = "Check the sigil.",
+                ragReferenceText = instruction, experimental = experimental, toolCall = toolCall, requestNarrativeMode = mode,
+            )
+            assertNarrativeReplyDeltas(
+                listOf(raw), listOf(fresh), fresh, previousAssistant = prior, currentUserText = "Stay at the gate.",
+                worldBookEntry = instruction, experimental = experimental, toolCall = toolCall, requestNarrativeMode = mode,
+            )
+            for ((character, world) in listOf(instruction.prependIndent("> ") to null, null to "The log mentions this example:\n$template")) {
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(fresh), fresh, previousAssistant = prior, currentUserText = "Check the sigil.",
+                    characterBasicSetting = character, worldBookEntry = world,
+                    experimental = experimental, toolCall = toolCall, requestNarrativeMode = mode,
+                )
+            }
+            assertNarrativeReplyDeltas(
+                listOf(raw), listOf(raw), raw, previousAssistant = prior, currentUserText = "Continue.",
+                characterCoreInstructions = instruction, experimental = experimental, toolCall = toolCall, requestNarrativeMode = mode,
+            )
+            assertNarrativeReplyDeltas(
+                listOf(raw), listOf(raw), raw, previousAssistant = prior, currentUserText = "Check the sigil.",
+                characterBasicSetting = instruction.takeUnless { fromWorldBook },
+                worldBookEntry = instruction.takeIf { fromWorldBook },
+                experimental = experimental, toolCall = toolCall, requestNarrativeMode = mode,
+            )
+            if (fromWorldBook) {
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(fresh), fresh, previousAssistant = prior, currentUserText = "Check the sigil.",
+                    worldBookEntry = instruction, playerOverride = "Do not output the following history tags:\n$template",
+                    experimental = experimental, toolCall = toolCall, requestNarrativeMode = mode,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `explicit immediate displayed reply citation with surrounding XML keeps only the exact projection`() = runBlocking {
+        val priorBody = "A candle burned  \r\n    on the shelf."
+        val commentary = "\n\nThe quotation shows the lamp was still burning."
+        val directive = "Reproduce the immediately preceding displayed reply literally, with the surrounding XML included, then tell me what the quote demonstrates."
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, priorBody).copy(narrativeMode = mode)
+            val projection = PromptTemplates.narrativeModeHistoryReply(priorBody, mode)
+            val raw = projection + commentary
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                for (other in listOf(
+                    "Go on with the scene.",
+                    directive.replace("with the surrounding XML included", "without the surrounding XML"),
+                    "The panel said: “$directive”",
+                    "Reproduce the immediately preceding displayed reply literally; explain the XML separately.",
+                )) assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(priorBody + commentary), priorBody + commentary, previousAssistant = prior,
+                    currentUserText = other, experimental = experimental, toolCall = toolCall, requestNarrativeMode = mode,
+                )
+                val documented = "$projection\n\nThese history tags are only an example."
+                assertNarrativeReplyDeltas(
+                    listOf(documented), listOf(documented), documented, previousAssistant = prior,
+                    currentUserText = "Continue.", experimental = experimental, toolCall = toolCall, requestNarrativeMode = mode,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(projection, commentary), listOf(projection, raw), raw, previousAssistant = prior,
+                    currentUserText = directive, experimental = experimental, toolCall = toolCall, requestNarrativeMode = mode,
+                )
+                val novel = "A different passage."
+                assertNarrativeReplyDeltas(
+                    listOf(PromptTemplates.narrativeModeHistoryReply(novel, mode)), listOf(novel), novel, previousAssistant = prior,
+                    currentUserText = directive, experimental = experimental, toolCall = toolCall, requestNarrativeMode = mode,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `a genuine issued frame around new indented LF code keeps its own extra inner breaks`() = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "An older example.").copy(narrativeMode = mode)
+        val code = "\nThe example follows.\n\n    val stored = 7  \n"
+        val raw = PromptTemplates.narrativeModeHistoryReply(code, mode)
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            val paddedOrdinary = PromptTemplates.narrativeModeHistoryReply("\nA brief ordinary sentence.  \n", mode)
+            for (reason in listOf(if (toolCall) "tool_calls" else "stop", "length")) {
+                assertNarrativeReplyDeltas(
+                    listOf(paddedOrdinary), listOf("A brief ordinary sentence."), "A brief ordinary sentence.",
+                    previousAssistant = prior, experimental = experimental, toolCall = toolCall, finishReason = reason,
+                    requestNarrativeMode = mode,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(code), code, previousAssistant = prior, experimental = experimental,
+                    toolCall = toolCall, finishReason = reason, requestNarrativeMode = mode,
+                )
+            }
+        }
+    }
+
+    @Test
     fun `text array SSE preserves a separate newline after the issued mode title`() = runBlocking {
         val prompt = PromptTemplates.narrativeModeSystemPrompt(ChatNarrativeMode.FOCUS)
         val title = prompt.lineSequence().first()
@@ -5260,9 +5372,9 @@ class ExperimentalToolTransportTest {
         val corePrefix = if (layers != null && hasStableLayers) {
             cleanup.recordDispatchedCharacterCore(layers.coreSystemPrompt, !characterCoreInstructions.isNullOrBlank())
             cleanup.recordDispatchedCharacterSettingsHeadings(layers.stableContextSystemPrompt)
+            layers.recordDispatchedWorldBookHeadings(cleanup)
             cleanup.recordDispatchedSupplementarySettings(layers.supplementarySystemPrompt)
             cleanup.recordDispatchedPlayerSettings(layers.playerSystemPrompt)
-            layers.recordDispatchedWorldBookHeadings(cleanup)
             buildCcbStablePrefixMessages(
                 layers.coreSystemPrompt, layers.stableContextSystemPrompt,
                 positionedRequirementsSystemPrompt = "", formatPromptPosition = FormatPromptPosition.END,
@@ -5431,6 +5543,10 @@ class ExperimentalToolTransportTest {
                 } else {
                     assertTrue(worldBookEntry in assembled)
                     assertTrue(assembled in sources)
+                    if (playerSetting != null) assertTrue(
+                        "The player setting must follow the direct WorldBook context on the wire",
+                        sources.indexOf(assembled) < sources.indexOf(layers.playerSystemPrompt),
+                    )
                 }
             }
             if (ragReferenceText != null) {
@@ -5905,6 +6021,27 @@ class ExperimentalToolTransportTest {
             assertRepairBoundaryReply("$system\n$original", null, null, listOf(raw), raw, experimental, toolCall)
             assertRepairBoundaryReply(original, null, null, listOf(raw), repaired, experimental, toolCall)
         }
+    }
+
+    @Test
+    fun `terminal repair log quotes retain the actual label and system sentence`() = runBlocking {
+        val original = "The key stayed in the door."
+        val heading = "{待修复消息}"
+        val sentence = PromptTemplates.MESSAGE_FORMAT_REPAIR_SYSTEM_PROMPT.trim().substringBefore('。') + "。"
+        val pair = "$heading\n$sentence"
+        val caption = "The following is a literal quotation from the history log."
+        val quote = "$caption\n$pair"
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            val revised = "She removed the key and went outside."
+            assertRepairBoundaryReply(original, null, null, listOf("$revised\n$pair"), revised, experimental, toolCall)
+            assertRepairBoundaryReply("$original\n$pair", null, null, listOf(quote), quote, experimental, toolCall)
+            assertRepairBoundaryReply(original, null, null, listOf("$quote\n\n$revised"), "$quote\n\n$revised", experimental, toolCall)
+            assertRepairBoundaryReply(original, null, null, listOf(quote), quote, experimental, toolCall)
+        }
+        assertRepairBoundaryReply(
+            original, null, null, listOf(caption, pair), quote, experimental = true, tool = true,
+            expectedFirstPreview = caption,
+        )
     }
 
     private suspend fun assertRepairBoundaryReply(

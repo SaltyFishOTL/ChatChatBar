@@ -43,6 +43,7 @@ object NarrativeHistoryEcho {
     private data class ReplyLiterals(
         val ranges: List<IntRange>,
         val roleplayLiteralCode: List<IntRange>,
+        val indentedCode: List<IntRange>,
         val lazyQuoteLineStarts: Set<Int>,
         val listItemLineStarts: Set<Int>,
         val lazyListItemLineStarts: Set<Int>,
@@ -147,11 +148,15 @@ object NarrativeHistoryEcho {
         RegexOption.IGNORE_CASE,
     )
     private val exactPreviousReplyCitation = Regex(
-        " {0,3}(?:please[ \\t]+)?(?:quote|copy|reproduce)[ \\t]+the[ \\t]+(?:previous|last)[ \\t]+" +
-            "(?:assistant[’']s[ \\t]+)?(?:answer|reply|response)[ \\t]+(?:" +
+        " {0,3}(?:please[ \\t]+)?(?:quote|copy|reproduce)[ \\t]+the[ \\t]+" +
+            "(?:previous|last|immediately[ \\t]+preceding)[ \\t]+" +
+            "(?:assistant[’']s[ \\t]+)?(?:displayed[ \\t]+)?(?:answer|reply|response)[ \\t]+(?:" +
             "(?:with|including)[ \\t]+(?:its|the)[ \\t]+XML[ \\t]+history[ \\t]+tags[ \\t]+verbatim|" +
-            "verbatim,[ \\t]+including[ \\t]+both[ \\t]+XML[ \\t]+history[ \\t]+tags)" +
-            "(?:,[ \\t]+then[ \\t]+explain[ \\t]+[^\\r\\n.!?]+)?[.!?]?[ \\t]*",
+            "verbatim,[ \\t]+including[ \\t]+both[ \\t]+XML[ \\t]+history[ \\t]+tags|" +
+            "(?:literally|verbatim),[ \\t]+with[ \\t]+the[ \\t]+surrounding[ \\t]+XML[ \\t]+included)" +
+            "(?:,[ \\t]+then[ \\t]+(?:explain[ \\t]+[^\\r\\n.!?]+|" +
+            "tell[ \\t]+me[ \\t]+what[ \\t]+(?:the|that)[ \\t]+(?:quote|quotation)[ \\t]+(?:demonstrates|shows|illustrates)))?" +
+            "[.!?]?[ \\t]*",
         RegexOption.IGNORE_CASE,
     )
     private val exactPreviousReplyCitationInChinese = Regex(
@@ -422,7 +427,7 @@ object NarrativeHistoryEcho {
             recordDispatchedEditableOutput(renderedCore, hasCustomInstructions)
 
         fun recordDispatchedCharacterSettingsHeadings(renderedSettings: String) =
-            recordAuthoredHeadingDeclarations(renderedSettings)
+            recordDispatchedEditableOutput(renderedSettings)
 
         fun recordDispatchedPostHistory(renderedTail: String, hasCustomInstructions: Boolean) =
             recordDispatchedEditableOutput(renderedTail, hasCustomInstructions)
@@ -433,17 +438,8 @@ object NarrativeHistoryEcho {
         fun recordDispatchedPlayerSettings(renderedSettings: String) =
             recordDispatchedEditableOutput(renderedSettings)
 
-        fun recordDispatchedWorldBookHeadings(renderedWorldBook: String) {
-            recordAuthoredHeadingDeclarations(renderedWorldBook)
-            if (enabled) {
-                val literal = declaredUserOutput(renderedWorldBook, requireExplicitCopy = true).literal
-                authoredPairs += literal.pairs
-                currentLiteralOutput = currentLiteralOutput.copy(
-                    openings = currentLiteralOutput.openings + literal.openings,
-                    closings = currentLiteralOutput.closings + literal.closings,
-                )
-            }
-        }
+        fun recordDispatchedWorldBookHeadings(renderedWorldBook: String) =
+            recordDispatchedEditableOutput(renderedWorldBook)
 
         private fun recordDispatchedEditableOutput(renderedSource: String, hasCustomInstructions: Boolean = true) {
             if (!hasCustomInstructions || renderedSource.isBlank()) return
@@ -640,10 +636,15 @@ object NarrativeHistoryEcho {
                 fun unlabelledRepairRange(part: String): IntRange? =
                     exactLeadingDirectiveBlock(part, repairDispatch.unlabelledSystemBlock)
                         ?: exactLeadingDirective(part, setOfNotNull(repairDispatch.unlabelledIntroduction))
+                fun loggedRepairQuotes(part: String): List<IntRange> {
+                    val continuations = repairDispatch.continuations
+                    if (continuations.keys.none { it in part }) return emptyList()
+                    return loggedDispatchQuoteRanges(part, classifyLiterals(part, includeUnclosed = provisional), continuations)
+                }
                 val intro = unlabelledRepairRange(text)
                 val interior = if (partLengths.size > 1) interiorRepairEchoRanges(text, repairDispatch, provisional) else emptyList()
-                val prepared = DispatchReply(text, partLengths).withoutRanges(listOfNotNull(intro) + interior)
-                val reply = removeRepairBoundary(prepared.text)
+                val prepared = DispatchReply(text, partLengths, loggedRepairQuotes(text)).withoutRanges(listOfNotNull(intro) + interior)
+                val reply = removeRepairBoundary(prepared.text, prepared::isQuoted)
                 val body = prepared.text.substring(reply.body)
                 val lengths = if (reply.body == prepared.text.indices) prepared.partLengths
                     else prepared.partLengths.trimTo(reply.body, prepared.text.length)
@@ -652,12 +653,14 @@ object NarrativeHistoryEcho {
                     repairProtectedClosings = repairProtectedClosings,
                     cleanPartOrphan = ::withoutRepairOrphan,
                     cleanExposedBody = { part ->
-                        val exposed = removeRepairBoundary(part).content(part)
+                        val quoted = loggedRepairQuotes(part)
+                        val exposed = removeRepairBoundary(part) { offset -> quoted.any { offset in it } }.content(part)
                         val issued = unlabelledRepairRange(exposed)
                         DispatchReply(exposed, emptyList()).withoutRanges(listOfNotNull(issued)).text
                     },
                     cleanPartHeading = ::removeRepairBoundary.takeIf { repairDispatch.boundaries.isNotEmpty() },
                     protectCaptionedPartHeading = true,
+                    isQuotedDispatchBlock = { prepared.isQuoted(reply.body.first + it) },
                 )
                 val repaired = if (cleaned != body) cleaned else withoutRepairOrphan(body)
                 val result = if (partLengths.size <= 1) {
@@ -755,7 +758,7 @@ object NarrativeHistoryEcho {
                 cleanPartHeading = { part: String, isJoinedLiteral: (Int) -> Boolean ->
                     removeDispatchEcho(part, isJoinedLiteral)
                 }.takeIf { headings.isNotEmpty() },
-                isQuotedModeBlock = { input.isQuoted(reply.body.first + it) },
+                isQuotedDispatchBlock = { input.isQuoted(reply.body.first + it) },
                 cleanPartOrphan = { part, isJoinedLiteral ->
                     withoutOrphanClosing(part, closings, provisional, formatOutput, ::authoredClosingEvidence, isJoinedLiteral)
                 },
@@ -781,7 +784,7 @@ object NarrativeHistoryEcho {
         if (continuations.keys.none { it in text }) return reply
         val literals = classifyLiterals(text, includeUnclosed = provisional)
         val removals = mutableListOf<IntRange>()
-        val quotedBlocks = loggedModeQuoteRanges(text, literals, continuations).toMutableList()
+        val quotedBlocks = loggedDispatchQuoteRanges(text, literals, continuations).toMutableList()
         for ((heading, issuedVariants) in continuations) {
             val variants = issuedVariants.filterTo(mutableSetOf()) {
                 !isAuthoredBlock((listOf(heading) + it).joinToString("\n"))
@@ -855,7 +858,7 @@ object NarrativeHistoryEcho {
         return (0 until offset).takeIf { text.subSequence(offset, text.length).isNotBlank() }
     }
 
-    private fun loggedModeQuoteRanges(
+    private fun loggedDispatchQuoteRanges(
         text: String, literals: ReplyLiterals, continuations: Map<String, Set<List<String>>>,
     ): List<IntRange> = buildList {
         for ((heading, variants) in continuations) {
@@ -994,7 +997,7 @@ object NarrativeHistoryEcho {
         continuations: Map<String, Set<List<String>>>,
         isJoinedLiteral: (Int) -> Boolean = { false },
     ): IntRange? {
-        val loggedBlocks = loggedModeQuoteRanges(text, literals, continuations)
+        val loggedBlocks = loggedDispatchQuoteRanges(text, literals, continuations)
         var cursor = text.length
         var removeFrom = -1
         var preserveFrom = -1
@@ -1911,7 +1914,7 @@ object NarrativeHistoryEcho {
         cleanExposedBody: (String) -> String = { it },
         cleanPartHeading: ((String, (Int) -> Boolean) -> HeadingSelection)? = null,
         protectCaptionedPartHeading: Boolean = false,
-        isQuotedModeBlock: (Int) -> Boolean = { false },
+        isQuotedDispatchBlock: (Int) -> Boolean = { false },
         cleanPartOrphan: ((String, (Int) -> Boolean) -> String)? = null,
     ): String {
         fun clean(part: String, requirePair: Boolean = false) = cleanReply(
@@ -2013,7 +2016,7 @@ object NarrativeHistoryEcho {
                 }
                 if (first == last && !requirePair && cleaned.body == part) {
                     val selection = cleanPartHeading?.invoke(part) {
-                        isQuotedModeBlock(start + it) || isJoinedLiteral(it, true) || joinedLiterals.followsLiteralHeadingLead(start + it) ||
+                        isQuotedDispatchBlock(start + it) || isJoinedLiteral(it, true) || joinedLiterals.followsLiteralHeadingLead(start + it) ||
                             protectCaptionedPartHeading && hasOrphanClosingCaption(text, start + it, before = start)
                     } ?: HeadingSelection(part.indices)
                     val body = part.substring(selection.body)
@@ -2286,6 +2289,7 @@ object NarrativeHistoryEcho {
             suffixStart <= it.first && body.subSequence(suffixStart, it.first).isBlank()
         }
         fun bodyBeforeClose(position: Int, completeClose: String? = null): String {
+            val trimmed = body.substring(0, position).trimEnd()
             if (completeClose != null && openingLineBreak != null && wrapper != legacyWrapper &&
                 projectedBodies.keys.any { it.startsWith(wrapper.opening) } &&
                 literals.isStandaloneTagLine(position, completeClose)
@@ -2297,9 +2301,12 @@ object NarrativeHistoryEcho {
                 val breakBeforeClosing = if (closingLine >= 2 && text.startsWith("\r\n", closingLine - 2)) 2 else 1
                 val payload = text.substring(contentStart, maxOf(contentStart, closingLine - breakBeforeClosing))
                 val hasCrLfInsideBody = "\r\n" in payload.trim('\r', '\n')
-                if (hasCrLfInsideBody || markdownHardBreakBetweenLines.containsMatchIn(payload)) return payload
+                val hasPaddedTerminalCodeLine = payload.endsWith('\n') &&
+                    body.startsWith("  ", trimmed.length) && literals.indentedCode.containsOffset(trimmed.lastIndex)
+                if (hasCrLfInsideBody || markdownHardBreakBetweenLines.containsMatchIn(payload) || hasPaddedTerminalCodeLine) {
+                    return payload
+                }
             }
-            val trimmed = body.substring(0, position).trimEnd()
             val trailingLiteral = literals.roleplayLiteralCode.firstOrNull {
                 trimmed.lastIndex in it && trimmed.length in it
             } ?: return trimmed
@@ -2835,8 +2842,16 @@ object NarrativeHistoryEcho {
                 interpretProseQuotes, dialogue,
             )
             return ReplyLiterals(
-                (ranges + quotes + dialogue).indexedRanges(), roleplayLiteralCode, lazyQuoteLineStarts, listItemLineStarts, lazyListItemLineStarts,
-                indentedParagraphLineStarts, source, comments, fences,
+                ranges = (ranges + quotes + dialogue).indexedRanges(),
+                roleplayLiteralCode = roleplayLiteralCode,
+                indentedCode = indentedCode,
+                lazyQuoteLineStarts = lazyQuoteLineStarts,
+                listItemLineStarts = listItemLineStarts,
+                lazyListItemLineStarts = lazyListItemLineStarts,
+                indentedParagraphLineStarts = indentedParagraphLineStarts,
+                markdown = source,
+                commentRanges = comments,
+                fences = fences,
             )
         }
 
