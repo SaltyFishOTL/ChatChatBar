@@ -1923,6 +1923,118 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `horizontal padding does not expose the sent mode title`() = runBlocking {
+        val story = "她收起雨伞。"
+        for (mode in ChatNarrativeMode.entries) {
+            val prompt = PromptTemplates.narrativeModeSystemPrompt(mode)
+            val heading = prompt.lineSequence().first()
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                for (line in listOf("$heading  ", "   $heading\t")) {
+                    assertNarrativeReplyDeltas(
+                        listOf(line, "\n$story"), listOf("", story), story,
+                        narrativePrompt = prompt, experimental = experimental, toolCall = toolCall,
+                    )
+                }
+                val code = "    $heading\n\n$story"
+                assertNarrativeReplyDeltas(
+                    listOf(code), listOf(code), code,
+                    narrativePrompt = prompt, experimental = experimental, toolCall = toolCall,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `the sent title stays visible when the story explicitly reads it aloud`() = runBlocking {
+        for (mode in ChatNarrativeMode.entries) {
+            val prompt = PromptTemplates.narrativeModeSystemPrompt(mode)
+            val heading = prompt.lineSequence().first()
+            val lead = "她指着屏幕念出上面显示的标题："
+            val story = "她收起雨伞。"
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                for (literalLead in listOf(lead, "She reads the on-screen title aloud:")) {
+                    val reply = "$literalLead\n$heading"
+                    assertNarrativeReplyDeltas(
+                        listOf(literalLead, "\n$heading"), listOf(literalLead, reply), reply,
+                        narrativePrompt = prompt, experimental = experimental, toolCall = toolCall,
+                    )
+                }
+                assertNarrativeReplyDeltas(
+                    listOf("$story\n$heading"), listOf(story), story,
+                    narrativePrompt = prompt, experimental = experimental, toolCall = toolCall,
+                )
+            }
+            assertMultipartNarrativeReply(
+                listOf(lead, heading, story), "$lead\n$heading\n$story", narrativePrompt = prompt,
+            )
+        }
+    }
+
+    @Test
+    fun `a user prohibition leaves the issued standalone closing tag eligible for cleanup`() = runBlocking {
+        val story = "她收起雨伞。"
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "雨落在窗沿。").copy(narrativeMode = mode)
+            val pair = PromptTemplates.narrativeModeHistoryReply(story, mode)
+            val close = pair.substringAfterLast('\n')
+            val raw = "$story\n$close"
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                for (example in listOf(close, pair)) {
+                    assertNarrativeReplyDeltas(
+                        listOf(raw), listOf(story), story,
+                        previousAssistant = prior, experimental = experimental, toolCall = toolCall,
+                        currentUserText = "请勿输出以下历史标签：\n$example\n请续写故事。",
+                    )
+                }
+                assertNarrativeReplyDeltas(
+                    listOf(pair), listOf(story), story,
+                    previousAssistant = prior, experimental = experimental, toolCall = toolCall,
+                    currentUserText = "以下是禁止输出的反例。\n$pair\n请续写故事。",
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(raw), raw,
+                    previousAssistant = prior, experimental = experimental, toolCall = toolCall,
+                    currentUserText = "请在结尾逐字写出以下标记：\n$close",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `a required output label preserves the tags around new story text`() = runBlocking {
+        val story = "她收起雨伞。"
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "雨落在窗沿。").copy(narrativeMode = mode)
+            val sample = PromptTemplates.narrativeModeHistoryReply("[story]", mode)
+            val reply = PromptTemplates.narrativeModeHistoryReply(story, mode)
+            val label = "Required output template (keep both tags verbatim):"
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                assertNarrativeReplyDeltas(
+                    listOf(reply), listOf(reply), reply,
+                    previousAssistant = prior, experimental = experimental, toolCall = toolCall,
+                    currentUserText = "$label\n$sample",
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(reply), listOf(reply), reply,
+                    previousAssistant = prior, experimental = experimental, toolCall = toolCall,
+                    formatCard = "$label\n$sample",
+                )
+                for (source in listOf(
+                    "Here is an example of the request metadata:\n$sample",
+                    "Do not include the following history tags in your reply:\n$label\n$sample",
+                    "\"$label\"\n$sample",
+                )) {
+                    assertNarrativeReplyDeltas(
+                        listOf(reply), listOf(story), story,
+                        previousAssistant = prior, experimental = experimental, toolCall = toolCall,
+                        currentUserText = source,
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
     fun `an explanation delivered in the next tool call preserves the literal example`(): Unit = runBlocking {
         val sample = PromptTemplates.narrativeModeHistoryReply("示例正文。", ChatNarrativeMode.FOCUS)
         val explanation = "以上标签仅用于演示历史记录格式。"
