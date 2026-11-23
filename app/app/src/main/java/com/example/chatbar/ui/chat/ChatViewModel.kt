@@ -2410,6 +2410,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         val repairEcho = NarrativeHistoryEcho.forFormatRepair(formatCard, originalContent, userText)
         var result = message
         var repairedPrefix = ""
+        var ordinaryPreview: String? = null
         var repairPartLengths = emptyList<Int>()
         var sawDone = false
         formatRepairStopRequested = false
@@ -2417,6 +2418,17 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             messageId = message.id,
             previewContent = originalContent
         )
+        fun updateRepairPreview() {
+            _messageFormatRepairState.value = MessageFormatRepairState(
+                messageId = message.id,
+                previewContent = MessageFormatRepairPolicy.progressiveOverlay(
+                    original = originalContent,
+                    repairedPrefix = repairEcho.completedBody(
+                        ordinaryPreview ?: repairedPrefix, partLengths = repairPartLengths, streaming = true,
+                    ),
+                ),
+            )
+        }
 
         coroutineScope {
             val repairJob = launch {
@@ -2429,22 +2441,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     ).collect { event ->
                         when (event) {
                             is StreamEvent.Delta -> {
+                                ordinaryPreview = null
                                 repairedPrefix += event.text
                                 repairPartLengths = event.toolReplyPartLengths
-                                _messageFormatRepairState.value = MessageFormatRepairState(
-                                    messageId = message.id,
-                                    previewContent = MessageFormatRepairPolicy.progressiveOverlay(
-                                        original = originalContent,
-                                        repairedPrefix = repairEcho.completedBody(
-                                            repairedPrefix, partLengths = repairPartLengths, streaming = true,
-                                        )
-                                    )
-                                )
+                                updateRepairPreview()
+                            }
+                            is StreamEvent.ContentPreview -> {
+                                ordinaryPreview = event.text.takeIf(String::isNotEmpty)
+                                updateRepairPreview()
                             }
                             is StreamEvent.Error -> throw IllegalStateException(event.message)
                             StreamEvent.Done -> sawDone = true
                             is StreamEvent.ReasoningDelta,
-                            is StreamEvent.ContentPreview,
                             is StreamEvent.Usage -> Unit
                         }
                     }
@@ -2482,7 +2490,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     val mixedContent = MessageFormatRepairPolicy.progressiveOverlay(
                         original = originalContent,
                         repairedPrefix = repairEcho.completedBody(
-                            repairedPrefix, interrupted = true, partLengths = repairPartLengths,
+                            ordinaryPreview ?: repairedPrefix, interrupted = true, partLengths = repairPartLengths,
                         )
                     )
                     result = withContext(NonCancellable) {
@@ -3119,9 +3127,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             narrativeModesEnabled = requestNarrativeMode != null,
                             legacyHistoryWrapperDeclaredAsOutput = narrativeEcho.declaresLegacyHistoryWrapper,
                         )
-                        if (msg.role == MessageRole.ASSISTANT) {
-                            narrativeEcho.recordHistoryProjection(payloadText, text)
-                        }
                         if (hasSupportedImage) {
                             try {
                                 val base64 = encodeImageToBase64(msg.images.first())
@@ -3133,12 +3138,16 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                     )
                                 )
                             } catch (e: Exception) {
-                                if (renderedBody.isNotBlank()) {
-                                    apiMessages.add(ChatApiMessage.text(role, text))
-                                }
+                                if (renderedBody.isBlank()) return
+                                apiMessages.add(ChatApiMessage.text(role, text))
                             }
                         } else {
                             apiMessages.add(ChatApiMessage.text(role, text))
+                        }
+                        when (msg.role) {
+                            MessageRole.ASSISTANT -> narrativeEcho.recordHistoryProjection(payloadText, text)
+                            MessageRole.USER -> narrativeEcho.recordNarrativePrompt("", text)
+                            else -> Unit
                         }
                     }
 
@@ -3213,7 +3222,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             false
                         }
                     }
-                    narrativeEcho.recordNarrativePrompt(promptLayers.narrativeModeSystemPrompt, currentUserContent)
+                    narrativeEcho.recordNarrativePrompt(promptLayers.narrativeModeSystemPrompt, null)
                     if (shouldAddUserPrompt && currentUserContent != null) {
                         val requestUserContent = FormatCardUserToolPolicy.appendRequestSuffix(
                             userContent = currentUserContent,

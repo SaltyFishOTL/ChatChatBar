@@ -472,7 +472,8 @@ class StreamingChatService(
         taskContext: AiTaskContext? = null,
         reasoningEffort: String? = null,
         isolatedTaskParameters: Boolean = false,
-        responseFormatJson: Boolean = false
+        responseFormatJson: Boolean = false,
+        emitOrdinaryPreview: Boolean = false,
     ): Flow<StreamEvent> = callbackFlow {
         val context = taskContext?.forRequest()
         val actualMessages = context?.let { AiTaskMessageAssembler.assemble(messages, it) } ?: messages
@@ -593,9 +594,11 @@ class StreamingChatService(
                             if (!toolDecoder.hasToolCalls && !rawDelta.content.isNullOrEmpty()) {
                                 previewedOrdinaryText = true
                                 progress?.replaceContent(logId, toolDecoder.ordinaryContent)
+                                if (emitOrdinaryPreview) trySend(StreamEvent.ContentPreview(toolDecoder.ordinaryContent))
                             } else if (toolDecoder.hasToolCalls && previewedOrdinaryText) {
                                 previewedOrdinaryText = false
                                 progress?.replaceContent(logId, text.toString())
+                                if (emitOrdinaryPreview) trySend(StreamEvent.ContentPreview(""))
                             }
                             rawDelta.copy(content = decodedContent)
                         }

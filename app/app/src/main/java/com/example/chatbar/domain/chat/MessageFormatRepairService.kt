@@ -34,7 +34,8 @@ class MessageFormatRepairService(
             )
         ),
         modelConfig = modelConfig,
-        readTimeoutSeconds = FORMAT_REPAIR_READ_TIMEOUT_SECONDS
+        readTimeoutSeconds = FORMAT_REPAIR_READ_TIMEOUT_SECONDS,
+        emitOrdinaryPreview = true,
     )
 
     companion object {

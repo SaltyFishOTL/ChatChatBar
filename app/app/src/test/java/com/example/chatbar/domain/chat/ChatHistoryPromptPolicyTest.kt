@@ -55,7 +55,7 @@ class ChatHistoryPromptPolicyTest {
     fun declaredLegacyFormatRemainsLiteralInsideTheRequestWrapper() {
         val body = "<聚焦模式=\"沉浸\">\n她把书合上。\n</聚焦模式>"
         val assistant = message(MessageRole.ASSISTANT, body)
-        val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.FOCUS, "输出格式：<!-- 注记 -->$body")
+        val cleanup = requestWithNarrativeHistory(ChatNarrativeMode.FOCUS, "输出格式：<!-- 注记 -->$body")
         assertEquals(body, cleanup.completedBody(body))
         assertEquals(PromptTemplates.narrativeModeHistoryReply(body, ChatNarrativeMode.FOCUS),
             ChatHistoryPromptPolicy.renderedHistoryText(
@@ -144,7 +144,7 @@ class ChatHistoryPromptPolicyTest {
         val story = "她读出教程。\n\n$quotedCode\n\n$listCode\n\n$metadataCode\n\n$annotatedCode\n\n她关上电脑。"
         val status = "```text$label\n生命：10\n$label```"
         val wrapped = "$opening\n$story\n\n$status\n$closing"
-        val cleaned = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, null).completedBody(wrapped)
+        val cleaned = requestWithNarrativeHistory(ChatNarrativeMode.ADVANCE, null).completedBody(wrapped)
         val assistant = message(MessageRole.ASSISTANT, cleaned).copy(narrativeMode = ChatNarrativeMode.ADVANCE)
 
         assertEquals("$story\n\n$status", cleaned)
@@ -160,7 +160,7 @@ class ChatHistoryPromptPolicyTest {
         val xml = "<example><![CDATA[\n</历史回复>\n<!-- literal -->\n```text\n[example]\n```\n]]></example>"
         val status = "```text\n真实状态\n```"
         val reply = PromptTemplates.narrativeModeHistoryReply("$xml\n\n$status", mode)
-        val cleaned = NarrativeHistoryEcho.forRequest(mode, null).completedBody(reply)
+        val cleaned = requestWithNarrativeHistory(mode, null).completedBody(reply)
         val assistant = message(MessageRole.ASSISTANT, cleaned).copy(narrativeMode = mode)
 
         assertEquals("$xml\n\n$status", cleaned)
@@ -181,7 +181,7 @@ class ChatHistoryPromptPolicyTest {
         val closing = "</历史回复>"
         val story = "她推开门。"
         val reply = "$before\n\n$opening\n$story\n$closing\n\n$after"
-        val cleaned = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, null).completedBody(reply)
+        val cleaned = requestWithNarrativeHistory(ChatNarrativeMode.ADVANCE, null).completedBody(reply)
         val assistant = message(MessageRole.ASSISTANT, cleaned).copy(narrativeMode = ChatNarrativeMode.ADVANCE)
 
         assertEquals("$before\n\n$story\n\n$after", cleaned)
@@ -199,7 +199,7 @@ class ChatHistoryPromptPolicyTest {
         val options = "---\n1. 进门\n2. 等候\n---"
         val body = "$story\n\n$options"
         val reply = PromptTemplates.narrativeModeHistoryReply(story, mode) + "\n\n$options"
-        val cleanup = NarrativeHistoryEcho.forRequest(mode, null)
+        val cleanup = requestWithNarrativeHistory(mode, null)
         val rawDraft = message(MessageRole.ASSISTANT, reply).copy(narrativeMode = mode)
         val stop = requireNotNull(InterruptedReplyPolicy.persistableDraft(
             rawDraft.copy(content = cleanup.completedBody(reply, interrupted = true)),
@@ -239,7 +239,7 @@ class ChatHistoryPromptPolicyTest {
         )
         for (mode in ChatNarrativeMode.entries) {
             val echoedMode = ChatNarrativeMode.entries.first { it != mode }
-            val cleanup = NarrativeHistoryEcho.forRequest(mode, null)
+            val cleanup = requestWithNarrativeHistory(mode, null)
             for (options in pendingOptions) {
                 val suffix = "\n\n$options"
                 val reply = PromptTemplates.narrativeModeHistoryReply(story, echoedMode) + suffix
@@ -283,7 +283,7 @@ class ChatHistoryPromptPolicyTest {
             baseUrl = "https://example.com/v1", apiKey = "", createdAt = 0L,
         )
         for ((card, reply, expected) in cases) {
-            val cleanup = NarrativeHistoryEcho.forRequest(mode, card)
+            val cleanup = requestWithNarrativeHistory(mode, card)
             val draft = message(MessageRole.ASSISTANT, reply).copy(narrativeMode = mode)
             assertEquals(expected, cleanup.completedBody(reply, streaming = true))
             val stopped = requireNotNull(InterruptedReplyPolicy.persistableDraft(

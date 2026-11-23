@@ -141,27 +141,27 @@ object NarrativeHistoryEcho {
         private val repairOpenings: Set<String>? = null,
         private val repairLiteralSources: List<String> = emptyList(),
     ) {
+        private val projectedOpenings = mutableSetOf<String>()
         private val projectedDuplicateOpenings = mutableSetOf<String>()
         private val projectedClosings = mutableSetOf<String>()
         private val narrativeHeadings = mutableSetOf<String>()
-        private var currentUserText: String? = null
-        private var authoredPairs: Set<String> = emptySet()
+        private val sentUserTexts = mutableSetOf<String>()
+        private val authoredPairs = mutableSetOf<String>()
 
         fun recordNarrativePrompt(prompt: String, userText: String?) {
             prompt.lineSequence().forEachIndexed { index, line ->
                 if (line.isNotBlank() && (index == 0 || line in narrativeModeHeadings)) narrativeHeadings += line
             }
-            if (currentUserText != userText) {
-                currentUserText = userText
-                authoredPairs = declaredUserPairs(userText)
+            if (userText != null && sentUserTexts.add(userText)) {
+                authoredPairs += declaredUserPairs(userText)
             }
         }
 
         private fun isAuthored(token: String): Boolean =
-            formatCard?.contains(token) == true || currentUserText?.contains(token) == true
+            formatCard?.contains(token) == true || sentUserTexts.any { token in it }
 
         private fun isAuthoredClosing(token: String): Boolean {
-            if (currentUserText?.contains(token) == true) return true
+            if (sentUserTexts.any { token in it }) return true
             val card = formatCard ?: return false
             var position = card.indexOf(token)
             while (position >= 0) {
@@ -174,14 +174,16 @@ object NarrativeHistoryEcho {
         val declaresLegacyHistoryWrapper: Boolean
             get() = legacyWrapper.opening in formatOutput.declaredOpenings
 
-        /** Record double framing that entered this request around a stored single pair. */
+        /** Record the transport framing added to this request, including a retained legacy projection. */
         fun recordHistoryProjection(body: String, projection: String) {
             if (projection == body && isStandaloneLegacyHistoryWrapper(projection)) {
+                projectedOpenings += legacyWrapper.opening
                 projectedClosings += legacyWrapper.closings.first { projection.endsWith(it) }
             }
             for (wrapper in wrappers) {
                 val declaredSinglePair = wrapper.opening in formatOutput.singlePairOpenings
                 if (projection != "${wrapper.opening}\n$body\n${wrapper.closings.first()}") continue
+                projectedOpenings += wrapper.opening
                 projectedClosings += wrapper.closings.first()
                 if (wrapper.opening in projectedDuplicateOpenings) continue
                 val undeclaredTransportPair = wrapper != legacyWrapper &&
@@ -218,11 +220,15 @@ object NarrativeHistoryEcho {
             val lengths = if (reply == text.indices) partLengths else partLengths.trimTo(reply, text.length)
             val cleaned = cleanCompletedBody(
                 body, formatOutput, interrupted, lengths, streaming, projectedDuplicateOpenings,
+                allowedOpenings = projectedOpenings + formatOutput.counterexampleOpenings,
                 authoredPairs = authoredPairs,
                 cleanExposedBody = { inner ->
                     val exposed = inner.substring(withoutEchoedHeading(inner, headings, provisional, ::isAuthored))
                     withoutHeadingBeforeTrailer(exposed, headings, provisional, formatOutput)
                 },
+                cleanPartHeading = { part: String, isJoinedLiteral: (Int) -> Boolean ->
+                    part.substring(withoutEchoedHeading(part, headings, provisional, ::isAuthored, isJoinedLiteral))
+                }.takeIf { headings.isNotEmpty() },
             )
             val unwrapped = if (cleaned != body) cleaned else {
                 val closings = projectedClosings.filterNot(::isAuthoredClosing)
@@ -291,22 +297,23 @@ object NarrativeHistoryEcho {
     internal fun forFormatRepair(formatCard: String?, original: String, userText: String? = null): RequestCleanup {
         val output = formatCard?.let(::declaredOutput) ?: FormatOutput()
         val sources = listOfNotNull(original, userText)
-        val candidates = wrappers.filter { wrapper ->
-            wrapper.opening in output.counterexampleOpenings && wrapper.opening !in output.declaredOpenings &&
-                sources.none { wrapper.opening in it }
+        val candidates = wrappers.filter {
+            it.opening in output.counterexampleOpenings && it.opening !in output.declaredOpenings
         }
-        val closings = candidates.flatMap(Wrapper::closings).toSet()
-        // A closing delimiter inside a literal is independent of a newly emitted outer pair.
+        val delimiterTokens = candidates.flatMapTo(mutableSetOf()) { listOf(it.opening) + it.closings }
+        // Delimiters inside a literal are independent of a newly emitted outer pair.
         // Keep the stricter source check for orphan closers, where there is no matching opener.
-        val visibleClosings = sources.flatMapTo(mutableSetOf()) { source ->
-            if (closings.none { it in source }) return@flatMapTo emptyList()
+        val visibleDelimiters = sources.flatMapTo(mutableSetOf()) { source ->
+            if (delimiterTokens.none { it in source }) return@flatMapTo emptyList()
             val tags = wrapperFamilyTokens.values.flatMap { it.findAll(source).toList() }
             val literals = classifyLiterals(source, tags)
-            tags.filter { it.value in closings && literals.isVisibleWrapperTag(source, it, includeStandaloneLazyTags = true) }
+            tags.filter {
+                it.value in delimiterTokens && literals.isVisibleWrapperTag(source, it, includeStandaloneLazyTags = true)
+            }
                 .map { it.value }
         }
         val openings = candidates.filter { wrapper ->
-            wrapper.closings.none { it in visibleClosings }
+            wrapper.opening !in visibleDelimiters && wrapper.closings.none { it in visibleDelimiters }
         }.mapTo(mutableSetOf(), Wrapper::opening)
         return RequestCleanup(
             enabled = openings.isNotEmpty(), formatOutput = output, repairOpenings = openings,
@@ -316,6 +323,7 @@ object NarrativeHistoryEcho {
 
     private fun withoutEchoedHeading(
         text: String, headings: List<String>, provisional: Boolean, isAuthored: (String) -> Boolean,
+        isJoinedLiteral: (Int) -> Boolean = { false },
     ): IntRange {
         if (headings.isEmpty() || text.isBlank()) return text.indices
         val literals by lazy(LazyThreadSafetyMode.NONE) { classifyLiterals(text, includeUnclosed = provisional) }
@@ -329,7 +337,7 @@ object NarrativeHistoryEcho {
             val start = (bodyStart until text.length).firstOrNull { !text[it].isHistoryLineBreak() } ?: break
             val end = text.indexOfAny(charArrayOf('\r', '\n'), start).takeIf { it >= 0 } ?: text.length
             if (!matches(text.substring(start, end), provisional && end == text.length) ||
-                !literals.isUnprotected(start)
+                !literals.isUnprotected(start) || isJoinedLiteral(start)
             ) break
             bodyStart = (end until text.length).firstOrNull { !text[it].isHistoryLineBreak() } ?: text.length
         }
@@ -338,7 +346,7 @@ object NarrativeHistoryEcho {
             val end = (bodyEnd - 1 downTo bodyStart).firstOrNull { !text[it].isWhitespace() }?.plus(1) ?: break
             val start = lineStart(text, end)
             if (!matches(text.substring(start, end), provisional && bodyEnd == text.length) ||
-                !literals.isUnprotected(start)
+                !literals.isUnprotected(start) || isJoinedLiteral(start)
             ) break
             bodyEnd = (start - 1 downTo bodyStart).firstOrNull { !text[it].isHistoryLineBreak() }?.plus(1) ?: bodyStart
         }
@@ -637,6 +645,7 @@ object NarrativeHistoryEcho {
         allowedOpenings: Set<String>? = null,
         authoredPairs: Set<String> = emptySet(),
         cleanExposedBody: (String) -> String = { it },
+        cleanPartHeading: ((String, (Int) -> Boolean) -> String)? = null,
     ): String {
         fun clean(part: String) = cleanReply(
             part, streaming, interrupted, formatOutput = formatOutput,
@@ -674,23 +683,30 @@ object NarrativeHistoryEcho {
                 followsClosedWrapper: Boolean = previousGroupClosedWrapper,
             ): CleanedReply {
                 val start = parts[first].first
-                return cleanReply(
-                    text.substring(start, parts[last].last + 1), streaming, interrupted,
+                val part = text.substring(start, parts[last].last + 1)
+                fun isJoinedLiteral(index: Int, opening: Boolean): Boolean {
+                    val joinedIndex = start + index
+                    return joinedLiterals.ranges.any { joinedIndex in it } ||
+                        joinedLiterals.isMarkdownContainerLine(
+                            joinedIndex,
+                            includeStandaloneLazyTags = opening && !followsClosedWrapper,
+                        )
+                }
+                val cleaned = cleanReply(
+                    part, streaming, interrupted,
                     requirePair = requirePair, formatOutput = formatOutput,
                     projectedDuplicateOpenings = projectedDuplicateOpenings, allowedOpenings = allowedOpenings,
                     authoredPairs = authoredPairs, cleanExposedBody = cleanExposedBody,
-                    isJoinedLiteral = { index, opening ->
-                        val joinedIndex = start + index
-                        joinedLiterals.ranges.any { joinedIndex in it } ||
-                            joinedLiterals.isMarkdownContainerLine(
-                                joinedIndex,
-                                includeStandaloneLazyTags = opening && !followsClosedWrapper,
-                            )
-                    },
+                    isJoinedLiteral = ::isJoinedLiteral,
                 )
+                if (first == last && !requirePair && cleaned.body == part && cleanPartHeading != null) {
+                    return cleaned.copy(body = cleanPartHeading(part) { isJoinedLiteral(it, true) })
+                }
+                return cleaned
             }
             return buildString {
                 var first = 0
+                var appendedPart = false
                 while (first < parts.size) {
                     var cleaned = cleanParts(first, first)
                     var next = first + 1
@@ -700,17 +716,28 @@ object NarrativeHistoryEcho {
                             if (!grouped.matchedOuterPair) continue
                             if (last < parts.lastIndex) {
                                 // A plain following call may explain a tag example. Only another
-                                // eligible opener establishes a boundary inside the joined body.
+                                // eligible opener or a close in its own call establishes a boundary.
                                 val following = cleanParts(last + 1, last + 1, followsClosedWrapper = true)
-                                if (!following.matchedOuterPair && !following.couldSpanToolCalls) continue
+                                val closingPart = text.substring(parts[last]).trim()
+                                if (!following.matchedOuterPair && !following.couldSpanToolCalls &&
+                                    wrappers.none { closingPart in it.closings }
+                                ) {
+                                    // Preserve an ambiguous group intact instead of stripping half its pair.
+                                    cleaned = CleanedReply(text.substring(parts[first].first, parts[last].last + 1))
+                                    next = last + 1
+                                    break
+                                }
                             }
                             cleaned = grouped
                             next = last + 1
                             break
                         }
                     }
-                    if (first > 0) append('\n')
-                    append(cleaned.body)
+                    if (cleaned.body.isNotEmpty() || next == first + 1 && parts[first].isEmpty()) {
+                        if (appendedPart) append('\n')
+                        append(cleaned.body)
+                        appendedPart = true
+                    }
                     // A genuine closing tag ends that reply's quoted paragraph before the next call.
                     previousGroupClosedWrapper = cleaned.matchedOuterPair
                     first = next

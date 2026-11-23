@@ -42,7 +42,7 @@ class NarrativeHistoryEchoTest {
             "---\n**【行动选项】**\n\n1.**进门**\n\n2.**等候**\n\n3.**敲门**\n---",
         )
         for (mode in ChatNarrativeMode.entries) {
-            val cleanup = NarrativeHistoryEcho.forRequest(mode, null)
+            val cleanup = requestWithNarrativeHistory(mode, null)
             val opening = "<历史回复 模式=\"${mode.shortLabel}\">"
             val closing = "</历史回复>"
             for (newLine in listOf("\n", "\r\n")) for (tail in tails) {
@@ -74,7 +74,7 @@ class NarrativeHistoryEchoTest {
         )
         for (echoMode in ChatNarrativeMode.entries) {
             val requestMode = ChatNarrativeMode.entries.first { it != echoMode }
-            val cleanup = NarrativeHistoryEcho.forRequest(requestMode, null)
+            val cleanup = requestWithNarrativeHistory(requestMode, null)
             val wrapped = PromptTemplates.narrativeModeHistoryReply(story, echoMode)
             for ((body, closer) in layouts) {
                 val drafts = listOf("$body  ", "$body\n${closer.take(1)}", "$body\n${closer.dropLast(1)}", "$body\n3.")
@@ -110,7 +110,7 @@ class NarrativeHistoryEchoTest {
         )
         for (mode in ChatNarrativeMode.entries) for (lineBreak in listOf("\n", "\r\n")) {
             val wrapped = PromptTemplates.narrativeModeHistoryReply(story, mode).replace("\n", lineBreak)
-            val active = NarrativeHistoryEcho.forRequest(mode, template.replace("\n", lineBreak))
+            val active = requestWithNarrativeHistory(mode, template.replace("\n", lineBreak))
             val prefixes = (1..opening.length).map(opening::take) +
                 (0..heading.length).map { "$opening\n\n${heading.take(it)}" }
             for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
@@ -130,7 +130,7 @@ class NarrativeHistoryEchoTest {
                 }
                 val incomplete = wrapped + lineBreak + lineBreak + "————"
                 for (card in illustrativeCards) {
-                    val unproven = NarrativeHistoryEcho.forRequest(mode, card)
+                    val unproven = requestWithNarrativeHistory(mode, card)
                     assertEquals(card, incomplete, unproven.completedBody(
                         incomplete, streaming = streaming, interrupted = interrupted,
                     ))
@@ -147,7 +147,7 @@ class NarrativeHistoryEchoTest {
         val sample = "```xml\n$wrapped\n```"
         val label = "请严格按照以下固定模板作答，务必逐字保留首尾标签，不要输出代码围栏："
         for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
-            val declared = NarrativeHistoryEcho.forRequest(mode, "$label\n$sample")
+            val declared = requestWithNarrativeHistory(mode, "$label\n$sample")
             assertEquals(wrapped, declared.completedBody(wrapped, streaming = streaming, interrupted = interrupted))
             for (card in listOf(
                 "“$label”\n$sample",
@@ -156,7 +156,7 @@ class NarrativeHistoryEchoTest {
                 "以下是禁止输出的反例。\n$label\n$sample",
                 "$label\n$sample\n请勿在本轮输出以下任何历史标签。",
             )) {
-                val illustrative = NarrativeHistoryEcho.forRequest(mode, card)
+                val illustrative = requestWithNarrativeHistory(mode, card)
                 assertEquals(card, story, illustrative.completedBody(
                     wrapped, streaming = streaming, interrupted = interrupted,
                 ))
@@ -173,13 +173,13 @@ class NarrativeHistoryEchoTest {
         val prohibition = "请勿在本轮输出以下任何历史标签"
         for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
             for (card in listOf("$prohibition：\n$sample", "$sample\n$prohibition。")) {
-                val illustrative = NarrativeHistoryEcho.forRequest(mode, card)
+                val illustrative = requestWithNarrativeHistory(mode, card)
                 assertEquals(card, story, illustrative.completedBody(
                     wrapped, streaming = streaming, interrupted = interrupted,
                 ))
             }
             for (card in listOf("“$prohibition：”\n$sample", "<!-- $prohibition： -->\n$sample")) {
-                val declared = NarrativeHistoryEcho.forRequest(mode, card)
+                val declared = requestWithNarrativeHistory(mode, card)
                 assertEquals(card, wrapped, declared.completedBody(
                     wrapped, streaming = streaming, interrupted = interrupted,
                 ))
@@ -191,7 +191,7 @@ class NarrativeHistoryEchoTest {
     fun leadingEnglishContractionsKeepTheOuterCloseVisibleAndRealQuotesLiteral() {
         val close = "</历史回复>"
         for (mode in ChatNarrativeMode.entries) {
-            val cleanup = NarrativeHistoryEcho.forRequest(mode, null)
+            val cleanup = requestWithNarrativeHistory(mode, null)
             val stories = listOf(
                 "'Twas a cold night.",
                 "‘Tis near dawn.",
@@ -229,8 +229,8 @@ class NarrativeHistoryEchoTest {
             "```markdown\n$options\n```",
             "她引用：“\n$options\n”",
         )
-        val cleanup = NarrativeHistoryEcho.forRequest(mode, null)
-        val declared = NarrativeHistoryEcho.forRequest(mode, "本轮输出模板：$opening{正文}$closing")
+        val cleanup = requestWithNarrativeHistory(mode, null)
+        val declared = requestWithNarrativeHistory(mode, "本轮输出模板：$opening{正文}$closing")
         for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
             for (literal in literals) {
                 val raw = "$pair\n\n$literal"
@@ -511,7 +511,7 @@ class NarrativeHistoryEchoTest {
         for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
             assertEquals(
                 "$quote\n$story\n<!-- 编辑备注 -->",
-                NarrativeHistoryEcho.forRequest(ChatNarrativeMode.FOCUS, null).completedBody(
+                requestWithNarrativeHistory(ChatNarrativeMode.FOCUS, null).completedBody(
                     parts.joinToString("\n"), streaming = streaming, interrupted = interrupted,
                     partLengths = parts.map(String::length),
                 ),
@@ -534,7 +534,7 @@ class NarrativeHistoryEchoTest {
         val opening = "<历史回复 模式=\"推进\">"
         val raw = "$opening\n格式卡正文\n</历史回复>"
         for ((mode, format) in listOf(null to null, ChatNarrativeMode.ADVANCE to raw)) {
-            val cleanup = NarrativeHistoryEcho.forRequest(mode, format)
+            val cleanup = requestWithNarrativeHistory(mode, format)
             assertEquals(raw, cleanup.completedBody(raw))
             assertEquals(raw, cleanup.completedBody(raw, streaming = true))
         }
@@ -575,7 +575,7 @@ class NarrativeHistoryEchoTest {
         val closing = "</历史回复>"
         for (mode in ChatNarrativeMode.entries) {
             val opening = "<历史回复 模式=\"${mode.shortLabel}\">"
-            val cleanup = NarrativeHistoryEcho.forRequest(mode, null)
+            val cleanup = requestWithNarrativeHistory(mode, null)
             for ((lead, end) in listOf("<n=\"琳\"/>[" to "]()", "＜ｎ＝“琳”／＞［" to "］（）")) {
                 val draft = "${lead}抄下这行：\n$closing"
                 val body = "$draft\n这是纸上的标签。$end\n门开了。"
@@ -600,7 +600,7 @@ class NarrativeHistoryEchoTest {
         val sample = "回复样张：\n```xml\n$wrapped\n```"
         val instruction = "每次回复必须逐字保留以下首尾标签，正文写在两者之间。不要输出代码围栏。"
         for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
-            val declared = NarrativeHistoryEcho.forRequest(mode, "$instruction\n$sample")
+            val declared = requestWithNarrativeHistory(mode, "$instruction\n$sample")
             assertEquals(wrapped, declared.completedBody(wrapped, interrupted = interrupted, streaming = streaming))
             for (card in listOf(
                 sample,
@@ -608,7 +608,7 @@ class NarrativeHistoryEchoTest {
                 "旁注引述了规则：$instruction\n$sample",
                 "$instruction\n$sample\n不得输出上面的标签。",
             )) {
-                val illustrative = NarrativeHistoryEcho.forRequest(mode, card)
+                val illustrative = requestWithNarrativeHistory(mode, card)
                 assertEquals(story, illustrative.completedBody(wrapped, interrupted = interrupted, streaming = streaming))
             }
         }
@@ -624,14 +624,14 @@ class NarrativeHistoryEchoTest {
         val template = panel.replace("车站", "{地点}")
         val raw = "$wrapped\n\n$panel"
         val labels = listOf("每次回复末尾必须输出以下状态栏：", "每次回复以一个状态栏结束。\n回复样张：")
-        val preview = NarrativeHistoryEcho.forRequest(mode, "${labels.first()}\n$template")
+        val preview = requestWithNarrativeHistory(mode, "${labels.first()}\n$template")
         for (pending in listOf(panel.take(4), panel.substringBeforeLast("```"))) {
             assertEquals("$story\n\n$pending", preview.completedBody("$wrapped\n\n$pending", streaming = true))
             assertEquals("$story\n\n$pending", preview.completedBody("$wrapped\n\n$pending", interrupted = true))
         }
         for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
             for (label in labels) {
-                val declared = NarrativeHistoryEcho.forRequest(mode, "$label\n$template")
+                val declared = requestWithNarrativeHistory(mode, "$label\n$template")
                 assertEquals("$story\n\n$panel", declared.completedBody(raw, interrupted = interrupted, streaming = streaming))
             }
             for (card in listOf(
@@ -639,7 +639,7 @@ class NarrativeHistoryEchoTest {
                 "以下是禁止输出的反例。\n${labels.first()}\n$template",
                 "${labels.first()}\n${template.replace("```text", "```status")}",
             )) {
-                val illustrative = NarrativeHistoryEcho.forRequest(mode, card)
+                val illustrative = requestWithNarrativeHistory(mode, card)
                 assertEquals(raw, illustrative.completedBody(raw, interrupted = interrupted, streaming = streaming))
                 assertEquals("$story\n\n$panel", illustrative.completedBody(
                     PromptTemplates.narrativeModeHistoryReply("$story\n\n$panel", mode),
@@ -661,11 +661,11 @@ class NarrativeHistoryEchoTest {
             "> 示例原文：\n$raw",
         )
         for (format in mentions) {
-            val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, format)
+            val cleanup = requestWithNarrativeHistory(ChatNarrativeMode.ADVANCE, format)
             assertEquals("普通正文", cleanup.completedBody(raw))
         }
         val declaration = "请按以下格式输出：\n$raw"
-        val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, declaration)
+        val cleanup = requestWithNarrativeHistory(ChatNarrativeMode.ADVANCE, declaration)
         assertEquals(raw, cleanup.completedBody(raw))
     }
 
@@ -679,7 +679,7 @@ class NarrativeHistoryEchoTest {
             "请按以下格式输出：\n$pair",
         )) {
             assertEquals(declaration, pair,
-                NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, declaration).completedBody(pair))
+                requestWithNarrativeHistory(ChatNarrativeMode.ADVANCE, declaration).completedBody(pair))
         }
 
         for (mention in listOf(
@@ -693,7 +693,7 @@ class NarrativeHistoryEchoTest {
             "<!-- 本轮输出模板：$pair -->",
         )) {
             assertEquals(mention, "{正文}",
-                NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, mention).completedBody(pair))
+                requestWithNarrativeHistory(ChatNarrativeMode.ADVANCE, mention).completedBody(pair))
         }
     }
 
@@ -724,13 +724,13 @@ class NarrativeHistoryEchoTest {
             val raw = reply.replace("\n", lineBreak)
             for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
                 for (declaration in declarations) {
-                    val cleanup = NarrativeHistoryEcho.forRequest(mode, declaration.replace("\n", lineBreak))
+                    val cleanup = requestWithNarrativeHistory(mode, declaration.replace("\n", lineBreak))
                     assertEquals(declaration, raw, cleanup.completedBody(
                         raw, streaming = streaming, interrupted = interrupted,
                     ))
                 }
                 for (example in examples) {
-                    val cleanup = NarrativeHistoryEcho.forRequest(mode, example.replace("\n", lineBreak))
+                    val cleanup = requestWithNarrativeHistory(mode, example.replace("\n", lineBreak))
                     assertEquals(example, story, cleanup.completedBody(
                         raw, streaming = streaming, interrupted = interrupted,
                     ))
@@ -746,7 +746,7 @@ class NarrativeHistoryEchoTest {
         for (mode in ChatNarrativeMode.entries) {
             val label = mode.shortLabel
             val open = "<历史回复 模式=\"$label\">"
-            val cleanup = NarrativeHistoryEcho.forRequest(mode, null)
+            val cleanup = requestWithNarrativeHistory(mode, null)
             for (lineBreak in listOf("\n", "\r\n")) {
                 val code = "    $close  "
                 val fenced = listOf("~~~xml", close, "~~~  ").joinToString(lineBreak)
@@ -770,26 +770,26 @@ class NarrativeHistoryEchoTest {
         val inner = "<历史回复 模式=\"聚焦\">{正文}</历史回复>"
         val template = "本轮输出模板：<历史回复 模式=\"推进\">$inner</历史回复>"
         val raw = template.substringAfter('：')
-        fun clean(card: String) = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, card).completedBody(raw)
+        fun clean(card: String) = requestWithNarrativeHistory(ChatNarrativeMode.ADVANCE, card).completedBody(raw)
 
         assertEquals(raw, clean("$template <!-- 备注 -->"))
         assertEquals(inner, clean("$template（此处说明）"))
         assertEquals(inner, clean(template.removeSuffix("</历史回复>")))
         assertEquals(inner, clean(template.removeSuffix("</历史回复>") + "<!-- </历史回复> -->"))
         val multiline = "本轮输出模板：<历史回复 模式=\"推进\">\n$inner\n</历史回复>"
-        val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, multiline)
+        val cleanup = requestWithNarrativeHistory(ChatNarrativeMode.ADVANCE, multiline)
         assertEquals("{正文}", cleanup.completedBody(inner))
     }
 
     @Test fun bareDeclarationRequiresALineWithNoVisibleSuffix() {
         val raw = "<历史回复 模式=\"推进\">正文</历史回复>"
         for (format in listOf(raw, "$raw \t", "$raw <!-- 注释 -->", "$raw <!-- 注\n释 -->", "$raw\n附加说明")) {
-            val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, format)
+            val cleanup = requestWithNarrativeHistory(ChatNarrativeMode.ADVANCE, format)
             assertEquals(format, raw, cleanup.completedBody(raw))
         }
         val mentions = listOf("$raw 只是历史标记示例，请勿使用。", "$raw <!-- 注释 --> 仅示例。")
         for (format in mentions) {
-            val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, format)
+            val cleanup = requestWithNarrativeHistory(ChatNarrativeMode.ADVANCE, format)
             assertEquals(format, "正文", cleanup.completedBody(raw))
         }
     }
@@ -799,7 +799,7 @@ class NarrativeHistoryEchoTest {
         val focus = "<历史回复 模式=\"聚焦\">"
         val close = "</历史回复>"
         val declared = "$advance 格式正文 $close"
-        val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, "本轮输出模板：$advance{正文}$close")
+        val cleanup = requestWithNarrativeHistory(ChatNarrativeMode.ADVANCE, "本轮输出模板：$advance{正文}$close")
         val shared = "<历史回复 模式=\""
         for (partial in listOf(shared, "${advance.dropLast(1)}")) {
             assertEquals(partial, cleanup.completedBody(partial, streaming = true))
@@ -1021,7 +1021,7 @@ class NarrativeHistoryEchoTest {
     fun xmlCdataKeepsLiteralTagsWhileRemovingTheOuterEcho() {
         val closing = "</历史回复>"
         for (mode in ChatNarrativeMode.entries) {
-            val cleanup = NarrativeHistoryEcho.forRequest(mode, null)
+            val cleanup = requestWithNarrativeHistory(mode, null)
             val opening = "<历史回复 模式=\"${mode.shortLabel}\">"
             val xmlStart = "<example><![CDATA[\n$closing\n<!-- literal opener\n```text\n\"literal quote"
             val xml = "$xmlStart\n]]></example>"
@@ -1179,4 +1179,16 @@ class NarrativeHistoryEchoTest {
             }
         }
     }
+}
+
+/** Provide the canonical projected forms used by the lexical fixtures. */
+internal fun requestWithNarrativeHistory(
+    mode: ChatNarrativeMode?, formatCard: String?,
+): NarrativeHistoryEcho.RequestCleanup = NarrativeHistoryEcho.forRequest(mode, formatCard).apply {
+    val body = "旧故事。"
+    for (historyMode in ChatNarrativeMode.entries) {
+        recordHistoryProjection(body, PromptTemplates.narrativeModeHistoryReply(body, historyMode))
+    }
+    val legacy = "<聚焦模式=\"沉浸\">\n$body\n</聚焦模式>"
+    recordHistoryProjection(legacy, legacy)
 }
