@@ -63,6 +63,37 @@ class NarrativeHistoryEchoTest {
     }
 
     @Test
+    fun pendingOptionClosersKeepTheEchoOutOfPreviewAndStopAcrossModes() {
+        val story = "门开了。"
+        val dashes = "—".repeat(22)
+        val label = "（横线为选项包裹格式，必须完整输出）"
+        val annotatedHeading = "$dashes$label\n**【行动选项】**"
+        val layouts = listOf(
+            "---\n1. 进门\n2. 等候" to "---",
+            "$annotatedHeading\n\n1.**进门** <!-- 旁注 -->\n\n2.**等候**" to "$label$dashes",
+        )
+        for (echoMode in ChatNarrativeMode.entries) {
+            val requestMode = ChatNarrativeMode.entries.first { it != echoMode }
+            val cleanup = NarrativeHistoryEcho.forRequest(requestMode, null)
+            val wrapped = PromptTemplates.narrativeModeHistoryReply(story, echoMode)
+            for ((body, closer) in layouts) {
+                val drafts = listOf("$body  ", "$body\n${closer.take(1)}", "$body\n${closer.dropLast(1)}", "$body\n3.")
+                for (draft in drafts) for (lineBreak in listOf("\n", "\r\n")) {
+                    val suffix = "\n\n$draft".replace("\n", lineBreak)
+                    val reply = wrapped.replace("\n", lineBreak) + suffix
+                    assertEquals(story + suffix, cleanup.completedBody(reply, streaming = true))
+                    assertEquals(story + suffix, cleanup.completedBody(reply, interrupted = true))
+                    assertEquals(reply, cleanup.completedBody(reply))
+                }
+                val complete = "\n\n$body\n$closer"
+                assertEquals(story + complete, cleanup.completedBody(wrapped + complete))
+            }
+            val partialFirstChoice = "\n\n$annotatedHeading\n\n1."
+            assertEquals(story + partialFirstChoice, cleanup.completedBody(wrapped + partialFirstChoice, streaming = true))
+        }
+    }
+
+    @Test
     fun literalDashBlocksAndAnOwnedTemplateKeepTheirWrapper() {
         val mode = ChatNarrativeMode.FOCUS
         val opening = "<历史回复 模式=\"聚焦\">"
@@ -72,12 +103,15 @@ class NarrativeHistoryEchoTest {
         val literals = listOf(
             "---\n这些是示例后的说明。\n---",
             "---\n1.2 meters\n2.5 seconds\n---",
-            "---\n1. 进门\n2. 等候",
+            "---",
+            "---\n1. 进门",
+            "---\n1. 进门\n2. 等候\n--\n",
             "---\n1. 进门\n随后解释示例。\n2. 等候\n---",
             options.lineSequence().joinToString("\n") { "> $it" },
             options.lineSequence().joinToString("\n") { "    $it" },
             "- 示例\n" + options.lineSequence().joinToString("\n") { "  $it" },
             "```markdown\n$options\n```",
+            "她引用：“\n$options\n”",
         )
         val cleanup = NarrativeHistoryEcho.forRequest(mode, null)
         val declared = NarrativeHistoryEcho.forRequest(mode, "本轮输出模板：$opening{正文}$closing")
@@ -86,8 +120,10 @@ class NarrativeHistoryEchoTest {
                 val raw = "$pair\n\n$literal"
                 assertEquals(raw, cleanup.completedBody(raw, streaming = streaming, interrupted = interrupted))
             }
-            val owned = "$pair\n\n$options"
-            assertEquals(owned, declared.completedBody(owned, streaming = streaming, interrupted = interrupted))
+            for (ownedOptions in listOf(options, options.removeSuffix("---"))) {
+                val owned = "$pair\n\n$ownedOptions"
+                assertEquals(owned, declared.completedBody(owned, streaming = streaming, interrupted = interrupted))
+            }
         }
     }
 

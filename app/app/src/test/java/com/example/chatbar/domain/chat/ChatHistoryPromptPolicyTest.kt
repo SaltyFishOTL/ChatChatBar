@@ -224,6 +224,48 @@ class ChatHistoryPromptPolicyTest {
     }
 
     @Test
+    fun stoppedOptionSuffixReplaysReceivedBytesWithOneWrapperInTheNextRequest() {
+        val story = "她在门口停下。"
+        val dashes = "—".repeat(22)
+        val label = "（横线为选项包裹格式，必须完整输出）"
+        val pendingOptions = listOf(
+            "---\n1. 进门  \n2. 等候\n--",
+            "$dashes$label\n**【行动选项】**\n\n1.**进门**  \n\n2.**等候**\n${label.take(6)}",
+        )
+        val service = StreamingChatService()
+        val model = ModelConfig(
+            id = "fixture", displayName = "fixture", modelName = "fixture",
+            baseUrl = "https://example.com/v1", apiKey = "", createdAt = 0L,
+        )
+        for (mode in ChatNarrativeMode.entries) {
+            val echoedMode = ChatNarrativeMode.entries.first { it != mode }
+            val cleanup = NarrativeHistoryEcho.forRequest(mode, null)
+            for (options in pendingOptions) {
+                val suffix = "\n\n$options"
+                val reply = PromptTemplates.narrativeModeHistoryReply(story, echoedMode) + suffix
+                val stopped = requireNotNull(InterruptedReplyPolicy.persistableDraft(
+                    message(MessageRole.ASSISTANT, cleanup.completedBody(reply, interrupted = true))
+                        .copy(narrativeMode = mode),
+                ))
+                val expectedBody = story + suffix
+                assertEquals(expectedBody, stopped.displayContent)
+                for (zone in ChatHistoryPromptZone.entries) {
+                    val source = ChatHistoryPromptPolicy.sourceText(stopped, false, zone)
+                    val history = ChatHistoryPromptPolicy.renderedHistoryText(stopped, source)
+                    val nextUserText = "继续。"
+                    val apiMessages = listOf(ChatApiMessage.text("assistant", history), ChatApiMessage.text("user", nextUserText))
+                    val body = service.buildRequestBody(apiMessages, model, stream = true)
+                    val messages = Json.parseToJsonElement(body).jsonObject.getValue("messages").jsonArray
+                    assertEquals(JsonPrimitive("assistant"), messages.first().jsonObject.getValue("role"))
+                    assertEquals(JsonPrimitive(PromptTemplates.narrativeModeHistoryReply(expectedBody, mode)),
+                        messages.first().jsonObject.getValue("content"))
+                    assertEquals(JsonPrimitive(nextUserText), messages.last().jsonObject.getValue("content"))
+                }
+            }
+        }
+    }
+
+    @Test
     fun affirmedMultilineTemplateAndLiteralCodeSurviveIntoSerializedHistory() {
         val mode = ChatNarrativeMode.ADVANCE
         val story = "她把书合上。"

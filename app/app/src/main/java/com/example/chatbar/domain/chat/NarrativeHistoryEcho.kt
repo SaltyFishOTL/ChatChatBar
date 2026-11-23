@@ -306,7 +306,7 @@ object NarrativeHistoryEcho {
         }
         fun endsReply(tag: MatchResult): Boolean =
             tag.range.last + 1 == end.length ||
-                hasOnlyReplySuffix(body, tag.range.last + 1, suffixRanges, streaming || interrupted)
+                hasOnlyReplySuffix(body, tag.range.last + 1, suffixRanges, literals, streaming || interrupted)
 
         val terminal = visibleTags.lastOrNull()?.takeIf { tag ->
             tag.value in wrapper.closings && !literals.isLazyQuoteLine(tag.range.first) && endsReply(tag)
@@ -409,12 +409,12 @@ object NarrativeHistoryEcho {
     }
 
     private fun hasOnlyReplySuffix(
-        text: String, start: Int, suffixRanges: List<IntRange>, provisional: Boolean,
+        text: String, start: Int, suffixRanges: List<IntRange>, literals: ReplyLiterals, provisional: Boolean,
     ): Boolean {
         var next = start
         for (range in suffixRanges) {
             if (range.first < start || range.last < next) continue
-            if (range.first > next && !text.subSequence(next, range.first).isBlank()) return false
+            if (range.first > next && !text.subSequence(next, range.first).isBlank()) break
             next = range.last + 1
         }
         val remainder = text.substring(next).trimStart()
@@ -422,11 +422,16 @@ object NarrativeHistoryEcho {
         if (!provisional) return false
         if (commentOpening.startsWith(remainder.trimEnd())) return true
 
-        // A status opener can arrive a token at a time. A newline already committed to ordinary code stays literal.
-        if (!MarkdownCodeFences.legacyStatusOpening.startsWith(remainder)) return false
         val position = text.length - remainder.length
-        val indent = text.subSequence(lineStart(text, position), position)
-        return indent.length <= 3 && indent.all { it == ' ' }
+        val line = lineStart(text, position)
+        val indent = text.subSequence(line, position)
+        if (indent.length > 3 || indent.any { it != ' ' }) return false
+
+        // A status opener can arrive a token at a time. A newline already committed to ordinary code stays literal.
+        if (MarkdownCodeFences.legacyStatusOpening.startsWith(remainder)) return true
+        return literals.ranges.none { position in it } &&
+            !literals.isMarkdownContainerLine(position, includeStandaloneLazyTags = true) &&
+            isPendingRoleplayActionSuffix(literals.markdown.substring(line) + text.substring(literals.markdown.length))
     }
 
     internal fun isStandaloneLegacyHistoryWrapper(text: String): Boolean {

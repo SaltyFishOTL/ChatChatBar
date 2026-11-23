@@ -317,6 +317,9 @@ private val dashFencePattern = Regex("(?m)^[ \t]*---[ \t]*$")
 private val actionOptionsHeading = Regex(" {0,3}${Regex.escape("**【行动选项】**")}[ \\t]*")
 private val numberedActionOption = Regex(" {0,3}([1-9][0-9]{0,8})\\.(?:[ \\t]+|(?=\\*\\*))\\S.*")
 
+private fun matchesNumberedActionOption(line: String, ordinal: Int): Boolean =
+    numberedActionOption.matchEntire(line)?.groupValues?.get(1) == ordinal.toString()
+
 /** A plain dash fence also wraps arbitrary prose, so only explicit ordered options identify a reply suffix. */
 internal fun roleplayListedActionRanges(text: String): Sequence<IntRange> =
     dashFencePattern.findAll(text)
@@ -330,7 +333,7 @@ internal fun roleplayListedActionRanges(text: String): Sequence<IntRange> =
                 .lineSequence().filter { it.isNotBlank() }.toList()
             val options = if (lines.firstOrNull()?.let(actionOptionsHeading::matches) == true) lines.drop(1) else lines
             val listed = options.size >= 2 && options.withIndex().all { (index, option) ->
-                numberedActionOption.matchEntire(option)?.groupValues?.get(1) == (index + 1).toString()
+                matchesNumberedActionOption(option, index + 1)
             }
             if (listed) opening.range.first..closing.range.last else null
         }
@@ -445,13 +448,47 @@ private fun mergeVisibleRanges(ranges: List<VisibleRange>): List<VisibleRange> {
 }
 
 private const val annotatedActionLabel = "（横线为选项包裹格式，必须完整输出）"
+private const val annotatedActionDashCount = 22
 private val annotatedActionBoundary = Regex(
-    "(?m)^ {0,3}(—{22}$annotatedActionLabel|$annotatedActionLabel—{22})[ \\t]*(?=\\r?\\n|\\z)",
+    "(?m)^ {0,3}(—{$annotatedActionDashCount}$annotatedActionLabel|" +
+        "$annotatedActionLabel—{$annotatedActionDashCount})[ \\t]*(?=\\r?\\n|\\z)",
 )
 private val annotatedActionBodyStart = Regex(
     "(?:[ \\t]*\\r?\\n)*${actionOptionsHeading.pattern}\\r?\\n" +
         "(?:[ \\t]*\\r?\\n)* {0,3}1\\.[ \\t]*\\S",
 )
+
+/** Recognize a received option suffix before its closing delimiter arrives. */
+internal fun isPendingRoleplayActionSuffix(text: String): Boolean {
+    val lines = text.lineSequence().filter { it.isNotBlank() }.toList()
+    val opening = lines.firstOrNull() ?: return false
+    val annotated = annotatedActionBoundary.matchEntire(opening)
+        ?.groupValues?.get(1)?.startsWith('—') == true
+    if (!annotated && !dashFencePattern.matches(opening)) return false
+    val hasHeading = lines.getOrNull(1)?.let(actionOptionsHeading::matches) == true
+    if (annotated && !hasHeading) return false
+
+    // The annotated delimiter and heading identify the block. Plain dashes need two ordered choices.
+    val minimumOptions = if (annotated) 0 else 2
+    val options = lines.drop(if (hasHeading) 2 else 1)
+    for ((index, line) in options.withIndex()) {
+        val ordinal = index + 1
+        if (matchesNumberedActionOption(line, ordinal)) continue
+        if (index != options.lastIndex || index < minimumOptions) return false
+        val lastCharacter = text.trimEnd(' ', '\t').lastOrNull()
+        if (lastCharacter == '\n' || lastCharacter == '\r') return false
+
+        val content = line.trimStart(' ')
+        if (line.length - content.length > 3) return false
+        val closing = if (annotated) annotatedActionLabel + "—".repeat(annotatedActionDashCount) else "---"
+        val marker = "$ordinal."
+        if (closing.startsWith(content) || marker.startsWith(content)) return true
+        if (!content.startsWith(marker)) return false
+        val partialBody = content.substring(marker.length).trim(' ', '\t')
+        return partialBody.length <= 2 && partialBody.all { it == '*' }
+    }
+    return options.size >= minimumOptions
+}
 
 /** The labeled option block in the bundled roleplay preset has mirrored, exact delimiters. */
 internal fun roleplayAnnotatedActionRanges(text: String): List<IntRange> {
