@@ -227,6 +227,19 @@ class NarrativeHistoryEchoTest {
     }
 
     @Test
+    fun punctuationBeforeRepeatedCommentsKeepsOnlyTheCodeExampleLiteral() {
+        val code = "```xml\n<!-- fenced comment -->\n```"
+        val notes = List(32) { index -> "<!-- note $index includes </历史回复> -->" }
+        val body = (listOf(code, "") + notes.map { "（旁注） $it" }).joinToString("\n")
+        val raw = "<历史回复 模式=\"聚焦\">\n$body\n</历史回复>"
+        val hidden = NarrativeHistoryEcho.hiddenHtmlCommentRanges(raw).map { raw.substring(it) }
+        assertEquals(notes, hidden)
+        assertEquals(body, NarrativeHistoryEcho.replyBody(raw, streaming = true))
+        assertEquals(body, NarrativeHistoryEcho.replyBody(raw, interrupted = true))
+        assertEquals(body, NarrativeHistoryEcho.replyBody(raw))
+    }
+
+    @Test
     fun keepsIsolatedMultilineCommentsAndReclassifiesMarkupThatCanChangeMarkdown() {
         val opening = "<历史回复 模式=\"聚焦\">"
         val closing = "</历史回复>"

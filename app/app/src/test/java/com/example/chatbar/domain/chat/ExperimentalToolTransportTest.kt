@@ -404,6 +404,48 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `a comment-only gap preserves its bytes between adjacent history pairs`() = runBlocking {
+        val first = PromptTemplates.narrativeModeHistoryReply("雨停了。", ChatNarrativeMode.FOCUS)
+        val second = PromptTemplates.narrativeModeHistoryReply("她推开门。", ChatNarrativeMode.FOCUS)
+        val note = "<!-- 段落提示 -->"
+        val gap = "\n$note"
+        val cleaned = "雨停了。$gap\n她推开门。"
+        val openerPrefix = second.take(2)
+        assertNarrativeReplyDeltas(
+            listOf(first, gap, "\n$openerPrefix", second.drop(openerPrefix.length)),
+            listOf("雨停了。", "雨停了。$gap", "雨停了。$gap\n", cleaned),
+            cleaned,
+            experimental = false,
+        )
+    }
+
+    @Test
+    fun `visible or fenced examples between adjacent history pairs stay literal`() = runBlocking {
+        val first = PromptTemplates.narrativeModeHistoryReply("第一个示例。", ChatNarrativeMode.FOCUS)
+        val second = PromptTemplates.narrativeModeHistoryReply("第二个示例。", ChatNarrativeMode.FOCUS)
+        val note = "<!-- 段落提示 -->"
+        for (gap in listOf("$note\n下面是另一个示例。", "~~~xml\n$note\n~~~")) {
+            val raw = "$first\n$gap\n$second"
+            assertNarrativeReplyStates(raw, raw, experimental = false)
+        }
+    }
+
+    @Test
+    fun `one tool call can contain adjacent history pairs before a separate prose call`(): Unit = runBlocking {
+        val first = PromptTemplates.narrativeModeHistoryReply("雨停了。", ChatNarrativeMode.FOCUS)
+        val second = PromptTemplates.narrativeModeHistoryReply("她推开门。", ChatNarrativeMode.FOCUS)
+        assertMultipartNarrativeReply(listOf("$first\n$second", "风吹进来。"), "雨停了。\n她推开门。\n风吹进来。")
+    }
+
+    @Test
+    fun `adjacent history pairs in a tool call stay literal within a cross-call fence`(): Unit = runBlocking {
+        val first = PromptTemplates.narrativeModeHistoryReply("第一个示例。", ChatNarrativeMode.FOCUS)
+        val second = PromptTemplates.narrativeModeHistoryReply("第二个示例。", ChatNarrativeMode.FOCUS)
+        val parts = listOf("~~~xml", "$first\n$second", "~~~\n这段在解释示例。")
+        assertMultipartNarrativeReply(parts, parts.joinToString("\n"))
+    }
+
+    @Test
     fun `visible XML documentation prohibition does not reserve a history wrapper`(): Unit = runBlocking {
         for (mode in ChatNarrativeMode.entries) {
             val example = PromptTemplates.narrativeModeHistoryReply("旧句。", mode)

@@ -1162,14 +1162,24 @@ object NarrativeHistoryEcho {
                             includeStandaloneLazyTags = opening && !followsClosedWrapper,
                         )
                 }
-                val cleaned = cleanReply(
-                    part, streaming, interrupted,
-                    requirePair = requirePair, formatOutput = formatOutput,
-                    projectedDuplicateOpenings = projectedDuplicateOpenings, projectedInnerOpenings = projectedInnerOpenings,
-                    allowedOpenings = allowedOpenings,
-                    literalOutput = literalOutput, trailerHeadings = trailerHeadings, cleanExposedBody = cleanExposedBody,
-                    isJoinedLiteral = ::isJoinedLiteral,
-                )
+                fun cleanSection(section: String, sectionStart: Int, requireSectionPair: Boolean): CleanedReply =
+                    cleanReply(
+                        section, streaming, interrupted,
+                        requirePair = requireSectionPair, formatOutput = formatOutput,
+                        projectedDuplicateOpenings = projectedDuplicateOpenings,
+                        projectedInnerOpenings = projectedInnerOpenings,
+                        allowedOpenings = allowedOpenings,
+                        literalOutput = literalOutput, trailerHeadings = trailerHeadings,
+                        cleanExposedBody = cleanExposedBody,
+                        isJoinedLiteral = { index, opening -> isJoinedLiteral(sectionStart + index, opening) },
+                    )
+                val cleaned = cleanSection(part, 0, requirePair)
+                if (first == last && cleaned.couldSpanToolCalls) {
+                    val adjacent = cleanAdjacentHistoryPairs(
+                        part, allowedOpenings.orEmpty(), formatOutput.declaredOpenings, streaming || interrupted,
+                    ) { section, sectionStart, _ -> cleanSection(section, sectionStart, requireSectionPair = true) }
+                    if (adjacent != null) return CleanedReply(adjacent, matchedOuterPair = true)
+                }
                 if (first == last && !requirePair && cleaned.body == part) {
                     val selection = cleanPartHeading?.invoke(part) {
                         isJoinedLiteral(it, true) || joinedLiterals.followsLiteralHeadingLead(start + it)
@@ -1244,8 +1254,8 @@ object NarrativeHistoryEcho {
             }
         }
         return cleanAdjacentHistoryPairs(
-            text, allowedOpenings.orEmpty(), formatOutput.declaredOpenings, streaming || interrupted, ::clean,
-        ) ?: clean(text).body
+            text, allowedOpenings.orEmpty(), formatOutput.declaredOpenings, streaming || interrupted,
+        ) { section, _, requirePair -> clean(section, requirePair) } ?: clean(text).body
     }
 
     private fun cleanAdjacentHistoryPairs(
@@ -1253,7 +1263,7 @@ object NarrativeHistoryEcho {
         allowedOpenings: Set<String>,
         declaredOpenings: Set<String>,
         provisional: Boolean,
-        clean: (String, Boolean) -> CleanedReply,
+        clean: (section: String, start: Int, requirePair: Boolean) -> CleanedReply,
     ): String? {
         if (allowedOpenings.isEmpty()) return null
         val firstClose = text.indexOf(modernClosing)
@@ -1270,7 +1280,23 @@ object NarrativeHistoryEcho {
         }
         fun adjacent(end: Int, start: Int): Boolean {
             val gap = text.subSequence(end, start)
-            return gap.isBlank() && gap.any { it.isHistoryLineBreak() }
+            if (gap.none { it.isHistoryLineBreak() }) return false
+            if (gap.isBlank()) return true
+
+            val comments = literals.commentRanges
+            val first = comments.binarySearchBy(end, selector = IntRange::first)
+            var cursor = end
+            for (index in (if (first >= 0) first else -first - 1) until comments.size) {
+                val comment = comments[index]
+                if (comment.first >= start) break
+                val after = comment.last + 1
+                if (after > start || !text.subSequence(cursor, comment.first).isBlank() ||
+                    !hasMarkerPadding(text, comment.first) ||
+                    !text.subSequence(after, lineEnd(text, after)).isBlank()
+                ) return false
+                cursor = after
+            }
+            return text.subSequence(cursor, start).isBlank()
         }
 
         val boundaries = standalone.zipWithNext().mapNotNull { (close, open) ->
@@ -1283,7 +1309,7 @@ object NarrativeHistoryEcho {
             val previousClose = standalone.lastOrNull()?.takeIf { it.value == modernClosing }
             if (previousClose != null) {
                 val end = previousClose.range.last + 1
-                val start = (end until text.length).firstOrNull { !text[it].isWhitespace() }
+                val start = (end until text.length).firstOrNull { !literals.markdown[it].isWhitespace() }
                 if (start != null && adjacent(end, start) && hasMarkerPadding(text, start) &&
                     literals.isUnprotected(start) && !literals.isLazyListItemLine(start) &&
                     text.substring(start).let { prefix -> openings.any { it.startsWith(prefix) } } &&
@@ -1301,12 +1327,11 @@ object NarrativeHistoryEcho {
         for ((end, next) in boundaries + (text.length to text.length)) {
             val section = text.substring(start, end)
             val last = end == text.length
-            val cleaned = clean(section, !last || !provisional)
+            val cleaned = clean(section, start, !last || !provisional)
             if (cleaned.body == section || !cleaned.matchedOuterPair && (!last || !provisional)) return null
-            if (cleaned.body.isNotEmpty()) {
-                if (result.isNotEmpty()) result.append(text, previousEnd, start)
-                result.append(cleaned.body)
-            }
+            val gap = text.subSequence(previousEnd, start)
+            if (result.isNotEmpty() && cleaned.body.isNotEmpty() || gap.isNotBlank()) result.append(gap)
+            result.append(cleaned.body)
             previousEnd = end
             start = next
         }
@@ -1931,7 +1956,10 @@ object NarrativeHistoryEcho {
             val blankAfter = end == text.length || text.subSequence(end + 1, nextEnd).isBlank()
             return blankBefore && blankAfter && !markdownContainerOrIndent.containsMatchIn(text.subSequence(start, end))
         }
-        if (prefix.trimStart().firstOrNull()?.isLetter() == true) return true
+        // A visible lead outside the Markdown block markers keeps the line in its paragraph.
+        // A markup opener or a masking placeholder can disappear when another note is masked.
+        val lead = prefix.trimStart().firstOrNull()
+        if (lead != null && !lead.isDigit() && lead !in "`~>+-*_=#<\uFFFC") return true
         // Masking one inline note after visible list prose leaves its marker, indentation, and
         // paragraph state intact. Empty items and notes containing block or code syntax still rescan.
         if (markup.isComment && start in listItems &&
