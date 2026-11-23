@@ -47,6 +47,9 @@ object NarrativeHistoryEcho {
     private val backtickRuns = Regex("`+")
     private const val commentOpening = "<!--"
     private val commentDelimiters = Regex("<!--|-->")
+    private val markdownContainerOrIndent = Regex(
+        "(?m)^(?:[ \\t]{4}|[ \\t]*\\t| {0,3}(?:>|~{3,}|[-+*][ \\t]|[0-9]{1,9}[.)][ \\t]))",
+    )
     private const val cdataOpening = "<![CDATA["
     private const val cdataClosing = "]]>"
     private val formatTemplateLabel = Regex(
@@ -1364,10 +1367,13 @@ object NarrativeHistoryEcho {
         val markdown = bareCarriageReturn.replace(end, "\n")
         val comments = mutableListOf<IntRange>()
         val cdata = mutableListOf<IntRange>()
-        var nextMarkup: LiteralMarkup? = null
+        val pendingMarkup = mutableListOf<LiteralMarkup>()
+        val hasMarkup = commentOpening in markdown || cdataOpening in markdown
+        val markupCanChangeMarkdown = hasMarkup && ('`' in markdown || markdownContainerOrIndent.containsMatchIn(markdown))
 
-        fun inspect(source: String, onMarkup: ((LiteralMarkup) -> Unit)?): ReplyLiterals {
+        fun inspect(source: String): ReplyLiterals {
             val lazyQuoteLineStarts = mutableSetOf<Int>()
+            val containerLineStarts = mutableSetOf<Int>()
             val listItemLineStarts = mutableSetOf<Int>()
             val indentedParagraphLineStarts = mutableSetOf<Int>()
             val indentedCode = mutableListOf<IntRange>()
@@ -1375,6 +1381,7 @@ object NarrativeHistoryEcho {
                 source,
                 onLazyQuoteLine = { lazyQuoteLineStarts += it },
                 onIndentedCodeLine = { indentedCode += it },
+                onContainerLine = { if (hasMarkup) containerLineStarts += it },
                 onListItemLine = { listItemLineStarts += it },
                 onIndentedParagraphLine = { indentedParagraphLineStarts += it },
             )
@@ -1405,8 +1412,13 @@ object NarrativeHistoryEcho {
                         continuationLines.hasNext() && hanIdeograph.containsMatchIn(continuationLines.next())
                 }
             } else emptyList()
+            val collectMarkup = { markup: LiteralMarkup ->
+                pendingMarkup += markup
+                !markupCanChangeMarkdown ||
+                    canBatchMarkup(source, markup.range, containerLineStarts, lazyQuoteLineStarts)
+            }
             val quotes = proseQuoteRanges(
-                end, source, quoteDelimitersToSkip, includeUnclosed, interiorClosings, onMarkup,
+                end, source, quoteDelimitersToSkip, includeUnclosed, interiorClosings, collectMarkup.takeIf { hasMarkup },
                 interpretProseQuotes, dialogue,
             )
             return ReplyLiterals(
@@ -1415,16 +1427,35 @@ object NarrativeHistoryEcho {
             )
         }
 
-        val capture = { markup: LiteralMarkup -> nextMarkup = markup }
-        var result = inspect(markdown, capture.takeIf { commentOpening in markdown || cdataOpening in markdown })
-        while (true) {
-            val markup = nextMarkup ?: break
-            if (markup.isComment) comments += markup.range else cdata += markup.range
-            nextMarkup = null
-            // Literal markup can itself contain a fence opener, so rescan the masked Markdown.
-            result = inspect(maskLiteralMarkup(markdown, comments + cdata), capture)
+        var result = inspect(markdown)
+        while (pendingMarkup.isNotEmpty()) {
+            for (markup in pendingMarkup) {
+                if (markup.isComment) comments += markup.range else cdata += markup.range
+            }
+            pendingMarkup.clear()
+            // A batch stops when masking a range can make Markdown reinterpret later text.
+            result = inspect(maskLiteralMarkup(markdown, comments + cdata))
         }
         return result
+    }
+
+    private fun canBatchMarkup(
+        text: String,
+        markup: IntRange,
+        containers: Set<Int>,
+        lazyQuotes: Set<Int>,
+    ): Boolean {
+        if (markup.any { text[it] == '\n' || text[it] == '`' }) return false
+        val start = lineStart(text, markup.first)
+        val prefix = text.subSequence(start, markup.first)
+        if (prefix.trimStart().firstOrNull()?.isLetter() == true) return true
+        if (!prefix.isBlank() || start in containers || start in lazyQuotes) return false
+        val after = text.indexOf('\n', markup.last + 1).let { if (it < 0) text.length else it }
+        if (!text.subSequence(markup.last + 1, after).isBlank()) return false
+        // A blank line cannot change a following top-level prose line or a run of standalone notes.
+        val next = text.getOrNull(after + 1)
+        return next == null || next == '\n' || next.isLetter() ||
+            text.startsWith(commentOpening, after + 1) || text.startsWith(cdataOpening, after + 1)
     }
 
     private fun inlineCodeRangesOutsideBlocks(
@@ -1475,7 +1506,7 @@ object NarrativeHistoryEcho {
         delimiterExclusions: List<IntRange>,
         includeUnclosed: Boolean,
         interiorClosings: List<Int>,
-        onMarkup: ((LiteralMarkup) -> Unit)?,
+        onMarkup: ((LiteralMarkup) -> Boolean)?,
         interpretProseQuotes: Boolean,
         dialogue: List<IntRange>,
     ): List<IntRange> = buildList {
@@ -1483,18 +1514,21 @@ object NarrativeHistoryEcho {
         var closing: Char? = null
         var depth = 0
         var canOpenComment = onMarkup != null
+        var markupEnd = 0
         fun isProseDelimiter(index: Int): Boolean =
             !isEscaped(text, index) && delimiterExclusions.none { index in it } && dialogue.none { index in it }
 
         for (index in text.indices) {
+            if (index < markupEnd) continue
             if (canOpenComment && text.startsWith(commentOpening, index) &&
                 !isEscaped(text, index) && delimiterExclusions.none { index in it }
             ) {
                 val end = closedCommentEnd(text, index)
                 val inQuote = MarkdownCodeFences.hasQuoteContainerPrefix(markdown, lineStart(markdown, index))
                 if (end != null || includeUnclosed && open < 0 && !inQuote) {
-                    onMarkup?.invoke(LiteralMarkup(index until (end ?: text.length), isComment = true))
-                    break
+                    markupEnd = end ?: text.length
+                    if (onMarkup?.invoke(LiteralMarkup(index until markupEnd, isComment = true)) != true) break
+                    continue
                 }
                 // The body renderer treats the rest of a completed, unclosed comment as ordinary text.
                 if (open < 0 && !inQuote) canOpenComment = false
@@ -1503,9 +1537,9 @@ object NarrativeHistoryEcho {
                 val close = text.indexOf(cdataClosing, index + cdataOpening.length)
                 val inQuote = MarkdownCodeFences.hasQuoteContainerPrefix(markdown, lineStart(markdown, index))
                 if (close >= 0 || includeUnclosed && !inQuote) {
-                    val end = if (close >= 0) close + cdataClosing.length else text.length
-                    onMarkup(LiteralMarkup(index until end, isComment = false))
-                    break
+                    markupEnd = if (close >= 0) close + cdataClosing.length else text.length
+                    if (!onMarkup(LiteralMarkup(index until markupEnd, isComment = false))) break
+                    continue
                 }
             }
             if (!interpretProseQuotes) continue

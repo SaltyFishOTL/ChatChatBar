@@ -8,6 +8,19 @@ import org.junit.Test
 class NarrativeHistoryEchoTest {
 
     @Test
+    fun classifiesManyCommentsAndRescansWhenAHiddenFenceCouldChangeCodeBoundaries() {
+        val notes = List(64) { "<!-- note $it contains </历史回复> -->" }
+        val plain = notes.joinToString("\n", prefix = "Story starts.\n", postfix = "\nStory ends.")
+        fun hidden(text: String) = NarrativeHistoryEcho.hiddenHtmlCommentRanges(text).map(text::substring)
+        assertEquals(notes, hidden(plain))
+
+        val hiddenFence = "<!-- hidden fence\n```\n-->"
+        val literalCode = "```text\n<!-- this is code -->\n```"
+        val visible = "Story starts.\n$hiddenFence\n$plain\n$literalCode\nStory ends."
+        assertEquals(listOf(hiddenFence) + notes, hidden(visible))
+    }
+
+    @Test
     fun carriesGenuineCommentsOutsideTheOuterWrapperInEveryReplyState() {
         val wrappers = listOf(
             "<历史回复 模式=\"聚焦\">" to "</历史回复>",
