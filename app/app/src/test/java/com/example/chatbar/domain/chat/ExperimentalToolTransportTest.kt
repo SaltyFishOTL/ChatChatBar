@@ -4048,6 +4048,131 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `complete dispatched narrative blocks are removed with their exact continuation lines`() = runBlocking {
+        val story = "她点亮门廊的灯。"
+        for (mode in ChatNarrativeMode.entries) {
+            val other = ChatNarrativeMode.entries.first { it != mode }
+            val core = PromptAssembler().assembleCachePromptLayers(CharacterCard.create("fixture"), narrativeMode = mode)
+                .narrativeModeSystemPrompt
+            val tail = PromptTemplates.narrativeModeTailSystemPrompt(mode, other)
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Earlier scene.").copy(narrativeMode = mode)
+            for ((experimental, toolCall) in listOf(false to false, true to true)) {
+                for (block in listOf(core, tail)) {
+                    val raw = "$block\n\n$story"
+                    for (quoted in listOf("~~~text\n$block\n~~~\n\n$story", block.prependIndent("> ") + "\n\n$story")) {
+                        assertNarrativeReplyDeltas(
+                            listOf(quoted), listOf(quoted), quoted, previousAssistant = prior, narrativePrompt = core,
+                            narrativeTail = tail, currentUserText = "Continue.", experimental = experimental, toolCall = toolCall,
+                        )
+                    }
+                    assertNarrativeReplyDeltas(
+                        listOf(raw), listOf(raw), raw, previousAssistant = prior, narrativePrompt = core, narrativeTail = tail,
+                        currentUserText = "Copy this text verbatim:\n$raw", experimental = experimental, toolCall = toolCall,
+                    )
+                    assertNarrativeReplyDeltas(
+                        listOf(block, "\n\n$story"), listOf("", story), story, previousAssistant = prior, narrativePrompt = core,
+                        narrativeTail = tail, currentUserText = "Continue.", experimental = experimental, toolCall = toolCall,
+                    )
+                    val wrapped = PromptTemplates.narrativeModeHistoryReply(raw, mode)
+                    assertNarrativeReplyDeltas(
+                        listOf(wrapped), listOf(story), story, previousAssistant = prior, narrativePrompt = core,
+                        narrativeTail = tail, currentUserText = "Continue.", experimental = experimental, toolCall = toolCall,
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `only an anchored identifiable partial mode instruction is held until its bytes diverge`() = runBlocking {
+        for (mode in ChatNarrativeMode.entries) {
+            val other = ChatNarrativeMode.entries.first { it != mode }
+            val tail = PromptTemplates.narrativeModeTailSystemPrompt(mode, other)
+            val (title, next, third) = tail.lines()
+            val partial = next.take(20)
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Earlier scene.").copy(narrativeMode = mode)
+            for ((experimental, toolCall) in listOf(false to false, true to true)) {
+                assertNarrativeReplyDeltas(
+                    listOf(partial), listOf(partial), partial, narrativeTail = tail, currentUserText = "Continue.",
+                    previousAssistant = prior, experimental = experimental, toolCall = toolCall,
+                )
+                val aborted = "$partial is a fictional notice."
+                assertNarrativeReplyDeltas(
+                    listOf("$title\n", partial, aborted.removePrefix(partial)), listOf("", "", aborted), aborted,
+                    previousAssistant = prior, narrativeTail = tail, currentUserText = "Continue.",
+                    experimental = experimental, toolCall = toolCall,
+                )
+                val story = "The porch light went on."
+                val afterSwitch = "$title\n$next\n" + third.take(20)
+                assertNarrativeReplyDeltas(
+                    listOf(afterSwitch, third.drop(20) + "\n$story"), listOf("", story), story,
+                    previousAssistant = prior, narrativeTail = tail, currentUserText = "Continue.",
+                    experimental = experimental, toolCall = toolCall,
+                )
+                val unsentSwitch = "$partial\n$story"
+                assertNarrativeReplyDeltas(
+                    listOf("$title\n$unsentSwitch"), listOf(unsentSwitch), unsentSwitch, previousAssistant = prior,
+                    narrativeTail = PromptTemplates.narrativeModeTailSystemPrompt(mode, null), currentUserText = "Continue.",
+                    experimental = experimental, toolCall = toolCall,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `sent trailing heading is removed without trimming exact history and new prose`() = runBlocking {
+        val priorBody = "The lamp went out.  \r\n    Original indentation.  "
+        val newStory = "\n\nThe new visitor danced.  \r\n    New indentation.  "
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, priorBody).copy(narrativeMode = mode)
+            val tail = PromptTemplates.narrativeModeTailSystemPrompt(mode, null)
+            val heading = tail.lineSequence().first()
+            val projection = PromptTemplates.narrativeModeHistoryReply(priorBody, mode)
+            for ((experimental, toolCall) in listOf(false to false, true to true)) {
+                val raw = projection + newStory + "\n" + heading
+                val wanted = priorBody + newStory
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(wanted + "\n" + heading), wanted + "\n" + heading, previousAssistant = prior,
+                    currentUserText = "Print this title verbatim: $heading.", narrativeTail = tail,
+                    experimental = experimental, toolCall = toolCall,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(wanted), wanted, previousAssistant = prior, narrativeTail = tail,
+                    currentUserText = "Continue.", experimental = experimental, toolCall = toolCall,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `explicitly citing the previous answer with its history tags keeps the exact projected citation`() = runBlocking {
+        val previous = "She left the key outside.  "
+        val commentary = "\n\nThis XML element stores mode information for the previous turn."
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, previous).copy(narrativeMode = mode)
+            val projection = PromptTemplates.narrativeModeHistoryReply(previous, mode)
+            val raw = projection + commentary
+            for ((experimental, toolCall) in listOf(false to false, true to true)) {
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(previous + commentary), previous + commentary, previousAssistant = prior,
+                    currentUserText = "Quote the previous answer verbatim, without its XML history tags.",
+                    experimental = experimental, toolCall = toolCall,
+                )
+                val requested = "Quote the previous answer with its XML history tags verbatim, then explain what purpose that wrapper serves."
+                assertNarrativeReplyDeltas(
+                    listOf(projection, commentary), listOf(projection, raw), raw, previousAssistant = prior,
+                    currentUserText = requested, experimental = experimental, toolCall = toolCall,
+                )
+                val novel = PromptTemplates.narrativeModeHistoryReply("Unrelated replacement narration.", mode)
+                assertNarrativeReplyDeltas(
+                    listOf(novel), listOf("Unrelated replacement narration."), "Unrelated replacement narration.",
+                    previousAssistant = prior, currentUserText = requested, experimental = experimental, toolCall = toolCall,
+                )
+            }
+        }
+    }
+
+    @Test
     fun `text array SSE preserves a separate newline after the issued mode title`() = runBlocking {
         val prompt = PromptTemplates.narrativeModeSystemPrompt(ChatNarrativeMode.FOCUS)
         val title = prompt.lineSequence().first()

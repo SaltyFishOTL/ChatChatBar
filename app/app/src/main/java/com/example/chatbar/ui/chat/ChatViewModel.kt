@@ -3212,12 +3212,16 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         }
                     }
 
+                    fun addHistorySectionHeading(section: String) {
+                        val heading = PromptTemplates.sectionHeading(section)
+                        apiMessages.add(ChatApiMessage.text("system", heading))
+                        narrativeEcho.recordDispatchedHistoryHeading(heading)
+                    }
+
                     // Archive 位于设定确认之后、原始聊天历史之前。
                     ChatRequestMemoryPolicy.archiveMessage(renderedMemoryArchive)?.let(apiMessages::add)
                     if (promptMessageGroups.historyMessages.isNotEmpty()) {
-                        apiMessages.add(ChatApiMessage.text(
-                            "system", PromptTemplates.sectionHeading(PromptTemplates.SECTION_CHAT_HISTORY)
-                        ))
+                        addHistorySectionHeading(PromptTemplates.SECTION_CHAT_HISTORY)
                     }
                     for (msg in promptMessageGroups.historyMessages) {
                         addContextMessage(
@@ -3235,12 +3239,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         botName = charCard.effectiveBotName
                     ).forEach(apiMessages::add)
                     if (promptMessageGroups.previousTurnMessages.isNotEmpty()) {
-                        apiMessages.add(
-                            ChatApiMessage.text(
-                                role = "system",
-                                content = PromptTemplates.sectionHeading(PromptTemplates.SECTION_PREVIOUS_TURN)
-                            )
-                        )
+                        addHistorySectionHeading(PromptTemplates.SECTION_PREVIOUS_TURN)
                     }
                     for (msg in promptMessageGroups.previousTurnMessages) {
                         addContextMessage(
