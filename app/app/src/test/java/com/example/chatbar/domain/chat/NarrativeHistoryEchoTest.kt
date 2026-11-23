@@ -8,6 +8,39 @@ import org.junit.Test
 class NarrativeHistoryEchoTest {
 
     @Test
+    fun appendOnlyNarrationPreviewMatchesAuthoritativeCleanupThroughSyntaxTransitions() {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val closing = "</历史回复>"
+        val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.FOCUS, null).apply {
+            recordHistoryProjection("Earlier story.", "$opening\nEarlier story.\n$closing")
+            recordNarrativePrompt(PromptTemplates.narrativeModeSystemPrompt(ChatNarrativeMode.FOCUS), null)
+        }
+        for (raw in listOf(
+            "The lamp shines brightly.",
+            "灯光很亮，晚风吹来。",
+            "$opening\nThe lamp shines brightly.",
+            "$opening\nThe lamp shines brightly.\n$closing",
+            "$opening\nThe lamp shines brightly.\n```xml\n$closing\n```\n$closing",
+            "$opening\nThe lamp shines brightly.\n“Literal $closing”",
+        )) {
+            val preview = cleanup.streamingPreview()
+            for (length in 1..raw.length) {
+                val prefix = raw.substring(0, length)
+                assertEquals(prefix, cleanup.completedBody(prefix, streaming = true), preview.appendedBody(prefix, length - 1))
+            }
+        }
+        val toolPart = "$opening\nThe lamp shines brightly."
+        val fallback = "Ordinary fallback text."
+        val preview = cleanup.streamingPreview()
+        assertEquals(fallback, preview.appendedBody(fallback, previousLength = 0))
+        assertEquals("The lamp shines brightly.", preview.appendedBody(toolPart, previousLength = 0))
+        val joined = "$toolPart\n$closing"
+        val lengths = listOf(toolPart.length, closing.length)
+        assertEquals(cleanup.completedBody(joined, partLengths = lengths, streaming = true),
+            preview.appendedBody(joined, toolPart.length, lengths))
+    }
+
+    @Test
     fun aRequestedCaptionedClosingTagStaysLiteralInsideARealOuterWrapper() {
         val opening = "<历史回复 模式=\"聚焦\">"
         val closing = "</历史回复>"

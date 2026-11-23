@@ -309,6 +309,47 @@ object NarrativeHistoryEcho {
             }
         }
 
+        fun streamingPreview() = StreamingPreview()
+
+        /** The live caller supplies the length before its append. Stop and Done use completedBody. */
+        internal inner class StreamingPreview {
+            private var seenLength = 0
+            private var bodyStart: Int? = null
+            private var requiresFullCleanup = false
+
+            fun appendedBody(text: String, previousLength: Int, partLengths: List<Int> = emptyList()): String {
+                if (!enabled) return text
+                if (previousLength == 0 || previousLength != seenLength || previousLength !in 0..text.length) {
+                    bodyStart = null
+                    requiresFullCleanup = false
+                }
+                seenLength = text.length
+                if (partLengths.isNotEmpty()) requiresFullCleanup = true
+                val from = bodyStart
+                if (!requiresFullCleanup && from != null && (previousLength until text.length).all { text[it].isPlainPreviewCharacter() }) {
+                    return text.substring(from)
+                }
+                if (from != null) requiresFullCleanup = true
+                val cleaned = completedBody(text, partLengths = partLengths, streaming = true)
+                if (requiresFullCleanup) return cleaned
+
+                val opening = projectedOpenings.firstOrNull { text.startsWith("$it\n") }
+                if (opening == null && projectedOpenings.any { "$it\n".startsWith(text) }) return cleaned
+                val candidateStart = if (opening == null) 0 else opening.length + 1
+                // Only a single plain narration line can be admitted. Any syntax that a later
+                // chunk could complete stays on the authoritative scanner.
+                val canReuse = repairOpenings == null &&
+                    narrativeHeadings.all { it.trimStart().firstOrNull()?.isPlainPreviewCharacter() == false } &&
+                    (opening == null || opening !in formatOutput.declaredOpenings &&
+                        opening !in authoredStandaloneOpenings && opening !in authoredTemplateOpenings && authoredPairs.isEmpty()) &&
+                    (candidateStart until text.length).all { text[it].isPlainPreviewCharacter() } &&
+                    cleaned.length == text.length - candidateStart &&
+                    text.regionMatches(candidateStart, cleaned, 0, cleaned.length)
+                if (canReuse) bodyStart = candidateStart else requiresFullCleanup = true
+                return cleaned
+            }
+        }
+
         fun completedBody(
             text: String,
             interrupted: Boolean = false,
@@ -1558,6 +1599,9 @@ object NarrativeHistoryEcho {
         if (!legacyWrapper.isStandalonePair(text)) return false
         return cleanReply(text, streaming = false, interrupted = false, requirePair = true).matchedOuterPair
     }
+
+    private fun Char.isPlainPreviewCharacter(): Boolean =
+        isLetterOrDigit() || this in " .,!?;:，。！？；：、"
 
     private fun Char?.isHistoryLineBreak(): Boolean = this == '\n' || this == '\r'
 

@@ -3296,13 +3296,15 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
                     val ctx = ChatBarApp.instance
                     var previewedToolPartLengths = emptyList<Int>()
-                    fun updateStreamingDraft(rawBody: String): String {
+                    val deltaPreview = narrativeEcho.streamingPreview()
+                    val ordinaryTextPreview = narrativeEcho.streamingPreview()
+                    fun updateStreamingDraft(rawBody: String, cleanedBody: String? = null): String {
                         val displayed = _streamingMessage.value
                         val renderedBody = if (
                             displayed != null && interruptedReplyDraft?.content == rawBody &&
                             previewedToolPartLengths == receivedToolReplyPartLengths
                         ) displayed.content else renderSessionText(
-                            narrativeEcho.completedBody(
+                            cleanedBody ?: narrativeEcho.completedBody(
                                 rawBody, partLengths = receivedToolReplyPartLengths,
                                 streaming = true,
                             )
@@ -3359,15 +3361,19 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 updateStreamingDraft(ordinaryPreview ?: accumulatedText)
                             }
                             is StreamEvent.ContentPreview -> {
+                                val previousLength = ordinaryPreview.orEmpty().length
                                 ordinaryPreview = event.text.takeIf(String::isNotEmpty)
-                                val body = updateStreamingDraft(ordinaryPreview ?: accumulatedText)
+                                val cleaned = ordinaryPreview?.let { body -> ordinaryTextPreview.appendedBody(body, previousLength) }
+                                val body = updateStreamingDraft(ordinaryPreview ?: accumulatedText, cleaned)
                                 StreamingNotificationManager.update(ctx, body, sessionId)
                             }
                             is StreamEvent.Delta -> {
                                 ordinaryPreview = null
+                                val previousLength = accumulatedText.length
                                 accumulatedText += event.text
                                 receivedToolReplyPartLengths = event.toolReplyPartLengths
-                                val body = updateStreamingDraft(accumulatedText)
+                                val cleaned = deltaPreview.appendedBody(accumulatedText, previousLength, receivedToolReplyPartLengths)
+                                val body = updateStreamingDraft(accumulatedText, cleaned)
                                 StreamingNotificationManager.update(ctx, body, sessionId)
                             }
                             is StreamEvent.Error -> {
