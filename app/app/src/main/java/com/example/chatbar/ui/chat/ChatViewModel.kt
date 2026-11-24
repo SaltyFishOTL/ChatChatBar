@@ -2481,6 +2481,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 bufferedBody ?: ordinaryPreview ?: repairedPrefix, interrupted = true, partLengths = partLengths,
                             )
                         )
+                        if (mixedContent == originalContent) {
+                            result = message
+                            return@launch
+                        }
                         withContext(NonCancellable) {
                             result = persistFormatRepairMessage(
                                 MessageFormatRepairPolicy.replaceCurrentDisplayContent(
