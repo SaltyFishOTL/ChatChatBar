@@ -154,6 +154,25 @@ class CharacterDraftSaveLifecycleTest {
         assertEquals(newer, coldDrafts().getById(newer.id))
         assertEquals(original.name, app.characterRepository.getById(original.id)?.name)
     }
+
+    @Test fun clearingTheIgnoredDraftLetsTheRetainedEditorSaveAgain() = runBlocking<Unit> {
+        val original = card()
+        editAndSaveDraft(editor(original.id), "old ignored draft")
+        val ignored = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        val viewer = editor(original.id)
+        withContext(Dispatchers.Main) {
+            viewer.keepOriginal()
+            viewer.name = "unsaved edit from original"
+        }
+
+        assertTrue(app.editorDraftRepository.deleteIfUnchanged(ignored))
+        action { viewer.saveDraftAndExit(it) }
+
+        val saved = requireNotNull(coldDrafts().getById(ignored.id))
+        assertEquals("unsaved edit from original", saved.characterPayload?.name)
+        assertEquals(original.name, app.characterRepository.getById(original.id)?.name)
+    }
+
     @Test fun formalSaveAfterViewingOriginalReclaimsAssetsFromAnEarlierDraftSession() = runBlocking<Unit> {
         verifyCarriedAssetCleanup(blockFirstDeletion = false)
     }

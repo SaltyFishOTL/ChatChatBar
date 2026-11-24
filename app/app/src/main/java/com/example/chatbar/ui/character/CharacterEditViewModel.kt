@@ -586,6 +586,11 @@ class CharacterEditViewModel(
     private fun observeDiscardedDrafts() {
         viewModelScope.launch {
             draftRepository.drafts.collect { drafts ->
+                val ignored = ignoredDraft
+                if (ignored != null && drafts.none { it.id == ignored.id }) {
+                    // The ignored draft never owned the current edits. Release only its save precondition.
+                    ignoredDraft = null
+                }
                 val remembered = loadedDraft ?: restoreDraft
                 // A management-list discard must also invalidate a retained editor.
                 // Internal discard/save already owns its reset while not ready/saving.
