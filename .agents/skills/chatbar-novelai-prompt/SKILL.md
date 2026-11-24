@@ -81,7 +81,7 @@ Use chatbar-image-generation-runtime for NovelAI HTTP generation, streaming fram
 
 ## Prompt Shape
 
-- Shared design instructions can depict an action sequence in a single frame or across comic panels. Keep shared scene tags in `baseCaption` and use per-panel `characters[].caption` entries for visual details. The V5 structured prompt illustrates dialogue with weighted ASCII-quoted text.
+- Shared design instructions can depict an action sequence in one frame or across comic panels. Keep shared scene tags in `baseCaption` and per-panel visual details in `characters[].caption`. The V5 structured prompt puts weighted ASCII-quoted dialogue in the speaking character's caption and lists multiple lines in reverse display order.
 
 `NovelAiPromptPlan.stylePrompt` records the deterministic style prefix separately for later editing; `baseCaption` remains the full outbound prompt. Keep both when materializing card-backed plans. Regeneration splits only that recorded prefix and joins edited style once; it never uses current card settings to guess an old image's style.
 
@@ -109,4 +109,4 @@ After NAI prompt-flow code changes:
 - Run `.\gradlew.bat test` when prompt helpers, parsing, or generation decisions change.
 - Keep a request-shape test covering message roles before and after cleartext chat-template adaptation.
 
-- Assistant scene input passes through RoleplayActionOptionsPolicy: only closed dash-wrapped, explicitly headed sequential action lists are omitted. Ordinary narration, quoted code, status/clothing, malformed or unknown lists and USER text remain. This projection does not change stored replies or implement action buttons/history-number expansion.
+- Assistant scene input uses `RoleplayActionOptionsPolicy.imageScene` with the displayed reply's format. Complete recognized menus are excluded, while an explicit request to draw a uniquely identified option adds its text to the scene. Ordinary narration, literal code, status and user input are retained.
