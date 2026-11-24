@@ -1818,7 +1818,9 @@ object NarrativeHistoryEcho {
     }
 
     private fun ReplyLiterals.followsLiteralHeadingLead(start: Int): Boolean =
-        visibleLine(previousVisibleLine(markdown, start))?.let(literalHeadingLead::containsMatchIn) == true
+        visibleLine(previousVisibleLine(markdown, start))?.let {
+            literalHeadingLead.containsMatchIn(it) || logQuotationLead.matches(it)
+        } == true
 
     private fun List<Int>.trimTo(reply: IntRange, textLength: Int): List<Int> {
         if (size <= 1 || any { it < 0 } || sumOf(Int::toLong) + size - 1 != textLength.toLong()) return emptyList()
@@ -2602,30 +2604,41 @@ object NarrativeHistoryEcho {
 
         fun bodyBeforeClose(position: Int, completeClose: String? = null): String {
             val trimmed = body.substring(0, position).trimEnd()
+            fun ordinaryBodyEnd(): Int {
+                val trailingLiteral = literals.roleplayLiteralCode.firstOrNull {
+                    trimmed.lastIndex in it && trimmed.length in it
+                } ?: return bodyStart + trimmed.length
+                val limit = minOf(position, trailingLiteral.last + 1)
+                var endOfContent = trimmed.length
+                while (endOfContent < limit && !body[endOfContent].isHistoryLineBreak()) endOfContent++
+                return bodyStart + endOfContent
+            }
             val openingBreak = openingLineBreak
-            if (completeClose != null && openingBreak != null && isProjectedOwnLineFrame(position, completeClose)) {
+            if (completeClose != null && openingBreak != null && literals.isStandaloneTagLine(position, completeClose)) {
                 val breakAfterOpening = if (afterOpening.startsWith("\r\n", openingBreak)) 2 else 1
                 val contentStart = openingStart + wrapper.opening.length + openingBreak + breakAfterOpening
                 val closingLine = bodyStart + lineStart(body, position)
+                val openingToolJoin = isToolJoin(contentStart - 1)
                 val closingToolJoin = isToolJoin(closingLine - 1)
                 val breakBeforeClosing = if (!closingToolJoin && text.startsWith("\r\n", closingLine - 2)) 2 else 1
-                val payload = text.substring(contentStart, maxOf(contentStart, closingLine - breakBeforeClosing))
-                // Validated joins distinguish padding inside the body calls from envelope whitespace.
-                val bodyHasOwnToolBoundaries = isToolJoin(contentStart - 1) && closingToolJoin
-                val hasCrLfInsideBody = "\r\n" in payload.trim('\r', '\n')
-                val hasPaddedTerminalCodeLine = payload.endsWith('\n') &&
-                    body.startsWith("  ", trimmed.length) && literals.indentedCode.containsOffset(trimmed.lastIndex)
-                if (bodyHasOwnToolBoundaries || hasCrLfInsideBody || markdownHardBreakBetweenLines.containsMatchIn(payload) ||
-                    hasPaddedTerminalCodeLine || endsWithLiteralFence(position)
-                ) return payload
+                val contentEnd = closingLine - breakBeforeClosing
+                if (isProjectedOwnLineFrame(position, completeClose)) {
+                    val payload = text.substring(contentStart, maxOf(contentStart, contentEnd))
+                    val hasCrLfInsideBody = "\r\n" in payload.trim('\r', '\n')
+                    val hasPaddedTerminalCodeLine = payload.endsWith('\n') &&
+                        body.startsWith("  ", trimmed.length) && literals.indentedCode.containsOffset(trimmed.lastIndex)
+                    if (hasCrLfInsideBody || markdownHardBreakBetweenLines.containsMatchIn(payload) ||
+                        hasPaddedTerminalCodeLine || endsWithLiteralFence(position)
+                    ) return payload
+                }
+                if (openingToolJoin || closingToolJoin) {
+                    // Each proved join assigns its own edge only. Use ordinary handling for the other edge.
+                    val retainedStart = if (openingToolJoin) contentStart else bodyStart
+                    val retainedEnd = if (closingToolJoin) contentEnd else ordinaryBodyEnd()
+                    return text.substring(retainedStart, maxOf(retainedStart, retainedEnd))
+                }
             }
-            val trailingLiteral = literals.roleplayLiteralCode.firstOrNull {
-                trimmed.lastIndex in it && trimmed.length in it
-            } ?: return trimmed
-            val limit = minOf(position, trailingLiteral.last + 1)
-            var endOfContent = trimmed.length
-            while (endOfContent < limit && !body[endOfContent].isHistoryLineBreak()) endOfContent++
-            return body.substring(0, endOfContent)
+            return text.substring(bodyStart, ordinaryBodyEnd())
         }
         fun blankTailAfterFencedBody(position: Int, afterClosing: Int, close: String): String {
             if (!body.getOrNull(afterClosing).isHistoryLineBreak() ||

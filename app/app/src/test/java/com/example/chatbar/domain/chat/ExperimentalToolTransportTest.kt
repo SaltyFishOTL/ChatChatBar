@@ -297,6 +297,7 @@ class ExperimentalToolTransportTest {
         issueRoutineHistoryHeading: Boolean = false,
         checkHeldStop: Boolean = false,
         requestNarrativeMode: ChatNarrativeMode? = null,
+        routineHistorySection: String = PromptTemplates.SECTION_PREVIOUS_TURN,
     ): String {
         val cleanup = NarrativeHistoryEcho.forRequest(
             (requestNarrativeMode ?: ChatNarrativeMode.FOCUS).takeIf { narrativeModesEnabled }, formatCard,
@@ -310,7 +311,7 @@ class ExperimentalToolTransportTest {
         for (assistant in previousAssistant?.let(::listOf) ?: narrativeHistoryFixtures().takeIf { narrativeModesEnabled }.orEmpty()) {
             request.add(1, projectAssistant(cleanup, assistant, narrativeModesEnabled))
         }
-        val routineHeading = PromptTemplates.sectionHeading(PromptTemplates.SECTION_PREVIOUS_TURN)
+        val routineHeading = PromptTemplates.sectionHeading(routineHistorySection)
         if (issueRoutineHistoryHeading && previousAssistant != null) {
             request.add(1, ChatApiMessage.text("system", routineHeading))
             cleanup.recordDispatchedHistoryHeading(routineHeading)
@@ -468,6 +469,48 @@ class ExperimentalToolTransportTest {
                 issueRoutineHistoryHeading = true, checkHeldStop = true,
             )
         }
+    }
+
+    @Test
+    fun `an issued plain history heading quoted from a log stays literal at EOF`() = runBlocking {
+        val section = PromptTemplates.SECTION_CHAT_HISTORY
+        val heading = PromptTemplates.sectionHeading(section)
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "She found an old log.")
+        val prose = "She turned the page."
+        val quoted = "Below is a literal quotation copied from the history log.\n$heading"
+        for ((experimental, tool) in listOf(false to false, true to false, true to true)) {
+            assertNarrativeReplyDeltas(
+                listOf("$prose\n$heading"), listOf(prose), prose, previousAssistant = prior,
+                experimental = experimental, toolCall = tool, narrativeModesEnabled = false, issueRoutineHistoryHeading = true,
+                checkHeldStop = true, routineHistorySection = section,
+            )
+            assertNarrativeReplyDeltas(
+                listOf(quoted), listOf(quoted), quoted, previousAssistant = prior,
+                experimental = experimental, toolCall = tool, narrativeModesEnabled = false, issueRoutineHistoryHeading = true,
+                checkHeldStop = true, routineHistorySection = section,
+            )
+        }
+    }
+
+    @Test
+    fun `an issued plain history heading in a tool call stays between its log quotation captions`(): Unit = runBlocking {
+        val section = PromptTemplates.SECTION_CHAT_HISTORY
+        val heading = PromptTemplates.sectionHeading(section)
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "She found an old log.")
+        val quoted = listOf(
+            "Below is a literal quotation copied from the history log.",
+            heading,
+            "That was a verbatim quotation from the log.",
+        )
+        assertMultipartNarrativeReply(
+            listOf("She turned the page.", heading, "She put down the log."), "She turned the page.\nShe put down the log.",
+            previousAssistant = prior, narrativeModesEnabled = false, issueRoutineHistoryHeading = true,
+            checkHeldStop = true, routineHistorySection = section,
+        )
+        assertMultipartNarrativeReply(
+            quoted, quoted.joinToString("\n"), previousAssistant = prior, narrativeModesEnabled = false,
+            issueRoutineHistoryHeading = true, checkHeldStop = true, routineHistorySection = section,
+        )
     }
 
     @Test
@@ -5400,6 +5443,36 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `a history frame retains trailing body padding with only a validated closing edge`() = runBlocking {
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "An earlier scene.").copy(narrativeMode = mode)
+            val opening = PromptTemplates.narrativeModeHistoryReply("", mode).lineSequence().first()
+            val parts = listOf("$opening\n\n第一段。", "第二段。 \n", "</历史回复>")
+            val control = "第一段。\n第二段。"
+            assertNarrativeReplyDeltas(
+                listOf(parts.joinToString("\n")), listOf(control), control, previousAssistant = prior,
+                experimental = true, toolCall = true, requestNarrativeMode = mode,
+            )
+            assertMultipartNarrativeReply(parts, "$control \n", previousAssistant = prior, checkHeldStop = true)
+        }
+    }
+
+    @Test
+    fun `a history frame retains leading body padding with only a validated opening edge`() = runBlocking {
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "An earlier scene.").copy(narrativeMode = mode)
+            val opening = PromptTemplates.narrativeModeHistoryReply("", mode).lineSequence().first()
+            val parts = listOf(opening, "\n第一段。", "第二段。 \n\n</历史回复>")
+            val control = "第一段。\n第二段。"
+            assertNarrativeReplyDeltas(
+                listOf(parts.joinToString("\n")), listOf(control), control, previousAssistant = prior,
+                experimental = true, toolCall = true, requestNarrativeMode = mode,
+            )
+            assertMultipartNarrativeReply(parts, "\n$control", previousAssistant = prior, checkHeldStop = true)
+        }
+    }
+
+    @Test
     fun `a witnessed history frame preserves padding owned by a validated body call`() = runBlocking {
         for (mode in ChatNarrativeMode.entries) {
             val earlier = ChatMessage.create("fixture", MessageRole.ASSISTANT, "An earlier scene.").copy(narrativeMode = mode)
@@ -6100,6 +6173,7 @@ class ExperimentalToolTransportTest {
         regenerationTarget: ChatMessage? = null,
         checkHeldStop: Boolean = false,
         releaseTailAfter: Int = deltaTexts.lastIndex,
+        routineHistorySection: String = PromptTemplates.SECTION_PREVIOUS_TURN,
     ) {
         val cleanup = NarrativeHistoryEcho.forRequest(requestNarrativeMode.takeIf { narrativeModesEnabled }, formatCard)
         val histories = if (previousAssistant != null) listOfNotNull(earlierAssistant, previousAssistant)
@@ -6171,7 +6245,7 @@ class ExperimentalToolTransportTest {
             requestMessages.add(1, history)
         }
         previousUserText?.let { requestMessages.add(1, ChatApiMessage.text("user", it)) }
-        val historyHeading = PromptTemplates.sectionHeading(PromptTemplates.SECTION_PREVIOUS_TURN)
+        val historyHeading = PromptTemplates.sectionHeading(routineHistorySection)
         if (issueRoutineHistoryHeading && historyMessages.isNotEmpty()) {
             requestMessages.add(1, ChatApiMessage.text("system", historyHeading))
             cleanup.recordDispatchedHistoryHeading(historyHeading)
@@ -7024,6 +7098,28 @@ class ExperimentalToolTransportTest {
         val issued = MessageFormatRepairService.PreparedRequest(original, null, null).systemPrompt
         assertRepairBoundaryReply(original, null, null, listOf(issued, revised), revised,
             experimental = true, tool = true, expectedFirstPreview = "")
+    }
+
+    @Test
+    fun `repair keeps body padding between validated edges of its forbidden output frame`() = runBlocking {
+        for (mode in ChatNarrativeMode.entries) {
+            val sample = PromptTemplates.narrativeModeHistoryReply("字面样张。", mode)
+            val card = "以下是禁止输出的反例：\n$sample"
+            val original = "她打开一本书。"
+            val opening = sample.lineSequence().first()
+            val revised = "\n她留下一句话。 \n"
+            val parts = listOf(opening, revised, "</历史回复>")
+            val raw = parts.joinToString("\n")
+            assertRepairBoundaryReply(
+                original, card, null, listOf(raw), revised.trim(), experimental = true, tool = false,
+            )
+            assertRepairBoundaryReply(
+                sample, card, null, parts, raw, experimental = true, tool = true, expectedFirstPreview = opening,
+            )
+            assertRepairBoundaryReply(
+                original, card, null, parts, revised, experimental = true, tool = true, expectedFirstPreview = "",
+            )
+        }
     }
 
     @Test
