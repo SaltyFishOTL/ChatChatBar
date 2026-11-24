@@ -270,9 +270,12 @@ class ChatHistoryActionProjectionTest {
             .copy(actionOptionsFormat = ActionOptionsFormat("<choices>", "</choices>", "", ActionOptionLabels.LETTERS))
         val inputs = listOf(
             "那就B保持安静并贴着墙走。" to true,
+            "那就，B保持安静并贴着墙走。" to true,
             "那我就b　保持安静并贴着墙走。" to true,
             "「那么我们就B保持安静并贴着墙走。」" to true,
+            "「那么我们就：B保持安静并贴着墙走。」" to true,
             "那就B站大厅门口见面吧。" to false,
+            "那就，B站大厅门口见面吧。" to false,
             "我看着B站屏幕上跳出一条新闻。" to false,
             "那就C悄悄绕过附近的围墙。" to false,
         )

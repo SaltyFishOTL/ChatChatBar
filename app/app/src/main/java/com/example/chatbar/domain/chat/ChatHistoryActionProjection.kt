@@ -215,7 +215,7 @@ class ChatHistoryActionProjection private constructor(
         }
 
         private val numeric = Regex("\\p{N}")
-        private val leadingConfirmation = Regex("(?:那(?:么)?(?:我(?:们)?)?就|我(?:们)?就)[ \\t　]*")
+        private val leadingConfirmation = Regex("(?:那(?:么)?(?:我(?:们)?)?就|我(?:们)?就)[ \\t　,，、:：]*")
         // Avoid treating the English article, pronoun and parts of contractions as labels.
         private fun standaloneLetter(characters: String) =
             Regex("(?<![\\p{L}\\p{N}_])(?<!\\p{L}['’])[$characters](?![\\p{L}\\p{N}_]|['’]\\p{L})")
