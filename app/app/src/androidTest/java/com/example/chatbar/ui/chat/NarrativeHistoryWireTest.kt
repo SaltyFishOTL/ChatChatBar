@@ -403,6 +403,26 @@ class NarrativeHistoryWireTest {
         }
     }
 
+    @Test fun authoredTitleSurvivesAnEchoedCompleteSuffixThroughStopAndDone() = runBlocking {
+        for ((transport, stop) in listOf(Transport.ORDINARY to true, Transport.EXPERIMENTAL_TOOL to false)) {
+            val base = buildReplyFixture(transport, stop)
+            val issued = PromptTemplates.narrativeModeSystemPrompt(base.mode)
+            val title = issued.lineSequence().first()
+            val wanted = "$title\nShe turned the page."
+            val echoed = "$wanted\n\n$issued"
+            runReplyFixture(base.copy(
+                sentModeBlock = issued,
+                input = "Begin the reply with this exact heading verbatim:\n$title",
+                parts = listOf(echoed), preview = wanted, expected = wanted,
+            ))
+            // A literal copy of the whole block is deliberately different from a title request.
+            runReplyFixture(base.copy(
+                sentModeBlock = issued, input = "Copy this text verbatim:\n$echoed",
+                parts = listOf(echoed), preview = echoed, expected = echoed,
+            ))
+        }
+    }
+
     @Test fun validatedCallsAndAuthoredWorldBookXmlPreserveTheColdReply() = runBlocking {
         verifyReply(Transport.EXPERIMENTAL_TOOL, stop = true, literal = LiteralCase.SPLIT_MODE_BLOCK)
         verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = LiteralCase.SPLIT_MODE_BLOCK)
