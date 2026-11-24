@@ -239,6 +239,7 @@ fun ManageScreen(
     var showEmbedding by remember { mutableStateOf(false) }
     var deleteTarget by remember { mutableStateOf<DeleteTarget?>(null) }
     var pendingDraftClear by remember { mutableStateOf<EditorDraft?>(null) }
+    var discardingDraft by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var showTutorialMenu by remember { mutableStateOf(false) }
     var exportCharacterId by remember { mutableStateOf<String?>(null) }
@@ -613,14 +614,20 @@ fun ManageScreen(
     }
     pendingDraftClear?.let { draft ->
         CbDialog(
-            onDismissRequest = { pendingDraftClear = null },
+            onDismissRequest = { if (!discardingDraft) pendingDraftClear = null },
             title = "清除草稿",
-            dismiss = { CbButton("取消", { pendingDraftClear = null }, variant = ButtonVariant.Ghost) },
+            dismiss = {
+                CbButton("取消", { pendingDraftClear = null }, variant = ButtonVariant.Ghost, enabled = !discardingDraft)
+            },
             confirm = {
                 CbButton("清除", {
-                    viewModel.discardEditorDraft(draft)
-                    pendingDraftClear = null
-                }, variant = ButtonVariant.Destructive)
+                    discardingDraft = true
+                    viewModel.discardEditorDraft(draft) { error ->
+                        discardingDraft = false
+                        pendingDraftClear = null
+                        if (error != null) message = error
+                    }
+                }, variant = ButtonVariant.Destructive, enabled = !discardingDraft)
             }
         ) {
             CbText(
