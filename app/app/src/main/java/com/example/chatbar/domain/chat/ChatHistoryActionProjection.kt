@@ -1,0 +1,269 @@
+package com.example.chatbar.domain.chat
+
+import java.lang.Character.UnicodeScript
+import com.example.chatbar.data.local.entity.ActionOptionLabels
+import com.example.chatbar.data.local.entity.ChatMessage
+import com.example.chatbar.data.local.entity.MessageRole
+
+/** Describes the current request's owner; a no-current-USER control may have older USER history. */
+enum class ChatHistoryActionRequestSource {
+    PERSISTED_USER, RESUMED_USER, UI_CONTINUATION, NO_USER_REGENERATION, UNKNOWN;
+
+    internal companion object {
+        fun forSend(
+            persistsNewUser: Boolean,
+            resumedUser: ChatMessage?,
+            regeneratesAlternative: Boolean,
+            continuesFromUi: Boolean,
+        ): ChatHistoryActionRequestSource = when {
+            persistsNewUser -> PERSISTED_USER
+            resumedUser != null -> RESUMED_USER
+            regeneratesAlternative -> NO_USER_REGENERATION
+            continuesFromUi -> UI_CONTINUATION
+            else -> UNKNOWN
+        }
+    }
+}
+
+/** Request-only projection. An unresolved choice reference retains its source options.
+ * The query owner supplies a complete recent suffix; separately pinned old turns are not proof
+ * that all intervening user references were loaded. */
+class ChatHistoryActionProjection private constructor(
+    private val omittable: Map<String, ChatMessage>,
+    private val referenced: Map<String, ChatMessage>,
+    private val retrievalChoice: Pair<ChatMessage, String>? = null,
+) {
+    fun project(message: ChatMessage, source: String): String =
+        if (omittable[message.id] == message) {
+            RoleplayActionOptionsPolicy.withoutExplicitOptions(source, message.displayActionOptionsFormat)
+        } else source
+
+    fun sourceForHistory(message: ChatMessage, stripStatus: Boolean): String {
+        val raw = message.displayContent
+        if (!stripStatus || message.role != MessageRole.ASSISTANT) return project(message, raw)
+        val isOmittable = omittable[message.id] == message
+        val isReferenced = referenced[message.id] == message
+        val actionRanges = if (isOmittable || isReferenced) {
+            RoleplayActionOptionsPolicy.blocks(raw, message.displayActionOptionsFormat).map { it.range }
+        } else emptyList()
+        val literalFences = MarkdownCodeFences.blocks(raw).filterNot { fence ->
+            fence.topLevel && isStatusFence(raw.substring(fence.range))
+        }.map { it.range }
+        return stripRoleplayStatusSegments(
+            raw,
+            preserving = if (isReferenced) literalFences + actionRanges else literalFences,
+            removing = if (isOmittable) actionRanges else emptyList(),
+        )
+    }
+
+    /** The retrieval model only needs the known selection, never the other options. */
+    fun forRetrieval(message: ChatMessage): ChatMessage {
+        if (message.role != MessageRole.ASSISTANT) return message
+        val source = message.displayContent
+        val scene = RoleplayActionOptionsPolicy.withoutExplicitOptions(source, message.displayActionOptionsFormat)
+        val choice = retrievalChoice?.takeIf { it.first == message }?.second
+        val projected = if (choice == null) scene else
+            listOf(scene.trimEnd(), choice).filter(String::isNotBlank).joinToString("\n")
+        if (projected == source) return message
+        val activeIndex = message.currentAlternativeIndex
+        return if (activeIndex in message.alternatives.indices) {
+            message.copy(alternatives = message.alternatives.mapIndexed { index, alternative ->
+                if (index == activeIndex) projected else alternative
+            })
+        } else message.copy(content = projected)
+    }
+
+    companion object {
+        private val explicitStatusFence = Regex("status|状态|状态栏", RegexOption.IGNORE_CASE)
+        private val legacyStatusFence = Regex("(?:text|plaintext|txt)?", RegexOption.IGNORE_CASE)
+        private val legacyStatusHeading = Regex("^(?:[【\\[])?(?:状态栏|状态|status)(?:[】\\]])?[:：]?$", RegexOption.IGNORE_CASE)
+        private val legacyStatusField = Regex(
+            "^[\\p{So}\\p{Sk}\\p{M}\\s\\u200D•●▪*_-]*(?:姓名|人物|角色|时间|位置|衣着|当前动作|内心想法|Name|Character|Time|Location|Clothing|Current Action|Inner Thoughts)\\s*[:：]",
+            RegexOption.IGNORE_CASE,
+        )
+
+        private fun isStatusFence(source: String): Boolean {
+            val lines = source.lineSequence().iterator()
+            val opening = lines.next().trimStart()
+            if (!opening.startsWith("```")) return false
+            val info = opening.dropWhile { it == '`' }.trim()
+            return explicitStatusFence.matches(info) || legacyStatusFence.matches(info) && lines.asSequence().any {
+                legacyStatusHeading.matches(it.trim().trim('*', '_')) || legacyStatusField.containsMatchIn(it)
+            }
+        }
+
+        fun prepare(candidates: List<ChatMessage>, completeRecentMessageIds: Set<String>,
+            requestSource: ChatHistoryActionRequestSource = ChatHistoryActionRequestSource.UNKNOWN): ChatHistoryActionProjection {
+            if (requestSource == ChatHistoryActionRequestSource.UNKNOWN ||
+                ((requestSource == ChatHistoryActionRequestSource.PERSISTED_USER ||
+                    requestSource == ChatHistoryActionRequestSource.RESUMED_USER) &&
+                    candidates.lastOrNull()?.role != MessageRole.USER) ||
+                candidates.map { it.id }.distinct().size != candidates.size ||
+                candidates.map { it.sessionId }.distinct().size > 1 ||
+                candidates.zipWithNext().any { (a, b) -> ChatMessage.TimelineComparator.compare(a, b) > 0 })
+                return ChatHistoryActionProjection(emptyMap(), emptyMap())
+            // Protect every earlier action source, not only the immediately preceding assistant:
+            // an old pure-number or image-bearing reply may depend on an older block.
+            // A generated visual description is not proof of independent typed intent.
+            val lastUnresolvedReference = lastPossibleChoiceReference(candidates)
+            val assistants = candidates.withIndex().filter { it.value.role == MessageRole.ASSISTANT }
+            return ChatHistoryActionProjection(
+                omittable = assistants.filter { (index, message) ->
+                    index > lastUnresolvedReference && message.id in completeRecentMessageIds
+                }.associate { it.value.id to it.value },
+                referenced = assistants.filter { it.index < lastUnresolvedReference }.associate { it.value.id to it.value },
+                retrievalChoice = confirmedRetrievalChoice(candidates, completeRecentMessageIds, requestSource),
+            )
+        }
+
+        private fun confirmedRetrievalChoice(
+            candidates: List<ChatMessage>,
+            completeRecentMessageIds: Set<String>,
+            requestSource: ChatHistoryActionRequestSource,
+        ): Pair<ChatMessage, String>? {
+            if (requestSource != ChatHistoryActionRequestSource.PERSISTED_USER &&
+                requestSource != ChatHistoryActionRequestSource.RESUMED_USER
+            ) return null
+            val user = candidates.lastOrNull()?.takeIf { it.images.isEmpty() } ?: return null
+            val reply = candidates.dropLast(1)
+                .lastOrNull { it.role != MessageRole.SYSTEM && !it.isGeneratedImageOnlyReply() }
+                ?.takeIf { it.role == MessageRole.ASSISTANT && it.id in completeRecentMessageIds } ?: return null
+            val choice = when (requestSource) {
+                ChatHistoryActionRequestSource.PERSISTED_USER ->
+                    RoleplayActionOptionsPolicy.confirmedChoice(reply, user.displayContent)
+                ChatHistoryActionRequestSource.RESUMED_USER ->
+                    RoleplayActionOptionsPolicy.confirmedMemoryChoice(user, candidates)?.takeIf { it.replyId == reply.id }
+            } ?: return null
+            return reply to choice.text
+        }
+
+        private fun lastPossibleChoiceReference(candidates: List<ChatMessage>): Int {
+            var last = -1
+            val menuLabelsSeen = mutableSetOf<Char>()
+            for ((index, message) in candidates.withIndex()) {
+                if (message.role == MessageRole.USER) {
+                    val content = message.displayContent
+                    if (message.images.isNotEmpty() || mayReferToEarlierChoices(content) ||
+                        hasMenuLetterReference(content, menuLabelsSeen)
+                    ) last = index
+                } else if (message.role == MessageRole.ASSISTANT) {
+                    val format = message.displayActionOptionsFormat
+                    if (format?.labels != ActionOptionLabels.LETTERS) continue
+                    for (block in RoleplayActionOptionsPolicy.blocks(message.displayContent, format)) {
+                        block.options.mapNotNullTo(menuLabelsSeen) { it.label.singleOrNull() }
+                    }
+                }
+            }
+            return last
+        }
+
+        private fun hasMenuLetterReference(text: String, seen: Set<Char>): Boolean {
+            if (seen.isEmpty()) return false
+            if (hasMenuLetterWithHanContinuation(text, seen)) return true
+            if (hanMenuLetter.findAll(text).any { match ->
+                    val label = match.groupValues[1].ifEmpty { match.groupValues[2] }.single()
+                    label.uppercaseChar() in seen || label.lowercaseChar() in seen
+                }
+            ) return true
+            return ambiguousLetterLabel.findAll(text).any { match ->
+                val label = match.value.single()
+                if (label == 'a') label in seen
+                else seen.any { it.equals(label, ignoreCase = true) }
+            }
+        }
+
+        // Check code points directly so Android's ICU and the desktop JVM use the same rule.
+        private fun hasMenuLetterWithHanContinuation(text: String, labels: Set<Char>): Boolean {
+            val lead = text.indexOfFirst { !it.isWhitespace() && it !in "「『（(“‘\"'" }
+            val confirmationLead = if (lead >= 0) leadingConfirmation.matchAt(text, lead)?.range?.last?.plus(1) else null
+            for (index in text.indices) {
+                val letter = text[index].uppercaseChar()
+                if (letter !in 'A'..'T' || labels.none { it.equals(letter, ignoreCase = true) }) continue
+                val afterConfirmation = index == confirmationLead
+                // A leading confirmation can introduce a bare menu letter, while B站 is still a name.
+                if (letter != 'A' && index != lead && !afterConfirmation) continue
+                if (afterConfirmation && letter == 'B' && text.getOrNull(index + 1) == '站') continue
+                if (index > 0) {
+                    val previous = Character.codePointBefore(text, index)
+                    if (previous == '_'.code || Character.isDigit(previous) ||
+                        UnicodeScript.of(previous) == UnicodeScript.LATIN
+                    ) continue
+                }
+                var next = index + 1
+                while (next < text.length &&
+                    (text[next] == '\t' || Character.getType(text[next]) == Character.SPACE_SEPARATOR.toInt())
+                ) next++
+                if (next < text.length && UnicodeScript.of(Character.codePointAt(text, next)) == UnicodeScript.HAN) {
+                    return true
+                }
+            }
+            return false
+        }
+
+        /** Deliberately conservative lexical admission, not natural-language intent inference. */
+        fun mayReferToEarlierChoices(text: String): Boolean {
+            val normalized = text.trim().lowercase()
+            if (normalized.isBlank() || numeric.containsMatchIn(normalized) ||
+                normalized.contains("```") || reference.containsMatchIn(normalized) ||
+                acknowledgement.matches(normalized)) return true
+            if (standaloneLetterLabel.findAll(normalized).any { !possessiveMenuSuffix.matchesAt(normalized, it.range.last + 1) }) {
+                return true
+            }
+            if (normalized.any { it.isLetter() && it !in 'a'..'z' && it !in '\u3400'..'\u9fff' }) return true
+            // Bare numbers, labels, emoji and short/unknown responses do not prove independence.
+            return normalized.count(Char::isLetter) < 8
+        }
+
+        private val numeric = Regex("\\p{N}")
+        private val leadingConfirmation = Regex("(?:那(?:么)?(?:我(?:们)?)?就|我(?:们)?就)[ \\t　,，、:：]*")
+        // Avoid treating the English article, pronoun and parts of contractions as labels.
+        private fun standaloneLetter(characters: String) =
+            Regex("(?<![\\p{L}\\p{N}_])(?<!\\p{L}['’])[$characters](?![\\p{L}\\p{N}_]|['’]\\p{L})")
+        private val standaloneLetterLabel = standaloneLetter("b-hj-z")
+        // A and I can be ordinary English. Lowercase a needs a menu that actually uses that case.
+        private const val ambiguousLetters = "AaIi"
+        private val ambiguousLetterLabel = standaloneLetter(ambiguousLetters)
+        private const val menuNoun = "(?:方案|计划|路线)"
+        private val possessiveMenuSuffix = Regex("[ \\t　]*的[ \\t　]*$menuNoun")
+        private val hanMenuLetter = Regex(
+            "(?<![A-Za-z0-9_])([A-Ta-t])[ \\t　]*(?:的[ \\t　]*)?$menuNoun|" +
+                "(?:同意|赞成|接受)[ \\t　]*([A-Ta-t])[ \\t　]*(?=$|[,，、.。:：;；!！?？]|并|然后|再)"
+        )
+        private val reference = Regex(
+            "第[\\s一二三四五六七八九十百两〇零壹贰叁肆伍陆柒捌玖拾0-9０-９]+(?:个|项|条|种|步|段|选|方案)|" +
+                "(?:选|选择|采用|执行|按照|按|走|用|要)[\\s:：\"'“‘（(]*[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾0-9０-９①-⑳甲乙丙丁戊己庚辛壬癸a-z]|" +
+                "^[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾甲乙丙丁]+(?:[,，.、。)）：\\s]|号|然后|再|并)|" +
+                "^[a-t][,，.、。)）：]|" +
+                "(?:前|后)[一二三四五六七八九十两]*(?:个|项|条)|" +
+                "(?:选项|行动选项|可选行动|上面|上述|上边|刚才|之前|先前|前面|前者|后者|这个|那个|这条|那条|这些|那些|此项|此条|上个|下个|这样|那样|照着|照做|照办|最后一个|中间那个|照旧|照常|如上|所说的|说的做|说的办|照她|照他|照你|照我)|" +
+                "\\b(?:option|options|choice|choices|above|previous|former|latter|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|(?:ante)?penultimate|last|this|that|those|these|it|them|same|aforementioned)\\b|" +
+                "\\b(?:the\\s+middle\\s+(?:one|plan|route|action)|(?:the\\s+)?menu['’]s\\s+middle)\\b|" +
+                "\\b(?:choose|select|pick|take|do|go\\s+with|go\\s+for|opt\\s+for|settle\\s+on)\\s+" +
+                "(?:the\\s+)?['’\"“‘]?(?:one|two|three|four|five|six|seven|eight|nine|ten|[a-z])\\b(?!['’]\\p{L})|" +
+                "['\"“‘][ai]['\"”’]"
+        )
+        private val acknowledgement = Regex("(?:(?:请|再|那就|那么)?(?:继续|接着|接下来).*|好[的吧啊呀]?|行|可以|是|不|随便|都行|嗯+|快点|ok|yes|no|(?:please\\s+)?(?:continue|go on|keep going).*|do it)[。.!！?？\\s]*")
+    }
+}
+
+/** Resolves status and action ranges before either projection changes the source coordinates. */
+internal fun historyRemovalRanges(
+    statuses: List<IntRange>,
+    preserving: List<IntRange>,
+    removing: List<IntRange>,
+): List<IntRange> {
+    val statusParts = preserving.sortedBy { it.first }.fold(statuses) { remaining, keep ->
+        remaining.flatMap { remove ->
+            if (keep.last < remove.first || keep.first > remove.last) listOf(remove)
+            else listOf(remove.first until keep.first, (keep.last + 1)..remove.last).filterNot { it.isEmpty() }
+        }
+    }
+    val merged = mutableListOf<IntRange>()
+    for (range in (statusParts + removing).sortedBy { it.first }) {
+        val prior = merged.lastOrNull()
+        if (prior != null && range.first <= prior.last + 1) {
+            merged[merged.lastIndex] = prior.first..maxOf(prior.last, range.last)
+        } else merged += range
+    }
+    return merged
+}

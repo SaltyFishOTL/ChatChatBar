@@ -3,6 +3,7 @@ package com.example.chatbar.domain.deletion
 import android.util.Log
 import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.ChatMessage
+import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.ChunkSourceType
 import com.example.chatbar.data.local.entity.VectorChunk
 import com.example.chatbar.data.repository.ChatRepository
@@ -12,6 +13,7 @@ import com.example.chatbar.data.repository.VoiceMessageRepository
 import com.example.chatbar.domain.backup.LocalDataMaintenance
 import com.example.chatbar.domain.image.NovelAiImageStorage
 import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
+import com.example.chatbar.domain.rag.actionChoiceSourceIds
 import com.example.chatbar.domain.rag.ChatMemoryProjection
 import com.example.chatbar.domain.rag.RagRepository
 import com.example.chatbar.domain.rag.currentReplySourceProof
@@ -79,8 +81,11 @@ internal class ReplyRemovalCoordinator(
                                 (expected.images + expected.generatedImageMetadata.map { it.imagePath }).distinct()
                             } else emptyList(),
                             audioPaths = media.audioPaths,
-                            invalidateAutomaticMemory = ChatMemoryIndexPolicy.contributesToIndex(expected) &&
-                                (replacement == null || expected.displayContent != replacement.displayContent),
+                            invalidateAutomaticMemory = (expected.role == MessageRole.ASSISTANT ||
+                                ChatMemoryIndexPolicy.contributesToIndex(expected)) &&
+                                (replacement == null || expected.displayContent != replacement.displayContent ||
+                                    expected.displayActionOptionsFormat != replacement.displayActionOptionsFormat ||
+                                    expected.alternatives != replacement.alternatives),
                             legacyVoiceAnchorWitnessId = media.legacyAnchorWitnessId,
                             legacyVoiceContentHashes = media.legacyVoiceContentHashes
                         )
@@ -251,7 +256,11 @@ internal class ReplyRemovalCoordinator(
     private fun ReplyRemoval.affects(chunk: VectorChunk): Boolean =
         chunk.isAutomaticReplyMemory(sessionId, sourceTurnId, messageId)
 
-    private data class ReplyMemorySource(val sourceTurnId: String?, val messageIds: Set<String>)
+    private data class ReplyMemorySource(
+        val sourceTurnId: String?,
+        val messageIds: Set<String>,
+        val actionSources: Set<String>
+    )
 
     /** A repair, further deletion or restore can change ownership again before an earlier retry. */
     private inner class ReplyMemorySources(private val sessionId: String) {
@@ -272,8 +281,12 @@ internal class ReplyRemovalCoordinator(
             if (ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk)) return false
             val source = sourceOf(chunk)
             if (source !in projections) {
-                projections[source] = ChatMemoryIndexPolicy.buildTurns(read(source).map(renderMessage))
-                    .singleOrNull()?.let(::ChatMemoryProjection)
+                val messages = read(source)
+                val messageIds = messages.mapTo(mutableSetOf()) { it.id }
+                val evidence = actionEvidence(source, messages) + messages
+                projections[source] = ChatMemoryIndexPolicy.buildTurns(evidence.map(renderMessage))
+                    .singleOrNull { turn -> turn.messageIds.any { it in messageIds } }
+                    ?.let(::ChatMemoryProjection)
             }
             return projections[source]?.matches(chunk) == true
         }
@@ -281,7 +294,8 @@ internal class ReplyRemovalCoordinator(
         private suspend fun proofFor(chunk: VectorChunk): String? {
             val source = sourceOf(chunk)
             if (source !in proofs) {
-                proofs[source] = read(source).filter(ChatMemoryIndexPolicy::contributesToIndex)
+                val messages = read(source)
+                proofs[source] = (actionEvidence(source, messages) + messages).filter(ChatMemoryIndexPolicy::contributesToIndex)
                     .takeIf { it.isNotEmpty() }?.let(::replyMemorySourceProof)
             }
             return proofs[source]
@@ -290,7 +304,13 @@ internal class ReplyRemovalCoordinator(
         private fun sourceOf(chunk: VectorChunk): ReplyMemorySource {
             val sourceTurnId = chunk.metadata["sourceTurnId"]?.takeIf(String::isNotBlank)
             val ids = if (sourceTurnId == null) chunk.metadataMessageIds() + listOfNotNull(chunk.messageId) else emptySet()
-            return ReplyMemorySource(sourceTurnId, ids)
+            return ReplyMemorySource(sourceTurnId, ids, chunk.actionChoiceSourceIds())
+        }
+
+        private suspend fun actionEvidence(source: ReplyMemorySource, messages: List<ChatMessage>): List<ChatMessage> {
+            if (source.actionSources.isEmpty()) return emptyList()
+            val order = messages.firstOrNull()?.sourceTurnOrder?.takeIf { it > 1 } ?: return emptyList()
+            return chat.getMessagesForSourceTurnOrder(sessionId, order - 1)
         }
 
         private suspend fun read(source: ReplyMemorySource): List<ChatMessage> {

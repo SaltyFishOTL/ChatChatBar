@@ -18,6 +18,7 @@ import com.example.chatbar.domain.prompt.AiTaskStage
 import com.example.chatbar.domain.prompt.withAiTaskRun
 import com.example.chatbar.domain.prompt.rethrowIfAiTaskTerminalFailure
 import com.example.chatbar.domain.prompt.PromptTemplates
+import com.example.chatbar.domain.chat.RoleplayActionOptionsPolicy
 import com.example.chatbar.utils.DebugLogManager
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
@@ -121,7 +122,7 @@ class NovelAiPromptDesigner(
         require(!naturalLanguageMode || targetImageModel == NovelAiImageModel.V5_FULL) {
             "自然语言 Prompt 仅支持 NovelAI Diffusion V5 Full"
         }
-        val context = contextForAnchor(messages, anchorMessageId)
+        val context = contextForAnchor(messages, anchorMessageId, imageContentHint)
         require(context.isNotEmpty()) { "没有可用于生图的聊天上下文" }
         val botName = card.effectiveBotName
         val structured = card.editMode == CharacterEditMode.STRUCTURED
@@ -853,11 +854,15 @@ class NovelAiPromptDesigner(
     companion object {
         fun contextForAnchor(
             messages: List<ChatMessage>,
-            anchorMessageId: String
+            anchorMessageId: String,
+            imageContentHint: String = "",
         ): List<ChatMessage> {
             val msg = messages.firstOrNull { it.id == anchorMessageId }
                 ?: return emptyList()
-            if (msg.role == MessageRole.SYSTEM || msg.displayContent.isBlank()) return emptyList()
+            val scene = if (msg.role == MessageRole.ASSISTANT)
+                RoleplayActionOptionsPolicy.imageScene(msg.displayContent, msg.displayActionOptionsFormat, imageContentHint)
+            else msg.displayContent
+            if (msg.role == MessageRole.SYSTEM || scene.isBlank()) return emptyList()
             return listOf(msg)
         }
 
@@ -960,7 +965,8 @@ class NovelAiPromptDesigner(
                         message = scene,
                         playerName = playerName,
                         botName = botName,
-                        preserveUsername = true
+                        preserveUsername = true,
+                        imageContentHint = imageContentHint,
                     )
                 ),
                 ChatApiMessage.text(

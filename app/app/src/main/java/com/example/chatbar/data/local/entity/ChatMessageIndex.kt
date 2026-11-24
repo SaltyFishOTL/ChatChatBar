@@ -41,6 +41,12 @@ data class ChatMessagePage(
     val totalMessageCount: Int
 )
 
+/** Query-owned evidence for a complete recent suffix; not persisted or transported. */
+data class ChatContextCandidateSnapshot(
+    val messages: List<ChatMessage>,
+    val completeRecentMessageIds: Set<String>
+)
+
 fun ChatMessage.toIndexEntry(): ChatMessageIndexEntry = ChatMessageIndexEntry(
     messageId = id,
     role = role,

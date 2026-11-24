@@ -483,13 +483,17 @@ internal class BackupMergeEngine(
         val added = renamed[record.relative]?.let { mapOf((if (record.type == "chat_sessions") "displayTitleOverride" else
             if (record.type in setOf("model_configs", "retrieval_model_config", "embedding_configs", "embedding_model_config")) "displayName" else "name") to backupJson.encodeToString(it)) }.orEmpty()
         val proof = memory.rewriter(record)
+        val preservedInlineOwners = identity.preservedInlineMemoryOwnerPaths(record)
         BackupMessageVersionIdentity(record.type, writer, File(work, "message-versions"), checkActive).use { versions ->
             val stream = BackupJsonStream(reader, versions.writer, checkActive = checkActive, mappedFields = BackupMergeIdentity.fields,
                 observeObject = { path, start -> versions.objectEvent(path, start); proof.objectEvent(path, start) },
                 capturedFields = proof.observedFields + versions.observedFields,
                 observeField = { path, value -> versions.fieldEvent(path, value); proof.fieldEvent(path, value) },
                 observeString = versions::stringEvent, observeValue = versions::valueEvent,
-                mapString = { value, fields -> proof.string(value, fields) ?: identity.string(record, value, fields) },
+                mapString = { value, fields ->
+                    if (fields in preservedInlineOwners) value
+                    else proof.string(value, fields) ?: identity.string(record, value, fields)
+                },
                 mapKey = identity::key,
                 replaceValueStream = { fields, output -> retained[fields.singleOrNull()]?.let { it(output); true } ?: false },
                 replaceValue = { fields -> added[fields.singleOrNull()] ?: proof.replacement(fields) ?: when {

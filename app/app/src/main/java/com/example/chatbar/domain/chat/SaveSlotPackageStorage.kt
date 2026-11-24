@@ -1,6 +1,8 @@
 package com.example.chatbar.domain.chat
 
 import android.content.Context
+import android.util.JsonReader
+import android.util.JsonToken
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import com.example.chatbar.data.local.entity.ChatMessage
@@ -81,6 +83,23 @@ class SaveSlotPackageStorage(private val context: Context) {
 
         val createdImagePaths: List<String> get() = createdImages.toList()
         val createdAudioPaths: List<String> get() = createdAudio.toList()
+
+        /** The repository slot row can already have been reassigned to the importing session. */
+        internal fun originalSessionId(): String? = runCatching {
+            val manifest = zip.getEntry(MANIFEST_ENTRY) ?: return@runCatching null
+            JsonReader(zip.getInputStream(manifest).reader(Charsets.UTF_8)).use { reader ->
+                reader.beginObject()
+                var owner: String? = null
+                while (reader.hasNext()) {
+                    if (reader.nextName() == "sessionId") {
+                        if (owner != null || reader.peek() != JsonToken.STRING) return@use null
+                        owner = reader.nextString()
+                    } else reader.skipValue()
+                }
+                reader.endObject()
+                owner?.takeIf(String::isNotBlank)
+            }
+        }.getOrNull()
 
         suspend fun validate() {
             val packageRef = requireNotNull(slot.packageRef) { "v8 存档缺少 packageRef" }

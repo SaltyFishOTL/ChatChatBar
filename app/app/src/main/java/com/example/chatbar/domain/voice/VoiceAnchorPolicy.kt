@@ -1,9 +1,12 @@
 package com.example.chatbar.domain.voice
 
 import com.example.chatbar.data.local.entity.VoiceAnchor
+import com.example.chatbar.data.local.entity.ActionOptionsFormat
 import com.example.chatbar.data.local.entity.VoiceAnchorState
 import com.example.chatbar.domain.chat.RoleplaySegmentKind
 import com.example.chatbar.domain.chat.RoleplayTextSegment
+import com.example.chatbar.domain.chat.RoleplayActionOptionsBlock
+import com.example.chatbar.domain.chat.RoleplayActionOptionsPolicy
 import com.example.chatbar.domain.chat.stripRoleplaySpeakerMarkers
 import java.util.UUID
 import kotlin.math.abs
@@ -31,7 +34,8 @@ data class VoiceAnchorReconciliation(
 object VoiceAnchorPolicy {
     fun eligibleSegments(
         content: String,
-        includeNarration: Boolean = false
+        includeNarration: Boolean = false,
+        excludedActionBlocks: List<RoleplayActionOptionsBlock> = emptyList()
     ): List<CurrentVoiceSegment> =
         com.example.chatbar.domain.chat.parseRoleplayTextSegments(content)
             .mapIndexedNotNull { index, segment ->
@@ -41,7 +45,14 @@ object VoiceAnchorPolicy {
                 if (!eligible) {
                     null
                 } else {
-                    val spokenText = spokenText(segment).takeIf(String::isNotBlank)
+                    val displaySegment = if (excludedActionBlocks.any {
+                        it.range.first < segment.endExclusive && it.range.last >= segment.start
+                    }) {
+                        segment.copy(displayText = RoleplayActionOptionsPolicy.textOutsideBlocks(
+                            content, excludedActionBlocks, segment.start, segment.endExclusive
+                        ))
+                    } else segment
+                    val spokenText = spokenText(displaySegment).takeIf(String::isNotBlank)
                         ?: return@mapIndexedNotNull null
                     CurrentVoiceSegment(
                         segmentIndex = index,
@@ -54,8 +65,10 @@ object VoiceAnchorPolicy {
                 }
             }
 
-    fun promptContextText(content: String): String =
-        com.example.chatbar.domain.chat.parseRoleplayTextSegments(content)
+    fun promptContextText(content: String, actionOptionsFormat: ActionOptionsFormat? = null): String =
+        com.example.chatbar.domain.chat.parseRoleplayTextSegments(
+            RoleplayActionOptionsPolicy.withoutExplicitOptions(content, actionOptionsFormat)
+        )
             .mapNotNull { segment ->
                 val text = promptContextText(segment)
                 text.takeIf(String::isNotBlank)
@@ -63,8 +76,11 @@ object VoiceAnchorPolicy {
             .joinToString("\n")
             .trim()
 
-    fun wholeMessageSegment(content: String): CurrentVoiceSegment? {
-        val spokenText = eligibleSegments(content, includeNarration = true)
+    fun wholeMessageSegment(
+        content: String,
+        excludedActionBlocks: List<RoleplayActionOptionsBlock> = emptyList()
+    ): CurrentVoiceSegment? {
+        val spokenText = eligibleSegments(content, includeNarration = true, excludedActionBlocks = excludedActionBlocks)
             .joinToString("\n") { it.spokenText }
             .trim()
             .takeIf(String::isNotBlank)

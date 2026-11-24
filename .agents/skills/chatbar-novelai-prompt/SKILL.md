@@ -108,3 +108,5 @@ After NAI prompt-flow code changes:
 - Run `.\gradlew.bat :app:compileDebugKotlin` from `app/`.
 - Run `.\gradlew.bat test` when prompt helpers, parsing, or generation decisions change.
 - Keep a request-shape test covering message roles before and after cleartext chat-template adaptation.
+
+- Assistant scene input passes through RoleplayActionOptionsPolicy: only closed dash-wrapped, explicitly headed sequential action lists are omitted. Ordinary narration, quoted code, status/clothing, malformed or unknown lists and USER text remain. This projection does not change stored replies or implement action buttons/history-number expansion.

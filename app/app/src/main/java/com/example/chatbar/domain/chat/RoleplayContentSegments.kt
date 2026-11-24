@@ -91,6 +91,15 @@ private fun parseRoleplayTextSegments(content: String, visible: VisibleRoleplayT
     return attachRoleplaySpeakerPrefixes(content, segments, visible, visible.literalCode)
 }
 
+/** Raw boundaries reused by read-only action projections; never edit message storage here. */
+fun roleplayLongDashRawRanges(content: String): List<IntRange> {
+    val visible = visibleRoleplayText(content)
+    return findLongDashWrappedRanges(visible.text, 0, visible.text.length).mapNotNull { range ->
+        if (range.start >= range.endExclusive || range.endExclusive > visible.rawIndexes.size) null
+        else visible.rawIndexes[range.start]..visible.rawIndexes[range.endExclusive - 1]
+    }
+}
+
 fun stripRoleplaySpeakerMarkers(content: String): String =
     transformRoleplayProse(content) { roleplaySpeakerMarkerPattern.replace(it, "") }
 
@@ -109,13 +118,19 @@ internal inline fun transformRoleplayProse(content: String, transform: (String) 
 }
 
 /** 移除状态栏与横线包裹的选项块，保留叙事、对白、心理和人物标记。 */
-fun stripRoleplayStatusSegments(content: String): String {
-    val excludedRanges = excludedRoleplayRawRanges(content)
+fun stripRoleplayStatusSegments(
+    content: String,
+    preserving: List<IntRange> = emptyList(),
+    removing: List<IntRange> = emptyList(),
+): String {
+    val excludedRanges = historyRemovalRanges(
+        excludedRoleplayRawRanges(content).map { it.start until it.endExclusive }, preserving, removing,
+    )
     if (excludedRanges.isEmpty()) return content
     return excludedRanges
-        .sortedByDescending { range -> range.start }
+        .asReversed()
         .fold(content) { text, range ->
-            text.removeRange(range.start, range.endExclusive)
+            text.removeRange(range.first, range.last + 1)
         }
         .let(::cleanupAfterRoleplayStatusDeletion)
 }

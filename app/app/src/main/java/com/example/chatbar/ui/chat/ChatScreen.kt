@@ -130,6 +130,8 @@ import com.example.chatbar.domain.voice.qq.QqVoiceTransferPreflight
 import com.example.chatbar.domain.voice.qq.QqVoiceTransferRequest
 import com.example.chatbar.domain.voice.qq.QqVoiceTransferService
 import com.example.chatbar.ui.kit.ButtonVariant
+import com.example.chatbar.domain.chat.RoleplayActionOptionsPolicy
+import com.example.chatbar.domain.chat.insertActionOption
 import com.example.chatbar.ui.kit.CbButton
 import com.example.chatbar.ui.kit.CbDialog
 import com.example.chatbar.ui.kit.CbField
@@ -1198,6 +1200,13 @@ fun ChatScreen(
                             updatedAt = message.updatedAt
                         )
                     } ?: message
+                    val actionBlocks = if (
+                        message.role == MessageRole.ASSISTANT && !isArchived && !screenshotSelectionMode && repairState == null
+                    ) {
+                        remember(message.displayContent, message.displayActionOptionsFormat) {
+                            RoleplayActionOptionsPolicy.blocks(message.displayContent, message.displayActionOptionsFormat)
+                        }
+                    } else emptyList()
                     val selectableForScreenshot = message.isSelectableForChatScreenshot(assistantSegmentedBubblesEnabled)
                     val messageVoices = activeVoicePlacements[message.id].orEmpty()
                     val messageBlockIds = remember(message, assistantSegmentedBubblesEnabled, messageVoices) {
@@ -1292,8 +1301,34 @@ fun ChatScreen(
                             statusBlockExpansionOverrides =
                                 statusBlockExpansionOverrides + (blockId to expanded)
                         },
-                        showActions = !screenshotSelectionMode
+                        showActions = !screenshotSelectionMode,
+                        actionBlocks = actionBlocks
                     )
+                    actionBlocks.forEach { block ->
+                        Column(
+                            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            CbText("行动选项", style = ChatBarTheme.typography.caption)
+                            block.options.forEach { option ->
+                                val text = PlaceholderRenderer.render(option.text, renderPlayerName, renderBotName)
+                                CbSurface(
+                                    modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp).clickable(
+                                        enabled = !isResponding,
+                                        role = Role.Button
+                                    ) {
+                                        val inserted = insertActionOption(input.text, input.selection.end, text)
+                                        input = TextFieldValue(inserted.text, TextRange(inserted.cursor))
+                                        inputTouched = true
+                                        viewModel.updateDraftInput(input.text)
+                                    },
+                                    border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+                                ) {
+                                    CbText("${option.label}. $text", Modifier.padding(horizontal = 12.dp, vertical = 10.dp))
+                                }
+                            }
+                        }
+                    }
                     MessageFormatRepairNoticeRow(
                         message = message,
                         checking = repairState != null,

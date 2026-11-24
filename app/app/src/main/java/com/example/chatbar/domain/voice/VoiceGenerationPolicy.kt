@@ -1,12 +1,14 @@
 package com.example.chatbar.domain.voice
 
 import com.example.chatbar.data.local.entity.AppSettings
+import com.example.chatbar.data.local.entity.ActionOptionsFormat
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.CharacterInfo
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
 import com.example.chatbar.domain.chat.RoleplaySegmentKind
+import com.example.chatbar.domain.chat.RoleplayActionOptionsPolicy
 
 object VoiceGenerationPolicy {
     const val WHOLE_MESSAGE_SOURCE_KIND = "WHOLE_MESSAGE"
@@ -25,14 +27,17 @@ object VoiceGenerationPolicy {
     fun generationSegments(
         content: String,
         audiobookEnabled: Boolean,
-        segmentedBubblesEnabled: Boolean
+        segmentedBubblesEnabled: Boolean,
+        actionOptionsFormat: ActionOptionsFormat? = null
     ): List<CurrentVoiceSegment> {
+        val blocks = RoleplayActionOptionsPolicy.blocks(content, actionOptionsFormat)
         if (audiobookEnabled && !segmentedBubblesEnabled) {
-            return listOfNotNull(VoiceAnchorPolicy.wholeMessageSegment(content))
+            return listOfNotNull(VoiceAnchorPolicy.wholeMessageSegment(content, blocks))
         }
         return VoiceAnchorPolicy.eligibleSegments(
             content = content,
-            includeNarration = audiobookEnabled
+            includeNarration = audiobookEnabled,
+            excludedActionBlocks = blocks
         )
     }
 

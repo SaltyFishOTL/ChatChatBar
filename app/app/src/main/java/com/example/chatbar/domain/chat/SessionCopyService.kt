@@ -96,7 +96,7 @@ internal class SessionCopyService(
                         chatRepository.updateSessionDraft(targetId, draft)
                         onProgress("正在保存会话设置与长期记忆…")
                         chatRepository.createSession(target.copy(chatBackground = background))
-                        memoryService.loadSnapshot(targetId, memory)
+                        memoryService.loadSnapshot(targetId, memory, sourceSessionId = sourceId)
                         requireNotNull(chatRepository.getSession(targetId))
                     } catch (error: Throwable) {
                         withContext(NonCancellable) {

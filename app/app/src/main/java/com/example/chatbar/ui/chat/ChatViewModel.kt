@@ -18,6 +18,9 @@ import com.example.chatbar.domain.card.FormatCardUserToolPolicy
 import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.ChatContextGroupPolicy
+import com.example.chatbar.domain.chat.ChatHistoryActionProjection
+import com.example.chatbar.domain.chat.RoleplayActionOptionsPolicy
+import com.example.chatbar.domain.chat.ChatHistoryActionRequestSource
 import com.example.chatbar.domain.chat.ChatHistoryPromptPolicy
 import com.example.chatbar.domain.chat.NarrativeHistoryEcho
 import com.example.chatbar.domain.chat.ChatHistoryPromptZone
@@ -734,7 +737,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         VoiceGenerationPolicy.generationSegments(
             content = message.displayContent,
             audiobookEnabled = _audiobookModeEnabled.value,
-            segmentedBubblesEnabled = _assistantSegmentedBubblesEnabled.value
+            segmentedBubblesEnabled = _assistantSegmentedBubblesEnabled.value,
+            actionOptionsFormat = message.displayActionOptionsFormat
         )
 
     fun cancelVoiceGeneration(batchId: String) {
@@ -2371,6 +2375,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 check(shown == null || message == shown) { "消息已变化，请重新操作" }
                 val changed = (if (redo) MessageFormatRepairPolicy.redoRepair(message)
                     else MessageFormatRepairPolicy.restoreOriginal(message)) ?: return@launch
+                longTermMemoryService.preserveActionProjectionBeforeMutation(message, changed)
                 val persisted = checkNotNull(chatRepository.updateMessageIfUnchanged(message, changed, timelineRevision)) {
                     "消息已变化，请重新操作"
                 }
@@ -2419,7 +2424,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         versionId: String,
         changed: ChatMessage
     ) {
-        val cleanupError = withContext(NonCancellable) { replyRemovalCoordinator.remove(message, changed, versionId) }
+        val cleanupError = withContext(NonCancellable) {
+            longTermMemoryService.preserveActionProjectionBeforeMutation(message, changed)
+            replyRemovalCoordinator.remove(message, changed, versionId)
+        }
         replaceMessagesFromRepository()
         if (cleanupError != null) _messageActionError.value = cleanupError
         refreshMemoryAfterMessageEdit(changed)
@@ -2435,6 +2443,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         var attemptError: String? = null
         suspend fun commit(replacement: ChatMessage, unchanged: Boolean = false): ChatMessage? =
             formatRepairCommitMutex.withLock {
+                longTermMemoryService.preserveActionProjectionBeforeMutation(message, replacement)
                 val persisted = chatRepository.updateMessageIfUnchanged(message, replacement, timelineRevision)
                 if (persisted == null) {
                     _messageFormatRepairEvents.tryEmit("消息已变化，已放弃本次格式修复")
@@ -2464,7 +2473,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         val currentSession = chatRepository.getSession(sessionId) ?: return null
         val renderContext = placeholderRenderContext(currentSession)
         val formatCardId = currentSession.formatCardId ?: appSettings.defaultFormatCardId
-        val formatCard = formatCardId
+        val renderedFormatCard = formatCardId
             ?.let { formatCardRepository.getById(it) }
             ?.content
             ?.let { content ->
@@ -2473,6 +2482,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 } ?: content
             }
             ?.takeIf(String::isNotBlank)
+        val originalContent = message.displayContent
+        val optionsFormat = message.displayActionOptionsFormat
+        val repairInput = RoleplayActionOptionsPolicy.completeTrailingBlock(originalContent, optionsFormat)
+        fun actionItems(text: String) = RoleplayActionOptionsPolicy.blocks(text, optionsFormat).map { block ->
+            block.options.map { option -> option.text }
+        }
+        val originalActions = RoleplayActionOptionsPolicy.blocksBeforeRepair(repairInput, optionsFormat)
+            .map { block -> block.options.map { it.text } }
+        val formatCard = listOfNotNull(
+            renderedFormatCard,
+            PromptTemplates.actionOptionsRepairRequirement(optionsFormat).takeIf { originalActions.isNotEmpty() }
+        ).joinToString("\n\n").takeIf(String::isNotBlank)
         val segmentedFormat = if (appSettings.assistantSegmentedBubblesEnabled) {
             val card = _characterCard.value?.takeIf { it.id == currentSession.characterCardId }
                 ?: characterRepository.getById(currentSession.characterCardId)
@@ -2495,8 +2516,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             return commit(failure("格式修复模型及默认对话模型未配置或已失效"))
         }
 
-        val originalContent = message.displayContent
-        val repairRequest = MessageFormatRepairService.PreparedRequest(originalContent, formatCard, segmentedFormat)
+        val repairRequest = MessageFormatRepairService.PreparedRequest(repairInput, formatCard, segmentedFormat)
         val repairEcho = repairRequest.historyCleanup()
         val repairDeltaPreview = repairEcho.streamingPreview()
         val repairOrdinaryPreview = repairEcho.streamingPreview()
@@ -2569,18 +2589,24 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 bufferedBody ?: ordinaryPreview ?: repairedPrefix, interrupted = true, partLengths = partLengths,
                             )
                             val mixedContent = MessageFormatRepairPolicy.progressiveOverlay(originalContent, cleaned)
-                            result = MessageFormatRepairPolicy.afterStoppedRepair(message, mixedContent)
+                            val safeContent = mixedContent.takeIf { actionItems(it) == actionItems(originalContent) } ?: originalContent
+                            result = MessageFormatRepairPolicy.afterStoppedRepair(message, safeContent)
                         } else {
                             val repaired = repairEcho.completedBody(repairedPrefix, partLengths = repairPartLengths)
                             check(sawDone && repaired.isNotBlank()) { "格式修复模型返回空结果" }
-                            unchanged = MessageFormatRepairPolicy.isUnchangedResult(repaired) || repaired == originalContent
+                            val candidate = if (MessageFormatRepairPolicy.isUnchangedResult(repaired)) repairInput
+                                else RoleplayActionOptionsPolicy.completeTrailingBlock(repaired, optionsFormat)
+                            check(candidate == repairInput || actionItems(candidate) == originalActions) {
+                                "修复结果改动了行动选项，已保留原文"
+                            }
+                            unchanged = candidate == originalContent
                             result = if (unchanged) {
                                 MessageFormatRepairPolicy.afterUnchangedRepair(message)
                             } else {
                                 MessageFormatRepairPolicy.replaceCurrentDisplayContent(
                                     message = message,
-                                    replacement = repaired,
-                                    notice = MessageFormatRepairPolicy.completedRepairNotice(originalContent, repaired)
+                                    replacement = candidate,
+                                    notice = MessageFormatRepairPolicy.completedRepairNotice(originalContent, candidate)
                                 )
                             }
                         }
@@ -2797,11 +2823,29 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 } else {
                     null
                 }
-                val allMsgs = chatRepository.getContextCandidateMessages(
+                val candidateSnapshot = chatRepository.getContextCandidateSnapshot(
                     sessionId = sessionId,
                     recentTurnCount = effectiveContextWindowSize + 6,
                     includeSourceTurnIds = boundaryView?.pendingSourceTurnIds.orEmpty()
-                ).filterNot { it.id == alternativeTargetMessageId }
+                )
+                val allMsgs = candidateSnapshot.messages.filterNot { it.id == alternativeTargetMessageId }
+                // Assess references against the query universe, before context/RAG budget projection.
+                // Bind a persisted request to its own USER, not a concurrent later append.
+                val actionCandidates = if (persistUserMessage || resumedUserMessage != null) {
+                    val currentIndex = allMsgs.indexOfLast { it.id == userMsg.id && it.role == MessageRole.USER }
+                    if (currentIndex >= 0) allMsgs.take(currentIndex + 1) else emptyList()
+                } else allMsgs
+                val actionRequestSource = ChatHistoryActionRequestSource.forSend(
+                    persistsNewUser = persistUserMessage,
+                    resumedUser = resumedUserMessage,
+                    regeneratesAlternative = alternativeTargetMessageId != null,
+                    continuesFromUi = resumeLatestUser,
+                )
+                val actionProjection = ChatHistoryActionProjection.prepare(
+                    candidates = actionCandidates,
+                    completeRecentMessageIds = candidateSnapshot.completeRecentMessageIds,
+                    requestSource = actionRequestSource
+                )
                 val pruneRevision = chatRepository.ragSourceRevision(sessionId)
                 replyRemovalCoordinator.withCurrentRagSources(sessionId, pruneRevision) {
                     ChatBarApp.instance.ragRepository.pruneChatMemory(
@@ -2821,7 +2865,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     )
                 }
                 val renderedContextMsgs = contextMsgs.map {
-                    PlaceholderRenderer.renderMessage(it, activePlayerNameOrNull, charCard.effectiveBotName)
+                    PlaceholderRenderer.renderMessage(actionProjection.forRetrieval(it), activePlayerNameOrNull, charCard.effectiveBotName)
                 }
                 val currentRetrievalUserContent = when {
                     persistUserMessage || resumedUserMessage != null -> finalUserContent
@@ -3220,11 +3264,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         zone: ChatHistoryPromptZone
                     ) {
                         val role = msg.role.name.lowercase()
-                        val sourceText = ChatHistoryPromptPolicy.sourceText(
-                            message = msg,
-                            excludeAssistantStatusFromHistory =
-                                appSettings.excludeAssistantStatusFromHistory,
-                            zone = zone
+                        val sourceText = actionProjection.sourceForHistory(
+                            msg, stripStatus = appSettings.excludeAssistantStatusFromHistory &&
+                                zone == ChatHistoryPromptZone.EARLIER_HISTORY,
                         )
                         val renderedBody = renderSessionText(sourceText)
                         val hasSupportedImage = msg.images.isNotEmpty() &&
@@ -3377,6 +3419,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             role = MessageRole.ASSISTANT,
                             content = rawBody,
                             narrativeMode = requestNarrativeMode,
+                            actionOptionsFormat = activeFormatCard?.actionOptionsFormat,
                             reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
                             createdAt = streamCreatedAt,
                             updatedAt = System.currentTimeMillis(),
@@ -3458,6 +3501,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                     role = MessageRole.ASSISTANT,
                                     content = replyBody,
                                     narrativeMode = requestNarrativeMode,
+                                    actionOptionsFormat = activeFormatCard?.actionOptionsFormat,
                                     reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
                                     createdAt = streamCreatedAt,
                                     updatedAt = System.currentTimeMillis(),
@@ -3680,9 +3724,13 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             message = old,
             content = generatedMessage.content,
             newVersionId = MessageAlternativeVersionPolicy.newVersionId(old),
-            narrativeMode = generatedMessage.narrativeMode
+            narrativeMode = generatedMessage.narrativeMode,
+            actionOptionsFormat = generatedMessage.actionOptionsFormat
         ).copy(reasoningContent = generatedMessage.reasoningContent)
-        return fishAudioCoordinator.switchDisplayedVersion(old, updated, regenerationTarget.timelineRevision)
+        longTermMemoryService.preserveActionProjectionBeforeMutation(old, updated)
+        return fishAudioCoordinator.switchDisplayedVersion(old, updated, regenerationTarget.timelineRevision)?.also {
+            invalidateActionMemoryDependingOn(old.id)
+        }
     }
 
     /**
@@ -3713,6 +3761,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             try {
                 coroutineContext.ensureActive()
                 recovered = withContext(NonCancellable) {
+                    if (expected != null) longTermMemoryService.preserveActionProjectionBeforeMutation(expected)
                     if (replyRemovalCoordinator.retryMessage(sessionId, messageId, versionId = null)) {
                         true
                     } else {
@@ -3812,7 +3861,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 MessageAlternativeVersionPolicy.versions(message).none { it.content.isNotBlank() }
             ) {
                 val removed = try {
-                    withContext(NonCancellable) { replyRemovalCoordinator.removeIfUnvoiced(message) }
+                    withContext(NonCancellable) {
+                        longTermMemoryService.preserveActionProjectionBeforeMutation(message)
+                        replyRemovalCoordinator.removeIfUnvoiced(message)
+                    }
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: Exception) {
@@ -3924,6 +3976,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         )
         val updatedMessage = MessageFormatRepairPolicy.updateCurrentNotice(edited, null)
 
+        longTermMemoryService.preserveActionProjectionBeforeMutation(oldMessage, updatedMessage)
         if (chatRepository.updateMessageIfUnchanged(oldMessage, updatedMessage) == null) {
             _messageActionError.value = "消息已变化，请重新操作"
             return
@@ -3938,6 +3991,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     private suspend fun refreshMemoryAfterMessageEdit(updatedMessage: ChatMessage) {
         val messageId = updatedMessage.id
+        if (updatedMessage.role == MessageRole.ASSISTANT) invalidateActionMemoryDependingOn(messageId)
         val revision = chatRepository.ragSourceRevision(sessionId)
         val contextSize = effectiveContextWindowSize()
         val recentAndTurn = chatRepository.getContextCandidateMessages(
@@ -3985,6 +4039,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     }
 
     private suspend fun refreshMemoryAfterMessageDeletion(deletedMessage: ChatMessage) {
+        if (deletedMessage.role == MessageRole.ASSISTANT) {
+            invalidateActionMemoryDependingOn(deletedMessage.id)
+        }
         if (!ChatMemoryIndexPolicy.contributesToIndex(deletedMessage)) return
 
         val remainingTurnMessage = deletedMessage.sourceTurnId?.let { sourceTurnId ->
@@ -3996,6 +4053,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         }
         clearRemovedReplyMemory(deletedMessage.id, deletedMessage.sourceTurnId)
     }
+
+    private suspend fun invalidateActionMemoryDependingOn(messageId: String) =
+        replyRemovalCoordinator.withStoredReplyMemory {
+            ChatBarApp.instance.ragRepository.deleteChatMemoryDependingOnActionReply(sessionId, messageId)
+        }
 
     private suspend fun clearRemovedReplyMemory(messageId: String, sourceTurnId: String?) {
         val revision = chatRepository.ragSourceRevision(sessionId)
@@ -4027,9 +4089,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     .coerceIn(0, message.alternatives.lastIndex)
                 if (nextIndex == message.currentAlternativeIndex) return@launch
                 val updated = MessageAlternativeVersionPolicy.select(message, nextIndex)
+                longTermMemoryService.preserveActionProjectionBeforeMutation(message, updated)
                 val committed = fishAudioCoordinator.switchDisplayedVersion(message, updated)
                 replaceMessagesFromRepository()
                 check(committed != null) { "消息已变化，请重新操作" }
+                invalidateActionMemoryDependingOn(messageId)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) { _messageActionError.value = error.message ?: "切换备选失败" }
         }
@@ -4113,7 +4177,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     ): Boolean {
         val chunks = ragManager.embedTimelineTurnMemory(turn, sessionId, embeddingConfig)
         return replyRemovalCoordinator.publishReplyMemory(
-            sessionId, revision, turn.sourceTurnId, turn.messageIds, chunks, sourceMessages
+            sessionId, revision, turn.sourceTurnId, turn.messageIds, chunks,
+            sourceMessages = sourceMessages.takeIf { turn.confirmedChoices.isEmpty() }
         )
     }
 
@@ -4502,7 +4567,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                               ChatBarApp.instance.ragRepository.saveChunks(materializedSlot.vectorChunks.mapNotNull { prepareChunk(it) })
                           }
                           chatRepository.updateSession(restoredSession, restoreNarrativeMode = true)
-                          longTermMemoryService.loadSnapshot(sessionId, materializedSlot.memorySnapshot)
+                          longTermMemoryService.loadSnapshot(
+                              sessionId, materializedSlot.memorySnapshot,
+                              sourceSessionId = SaveSlotJsonTransfer.sourceSessionIdForRestore(materializedSlot)
+                          )
                       } catch (error: Throwable) {
                           chatRepository.replaceMessagesForSession(sessionId, currentMsgs)
                           voiceMessageRepository.restoreForSession(sessionId, currentVoices, currentMsgs)
@@ -4512,7 +4580,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                           )
                           ChatBarApp.instance.ragRepository.saveChunks(currentChunks)
                           chatRepository.updateSession(curSession, restoreNarrativeMode = true)
-                          runCatching { longTermMemoryService.loadSnapshot(sessionId, currentMemorySnapshot) }
+                          runCatching { longTermMemoryService.loadSnapshot(sessionId, currentMemorySnapshot, sourceSessionId = sessionId) }
                           materializedAudio.createdPaths.forEach {
                               ChatBarApp.instance.fishAudioStorage.deleteIfOwned(it)
                           }
@@ -4557,6 +4625,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             try {
                 _saveSlotOperation.value = SaveSlotOperationState(true, "正在校验存档…", true)
                 reader.validate()
+                val sourceSessionId = withContext(Dispatchers.IO) { reader.originalSessionId() }
                 val restoredBackground = reader.materializeBackground()
                 _saveSlotOperation.value = SaveSlotOperationState(true, "正在恢复语音…", true)
                 val restoredVoices = reader.restoreVoices(
@@ -4614,7 +4683,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         ),
                         restoreNarrativeMode = true
                     )
-                    longTermMemoryService.loadSnapshot(sessionId, slot.memorySnapshot)
+                    longTermMemoryService.loadSnapshot(sessionId, slot.memorySnapshot, sourceSessionId)
                 }
             } catch (error: Throwable) {
                 if (!messagesCommitted) {

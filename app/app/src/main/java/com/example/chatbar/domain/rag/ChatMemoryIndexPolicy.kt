@@ -4,12 +4,15 @@ import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.VectorChunk
 import com.example.chatbar.domain.chat.ChatContextGroupPolicy
+import com.example.chatbar.domain.chat.ConfirmedActionChoice
+import com.example.chatbar.domain.chat.RoleplayActionOptionsPolicy
 import com.example.chatbar.domain.chat.stripRoleplayStatusSegments
 
 data class ChatMemoryTurn(
     val sourceTurnId: String?,
     val sourceTurnOrder: Long?,
-    val messages: List<ChatMessage>
+    val messages: List<ChatMessage>,
+    val confirmedChoices: Map<String, ConfirmedActionChoice> = emptyMap(),
 ) {
     val messageIds: Set<String> = messages.mapTo(linkedSetOf()) { it.id }
     val identityKey: String = sourceTurnId
@@ -22,12 +25,14 @@ internal class ChatMemoryProjection(turn: ChatMemoryTurn) {
     private val messageIds = turn.messageIds
     private val sourceTurnId = turn.sourceTurnId
     private val contents = ChatMemoryIndexPolicy.contentsForIndex(turn)
+    private val actionSources = turn.confirmedChoices.values.mapTo(mutableSetOf()) { it.replyId }
 
     fun matches(chunk: VectorChunk): Boolean {
         if (!ChatMemoryIndexPolicy.isAutomaticChunk(chunk) ||
             chunk.metadata["indexMode"] != ChatMemoryIndexPolicy.INDEX_MODE ||
             ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk) ||
             chunk.metadata["sourceTurnId"]?.takeIf(String::isNotBlank)?.let { it != sourceTurnId } == true ||
+            chunk.actionChoiceSourceIds() != actionSources ||
             chunk.metadataMessageIds() + listOfNotNull(chunk.messageId) != messageIds) return false
 
         val index = chunk.metadata["chunkIndex"] ?: return chunk.content in contents
@@ -37,8 +42,9 @@ internal class ChatMemoryProjection(turn: ChatMemoryTurn) {
 
 object ChatMemoryIndexPolicy {
     const val INDEX_MODE = "timeline_turn"
+    const val CONTENT_VERSION = "9"
+    const val ACTION_CHOICE_SOURCE_IDS = "actionChoiceSourceIds"
     const val MANUAL_MODE = "manual"
-    const val CONTENT_VERSION = "7"
 
     private const val LONG_TURN_SPLIT_THRESHOLD = 600
     private const val SPLIT_SEARCH_START = 300
@@ -75,14 +81,17 @@ object ChatMemoryIndexPolicy {
                 ChatMemoryTurn(
                     sourceTurnId = storyMessages.mapNotNull { it.sourceTurnId }.distinct().singleOrNull(),
                     sourceTurnOrder = storyMessages.mapNotNull { it.sourceTurnOrder }.distinct().singleOrNull(),
-                    messages = indexMessages
+                    messages = indexMessages,
+                    confirmedChoices = indexMessages.mapNotNull { message ->
+                        RoleplayActionOptionsPolicy.confirmedMemoryChoice(message, messages)?.let { message.id to it }
+                    }.toMap(),
                 )
             }
         }
 
     fun contributesToIndex(message: ChatMessage): Boolean = when (message.role) {
         MessageRole.USER -> message.displayContent.isNotBlank()
-        MessageRole.ASSISTANT -> cleanAssistantContent(message.displayContent).isNotBlank()
+        MessageRole.ASSISTANT -> cleanAssistantContent(message).isNotBlank()
         MessageRole.SYSTEM -> false
     }
 
@@ -95,8 +104,8 @@ object ChatMemoryIndexPolicy {
 
     fun contentForIndex(turn: ChatMemoryTurn): String = turn.messages.mapNotNull { message ->
         val content = when (message.role) {
-            MessageRole.USER -> message.displayContent.trim()
-            MessageRole.ASSISTANT -> cleanAssistantContent(message.displayContent)
+            MessageRole.USER -> userIndexText(turn, message)
+            MessageRole.ASSISTANT -> cleanAssistantContent(message)
             MessageRole.SYSTEM -> ""
         }
         content.takeIf(String::isNotBlank)?.let { text ->
@@ -109,8 +118,8 @@ object ChatMemoryIndexPolicy {
 
     fun shouldIndex(turn: ChatMemoryTurn): Boolean = turn.messages.any { message ->
         when (message.role) {
-            MessageRole.USER -> hasInformation(message.displayContent)
-            MessageRole.ASSISTANT -> hasInformation(cleanAssistantContent(message.displayContent))
+            MessageRole.USER -> hasInformation(userIndexText(turn, message))
+            MessageRole.ASSISTANT -> hasInformation(cleanAssistantContent(message))
             MessageRole.SYSTEM -> false
         }
     }
@@ -126,8 +135,13 @@ object ChatMemoryIndexPolicy {
         isAutomaticChunk(chunk) && (chunk.metadata["indexMode"] != INDEX_MODE ||
             chunk.metadata["contentVersion"] != CONTENT_VERSION)
 
-    private fun cleanAssistantContent(content: String): String =
-        stripRoleplayStatusSegments(content).trim()
+    private fun userIndexText(turn: ChatMemoryTurn, message: ChatMessage): String =
+        RoleplayActionOptionsPolicy.preserveConfirmedUserChoice(message.displayContent.trim(), turn.confirmedChoices[message.id])
+
+    private fun cleanAssistantContent(message: ChatMessage): String =
+        stripRoleplayStatusSegments(RoleplayActionOptionsPolicy.withoutExplicitOptions(
+            message.displayContent, message.displayActionOptionsFormat,
+        )).trim()
 
     private fun hasInformation(rawContent: String): Boolean {
         val compact = rawContent

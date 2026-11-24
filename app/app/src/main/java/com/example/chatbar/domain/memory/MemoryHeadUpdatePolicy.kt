@@ -1,5 +1,9 @@
 package com.example.chatbar.domain.memory
 
+import com.example.chatbar.data.local.entity.MemoryHead
+import com.example.chatbar.data.local.entity.MemoryHeadActionProjection
+import com.example.chatbar.data.local.entity.MemoryTimelineEntry
+
 enum class MemoryHeadUpdateMode {
     INITIALIZE,
     BACKFILL,
@@ -23,6 +27,38 @@ data class MemoryHeadUpdatePlan(
 object MemoryHeadUpdatePolicy {
     fun canInject(hasHeadContent: Boolean, sourceAvailable: Boolean): Boolean =
         hasHeadContent && sourceAvailable
+
+    /** A legacy HEAD's recorded inputs do not prove the safety of its unmapped source turns. */
+    internal fun actionProjection(
+        head: MemoryHead,
+        timeline: List<MemoryTimelineEntry>,
+        projectedActionSourceIds: Set<String>
+    ): MemoryHeadActionProjection? {
+        val previous = head.actionProjection
+        if (previous != null || projectedActionSourceIds.isEmpty()) return previous
+        val throughOrder = timeline.firstOrNull { it.sourceTurnId == head.throughSourceTurnId }?.sourceOrder
+            ?: return null
+        val evidence = head.sourceHashes.keys + head.sourceFingerprints.keys
+        val hasUnprovedActionSource = timeline.any { entry ->
+            entry.sourceOrder <= throughOrder &&
+                entry.sourceTurnId in projectedActionSourceIds && entry.sourceTurnId !in evidence
+        }
+        return MemoryHeadActionProjection.WITHHELD.takeIf { hasUnprovedActionSource }
+    }
+
+    /** A hashless HEAD cannot prove that a later edit removed the contents it summarized. */
+    internal fun hashlessHeadIsStale(
+        head: MemoryHead,
+        timeline: List<MemoryTimelineEntry>,
+        staleOrUnverifiedSourceIds: Set<String>
+    ): Boolean {
+        if (head.stale) return true
+        val throughOrder = timeline.firstOrNull { it.sourceTurnId == head.throughSourceTurnId }?.sourceOrder
+            ?: return false
+        return timeline.any {
+            it.sourceTurnId in staleOrUnverifiedSourceIds && it.sourceOrder <= throughOrder
+        }
+    }
 
     /**
      * Stable groups include the complete previous turn kept raw at prompt tail.

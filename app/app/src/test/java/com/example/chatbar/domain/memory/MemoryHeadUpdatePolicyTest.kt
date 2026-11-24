@@ -1,5 +1,9 @@
 package com.example.chatbar.domain.memory
 
+import com.example.chatbar.data.local.entity.MemoryHead
+import com.example.chatbar.data.local.entity.MemoryHeadActionProjection
+import com.example.chatbar.data.local.entity.MemoryTimelineEntry
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -8,6 +12,53 @@ import org.junit.Test
 
 class MemoryHeadUpdatePolicyTest {
     private val stableIds = listOf("source-0", "source-1", "source-2", "source-3")
+
+    @Test
+    fun hashlessHeadCannotBecomeFreshWhenItsAffectedSourceIsEditedAway() {
+        val timeline = stableIds.mapIndexed { order, id ->
+            MemoryTimelineEntry(sourceTurnId = id, sourceOrder = order.toLong(), displayT = order.toLong())
+        }
+        val original = MemoryHead(throughSourceTurnId = "source-2", goals = "旧目标")
+        assertFalse(MemoryHeadUpdatePolicy.hashlessHeadIsStale(original, timeline, emptySet()))
+        assertFalse(MemoryHeadUpdatePolicy.hashlessHeadIsStale(original, timeline, setOf("source-3")))
+        val observedStale = MemoryHeadUpdatePolicy.hashlessHeadIsStale(original, timeline, setOf("source-1"))
+        assertTrue(observedStale)
+        assertTrue(MemoryHeadUpdatePolicy.hashlessHeadIsStale(original.copy(stale = observedStale), timeline, emptySet()))
+    }
+
+    @Test
+    fun legacyRolledHeadKeepsUnprovedMenuPrefixWithheldAcrossEditsAndReload() {
+        val json = Json { encodeDefaults = true }
+        val timeline = stableIds.mapIndexed { order, id ->
+            MemoryTimelineEntry(sourceTurnId = id, sourceOrder = order.toLong(), displayT = order.toLong())
+        }
+        val rolled = MemoryHead(
+            throughSourceTurnId = "source-2",
+            goals = "保留旧正文",
+            sourceFingerprints = mapOf("source-2" to "known-fingerprint"),
+        )
+        assertFalse(json.encodeToString(MemoryHead.serializer(), rolled).contains("actionProjection"))
+        assertNull(MemoryHeadUpdatePolicy.actionProjection(rolled, timeline, emptySet()))
+        assertNull(MemoryHeadUpdatePolicy.actionProjection(rolled, timeline, setOf("source-3")))
+        assertNull(MemoryHeadUpdatePolicy.actionProjection(rolled, timeline, setOf("source-2")))
+
+        val withheld = MemoryHeadUpdatePolicy.actionProjection(rolled, timeline, setOf("source-1"))
+        assertEquals(MemoryHeadActionProjection.WITHHELD, withheld)
+        val persisted = rolled.copy(actionProjection = withheld)
+        val cold = json.decodeFromString(MemoryHead.serializer(), json.encodeToString(MemoryHead.serializer(), persisted))
+        assertEquals(rolled.goals, cold.goals)
+        assertEquals(withheld, MemoryHeadUpdatePolicy.actionProjection(cold, timeline, emptySet()))
+
+        val backfilled = rolled.copy(
+            sourceFingerprints = mapOf("source-0" to "early-evidence", "source-2" to "tail-evidence"),
+        )
+        assertEquals(MemoryHeadActionProjection.WITHHELD,
+            MemoryHeadUpdatePolicy.actionProjection(backfilled, timeline, setOf("source-1")))
+        assertNull(MemoryHeadUpdatePolicy.actionProjection(backfilled, timeline, setOf("source-0", "source-3")))
+        val regenerated = backfilled.copy(actionProjection = MemoryHeadActionProjection.VERIFIED)
+        assertEquals(MemoryHeadActionProjection.VERIFIED,
+            MemoryHeadUpdatePolicy.actionProjection(regenerated, timeline, setOf("source-1")))
+    }
 
     @Test
     fun baselineExcludesLatestCompleteHotTurn() {

@@ -21,6 +21,7 @@ import com.example.chatbar.data.local.entity.MemoryFailureCategory
 import com.example.chatbar.data.local.entity.MemoryFailureInfo
 import com.example.chatbar.data.local.entity.MemoryFailureStage
 import com.example.chatbar.data.local.entity.MemoryHead
+import com.example.chatbar.data.local.entity.MemoryHeadActionProjection
 import com.example.chatbar.data.local.entity.MemoryNode
 import com.example.chatbar.data.local.entity.MemoryPageState
 import com.example.chatbar.data.local.entity.MemoryRevisionOperation
@@ -40,6 +41,7 @@ import com.example.chatbar.data.repository.ChatRepository
 import com.example.chatbar.data.repository.MemoryRepository
 import com.example.chatbar.data.repository.SettingsRepository
 import com.example.chatbar.domain.chat.ContextWindowManager
+import com.example.chatbar.domain.chat.RoleplayActionOptionsPolicy
 import com.example.chatbar.domain.chat.StreamingChatService
 import com.example.chatbar.domain.prompt.PromptTemplates
 import java.util.concurrent.ConcurrentHashMap
@@ -177,6 +179,28 @@ class LongTermMemoryService internal constructor(
     suspend fun refreshForCurrentConditions(sessionId: String): MemoryPromptView = stateLock(sessionId) {
         val loaded = loadLocked(sessionId, discoverUntrackedArchived = true)
         compileAndCacheLocked(loaded)
+    }
+
+    /** Persist unsafe legacy provenance while the old transcript still identifies its source. */
+    suspend fun preserveActionProjectionBeforeMutation(previous: ChatMessage, replacement: ChatMessage? = null) {
+        if (previous.role != MessageRole.ASSISTANT ||
+            (replacement != null && previous.displayContent == replacement.displayContent &&
+                previous.displayActionOptionsFormat == replacement.displayActionOptionsFormat)
+        ) return
+        val body = previous.displayContent
+        if (RoleplayActionOptionsPolicy.withoutExplicitOptions(body, previous.displayActionOptionsFormat) == body) return
+
+        stateLock(previous.sessionId) {
+            val session = chatRepository.getSession(previous.sessionId) ?: return@stateLock
+            val state = memoryRepository.getState(previous.sessionId)
+            if (state?.legacyReferenceNodeIds?.isNotEmpty() == true ||
+                (state?.head?.throughSourceTurnId != null && state.head.actionProjection == null) ||
+                ((state == null || state.schemaVersion < CURRENT_LONG_TERM_MEMORY_SCHEMA_VERSION) &&
+                    (session.longTermMemory.isNotBlank() || memoryRepository.legacyHistory(previous.sessionId).isNotEmpty()))
+            ) {
+                loadLocked(previous.sessionId)
+            }
+        }
     }
 
     suspend fun currentState(sessionId: String): MemorySessionState? = stateLock(sessionId) {
@@ -635,7 +659,8 @@ class LongTermMemoryService internal constructor(
             }
             val plan = candidatePlan?.takeUnless { selected ->
                 selected.mode == MemoryHeadUpdateMode.UPDATE &&
-                    headPathCrossesGap(base, selected.targetSourceTurnId)
+                    (base.state.head.actionProjection == MemoryHeadActionProjection.WITHHELD ||
+                        headPathCrossesGap(base, selected.targetSourceTurnId))
             }
             if (plan == null) {
                 stateLock(sessionId) {
@@ -709,7 +734,7 @@ class LongTermMemoryService internal constructor(
                 }
                 val injectableArchiveNodes = if (plan.mode == MemoryHeadUpdateMode.BACKFILL) {
                     effectiveArchiveFrontier(current).nodes +
-                        current.state.legacyReferenceNodeIds.mapNotNull(current.nodes::get)
+                        injectableLegacyReferences(current)
                 } else {
                     emptyList()
                 }
@@ -746,7 +771,12 @@ class LongTermMemoryService internal constructor(
                         MemoryHeadUpdateMode.BACKFILL -> archiveFingerprints + inputFingerprints
                     },
                     version = baseHeadVersion + 1,
-                    stale = plan.mode == MemoryHeadUpdateMode.UPDATE && current.state.head.stale
+                    stale = plan.mode == MemoryHeadUpdateMode.UPDATE && current.state.head.stale,
+                    actionProjection = if (plan.mode == MemoryHeadUpdateMode.UPDATE) {
+                        current.state.head.actionProjection
+                    } else {
+                        MemoryHeadActionProjection.VERIFIED
+                    }
                 )
                 val next = current.state.copy(
                     head = head,
@@ -836,7 +866,8 @@ class LongTermMemoryService internal constructor(
                     worldState = response.worldState.trim(),
                     sourceHashes = refs.associate { it.sourceTurnId to it.sourceHash },
                     sourceFingerprints = refs.associate { it.sourceTurnId to it.sourceFingerprint },
-                    version = baseVersion + 1
+                    version = baseVersion + 1,
+                    actionProjection = MemoryHeadActionProjection.VERIFIED
                 )
                 val next = current.state.copy(
                     head = head,
@@ -1740,7 +1771,12 @@ class LongTermMemoryService internal constructor(
         memoryRepository.snapshot(sessionId)
     }
 
-    suspend fun loadSnapshot(sessionId: String, snapshot: MemorySnapshot?) = stateLock(sessionId) {
+    suspend fun loadSnapshot(
+        sessionId: String,
+        snapshot: MemorySnapshot?,
+        sourceSessionId: String?
+    ) = stateLock(sessionId) {
+        val storedLegacy = storedLegacyWithholdingBeforeRestore(sessionId, snapshot, sourceSessionId)
         val loaded = loadLocked(sessionId)
         val contextWindowSize = currentContextWindowSize()
         val sourceSnapshot = snapshot ?: legacySaveSlotSnapshot(loaded, contextWindowSize)
@@ -1749,7 +1785,16 @@ class LongTermMemoryService internal constructor(
         } else {
             sourceSnapshot
         }
-        val rebound = MemorySnapshotImportPolicy.rebind(normalizedSnapshot, sessionId)
+        val preservedSnapshot = if (sourceSessionId == sessionId) {
+            val currentLegacy = loaded.state.legacyReferenceNodeIds.mapNotNull(loaded.nodes::get)
+            val localLegacyNodes = (storedLegacy + currentLegacy).associateBy(MemoryNode::id)
+            MemorySnapshotImportPolicy.preserveKnownActionWithholding(
+                normalizedSnapshot, sessionId, sourceSessionId, localLegacyNodes, loaded.state.head
+            )
+        } else {
+            normalizedSnapshot
+        }
+        val rebound = MemorySnapshotImportPolicy.rebind(preservedSnapshot, sessionId)
         val importedState = rebound.state ?: error("存档缺少长期记忆状态")
         validateImportedSnapshot(rebound, importedState)
         memoryRepository.saveNodes(rebound.nodes)
@@ -1811,13 +1856,45 @@ class LongTermMemoryService internal constructor(
             revision = state.revision + 1,
             updatedAt = System.currentTimeMillis()
         )
-        memoryRepository.saveState(state)
-        compileAndCacheLocked(
-            loaded.copy(
-                state = state,
-                nodes = (loaded.nodes + rebound.nodes.associateBy { it.id }).toMutableMap()
-            )
-        )
+        val nodes = (loaded.nodes + rebound.nodes.associateBy { it.id }).toMutableMap()
+        val refreshed = refreshSourceStaleness(state, nodes, loaded.messages, loaded.session)
+        memoryRepository.saveState(refreshed)
+        compileAndCacheLocked(loaded.copy(state = refreshed, nodes = nodes))
+    }
+
+    private suspend fun storedLegacyWithholdingBeforeRestore(
+        sessionId: String,
+        snapshot: MemorySnapshot?,
+        sourceSessionId: String?
+    ): List<MemoryNode> {
+        if (snapshot == null || sourceSessionId != sessionId ||
+            snapshot.nodes.any { it.sessionId != sessionId } ||
+            snapshot.legacyCommit?.sessionId?.let { it != sessionId } == true
+        ) return emptyList()
+
+        val legacyCommit = snapshot.legacyCommit.takeIf { snapshot.state == null }
+        val directNodes = if (legacyCommit == null) {
+            snapshot.nodes.filter { it.tier == MemoryTier.LEGACY_REFERENCE && !it.actionProjectionWithheld }
+        } else emptyList()
+        val origins = if (legacyCommit != null) {
+            // A v3 conversion gives legacy references fresh IDs, including missing nodes referenced by the graph.
+            buildSet {
+                addAll(legacyCommit.activeNodeIds)
+                addAll(legacyCommit.legacyReferenceNodeIds)
+                snapshot.nodes.forEach { node ->
+                    add(node.id)
+                    addAll(node.childIds)
+                }
+            }.filter(String::isNotEmpty).mapTo(mutableSetOf(), MemorySnapshotImportPolicy::legacyOriginForNodeId)
+        } else directNodes.mapNotNull(MemorySnapshotImportPolicy::legacyOrigin).toSet()
+        if (directNodes.isEmpty() && origins.isEmpty()) return emptyList()
+
+        // Replay pending writes before capturing evidence that incoming deletion tombstones may prune.
+        memoryRepository.getState(sessionId)
+        val matchingIds = memoryRepository.getNodes(directNodes.map(MemoryNode::id)).filter {
+            it.sessionId == sessionId && it.tier == MemoryTier.LEGACY_REFERENCE && it.actionProjectionWithheld
+        }
+        return matchingIds + memoryRepository.getWithheldLegacyNodesByOrigin(sessionId, origins)
     }
 
     /**
@@ -2553,12 +2630,13 @@ class LongTermMemoryService internal constructor(
             tier = MemoryTier.LEGACY_REFERENCE,
             coverageUnits = listOf(
                 MemoryCoverageUnit(
-                    sourceId = "legacy:${old.id}",
+                    sourceId = MemorySnapshotImportPolicy.legacyOriginForNodeId(old.id),
                     text = "时间未知，不代表当前进展：${old.body.ifBlank { "旧节点无法读取正文" }}"
                 )
             ),
             overview = reason,
-            author = MemoryAuthor.MIGRATION
+            author = MemoryAuthor.MIGRATION,
+            actionProjectionWithheld = old.actionProjectionWithheld
         ).also { legacyIds += it.id }
 
         fun convert(id: String): MemoryNode {
@@ -3020,7 +3098,7 @@ class LongTermMemoryService internal constructor(
 
     private suspend fun refreshSourceStaleness(
         state: MemorySessionState,
-        nodes: Map<String, MemoryNode>,
+        nodes: MutableMap<String, MemoryNode>,
         messages: List<ChatMessage>,
         session: ChatSession
     ): MemorySessionState {
@@ -3028,13 +3106,25 @@ class LongTermMemoryService internal constructor(
         val currentFingerprints = sourceIds.associateWith { sourceId ->
             MemorySourceFingerprint.semantic(sourceId, messages, session)
         }
-        val previousSemanticFingerprints = sourceIds.associateWith { sourceId ->
+        // Older summaries may have seen the menu. An unchanged raw reply does not prove
+        // that its summary used the same projected source as a new request.
+        val projectedActionSources = MemorySourceFingerprint.sourceIdsWithProjectedActions(messages)
+        val legacyCompatibleSourceIds = sourceIds - projectedActionSources
+        val previousSemanticFingerprints = legacyCompatibleSourceIds.associateWith { sourceId ->
             MemorySourceFingerprint.previousSemantic(sourceId, messages, session)
         }
-        val currentLegacyHashes = sourceIds.associateWith { sourceId ->
+        val currentLegacyHashes = legacyCompatibleSourceIds.associateWith { sourceId ->
             MemorySourceFingerprint.legacy(sourceId, messages, session)
         }
         val migratedNodes = mutableListOf<MemoryNode>()
+        MemoryArchiveInjectionPolicy.withholdUnverifiedActionReferences(
+            state.legacyReferenceNodeIds.mapNotNull(nodes::get), state.timeline, projectedActionSources,
+        ).forEach { reference ->
+            if (nodes[reference.id] != reference) {
+                nodes[reference.id] = reference
+                migratedNodes += reference
+            }
+        }
         state.activeNodeIds.forEach { id ->
             val node = nodes[id] ?: return@forEach
             val evidence = node.sourceHashes + node.sourceFingerprints
@@ -3057,7 +3147,7 @@ class LongTermMemoryService internal constructor(
                 val migrated = node.copy(
                     sourceFingerprints = currentNodeFingerprints
                 )
-                (nodes as? MutableMap<String, MemoryNode>)?.set(id, migrated)
+                nodes[id] = migrated
                 migratedNodes += migrated
             }
         }
@@ -3085,28 +3175,27 @@ class LongTermMemoryService internal constructor(
         }
         val headAlreadyCurrent = headSafelyMatchesPrevious &&
             state.head.sourceFingerprints == currentHeadFingerprints
-        val migratedHead = if (headSafelyMatchesPrevious && !headAlreadyCurrent) {
-            state.head.copy(
-                sourceFingerprints = currentHeadFingerprints,
-                stale = false
-            )
-        } else {
-            state.head
-        }
+        val projection = MemoryHeadUpdatePolicy.actionProjection(state.head, state.timeline, projectedActionSources)
+        val migratedHead = state.head.copy(
+            sourceFingerprints = if (headSafelyMatchesPrevious && !headAlreadyCurrent) {
+                currentHeadFingerprints
+            } else {
+                state.head.sourceFingerprints
+            },
+            actionProjection = projection
+        )
         val headEvidence = migratedHead.sourceFingerprints.ifEmpty { migratedHead.sourceHashes }
         val headCurrent = if (migratedHead.sourceFingerprints.isEmpty()) currentLegacyHashes else currentFingerprints
-        val headStale = if (headEvidence.isNotEmpty()) {
-            headEvidence.any { (sourceId, storedHash) ->
+        val headStale = when {
+            projection == MemoryHeadActionProjection.WITHHELD -> true
+            headEvidence.isNotEmpty() -> headEvidence.any { (sourceId, storedHash) ->
                 headCurrent[sourceId] != storedHash
             }
-        } else {
-            state.head.throughSourceTurnId?.let { throughId ->
-                val throughOrder = state.timeline.firstOrNull { it.sourceTurnId == throughId }?.sourceOrder
-                stale.values.flatten().any { sourceId ->
-                    val order = state.timeline.firstOrNull { it.sourceTurnId == sourceId }?.sourceOrder
-                    order != null && throughOrder != null && order <= throughOrder
-                }
-            } ?: false
+            else -> MemoryHeadUpdatePolicy.hashlessHeadIsStale(
+                head = migratedHead,
+                timeline = state.timeline,
+                staleOrUnverifiedSourceIds = stale.values.flatten().toSet() + projectedActionSources
+            )
         }
         val sourceRepair = when (state.sourceRepair.status) {
             MemorySourceRepairStatus.RUNNING,
@@ -3141,9 +3230,17 @@ class LongTermMemoryService internal constructor(
         val frontier = effectiveArchiveFrontier(loaded)
         return MemoryArchiveInjectionPolicy.render(
             activeNodes = frontier.nodes,
-            legacyReferenceNodes = loaded.state.legacyReferenceNodeIds.mapNotNull(loaded.nodes::get),
+            legacyReferenceNodes = injectableLegacyReferences(loaded),
             timeline = loaded.state.timeline
         )
+    }
+
+    private fun injectableLegacyReferences(loaded: LoadedMemory): List<MemoryNode> {
+        val references = loaded.state.legacyReferenceNodeIds.mapNotNull(loaded.nodes::get)
+        if (references.isEmpty()) return references
+        return MemoryArchiveInjectionPolicy.withholdUnverifiedActionReferences(
+            references, loaded.state.timeline, MemorySourceFingerprint.sourceIdsWithProjectedActions(loaded.messages),
+        ).filterNot(MemoryNode::actionProjectionWithheld)
     }
 
     private fun effectiveArchiveFrontier(loaded: LoadedMemory): MemorySafeFrontier {
@@ -3193,7 +3290,7 @@ class LongTermMemoryService internal constructor(
         val state = loaded.state
         val safeFrontier = effectiveArchiveFrontier(loaded)
         val active = safeFrontier.nodes
-        val legacyReferences = state.legacyReferenceNodeIds.mapNotNull(loaded.nodes::get)
+        val legacyReferences = injectableLegacyReferences(loaded)
         val archive = MemoryArchiveInjectionPolicy.render(
             activeNodes = active,
             legacyReferenceNodes = legacyReferences,
@@ -3792,7 +3889,8 @@ class LongTermMemoryService internal constructor(
         val content = messages.filter { it.sourceTurnId == id && it.role != MessageRole.SYSTEM }
             .joinToString("\n") { message ->
                 val role = if (message.role == MessageRole.USER) "用户" else "AI"
-                val body = MemorySourceFingerprint.modelFacingBody(message)
+                val choice = RoleplayActionOptionsPolicy.confirmedMemoryChoice(message, messages)
+                val body = MemorySourceFingerprint.modelFacingBody(message, choice)
                 "$role：$body"
             }
         "[sourceTurnId=$id｜T${displayT ?: "?"}]\n${content.ifBlank { "[已删除轮次 tombstone]" }}"
@@ -3973,6 +4071,7 @@ class LongTermMemoryService internal constructor(
             }
             .toMap()
         val timeline = sourceTimeline(loaded.messages)
+        val projectedActionSources = MemorySourceFingerprint.sourceIdsWithProjectedActions(loaded.messages)
 
         fun legacyReference(old: MemoryNode?, reason: String, oldId: String): MemoryNode {
             val mappedIds = old?.sourceTurns
@@ -3991,7 +4090,7 @@ class LongTermMemoryService internal constructor(
                 sourceTurnIds = mappedIds,
                 coverageUnits = listOf(
                     MemoryCoverageUnit(
-                        sourceId = "legacy:$oldId",
+                        sourceId = MemorySnapshotImportPolicy.legacyOriginForNodeId(oldId),
                         text = if (mappedIds.isEmpty()) {
                             "时间未知，不代表当前进展：$raw"
                         } else {
@@ -4000,7 +4099,8 @@ class LongTermMemoryService internal constructor(
                     )
                 ),
                 overview = reason,
-                author = MemoryAuthor.MIGRATION
+                author = MemoryAuthor.MIGRATION,
+                actionProjectionWithheld = old?.actionProjectionWithheld == true
             ).also { legacyIds += it.id }
         }
 
@@ -4045,7 +4145,10 @@ class LongTermMemoryService internal constructor(
                     }
                     val hashes = old.sourceTurns.zip(sourceIds).associate { (source, sourceId) ->
                         sourceId to source.sourceHash.ifBlank {
-                            MemorySourceFingerprint.semantic(sourceId, loaded.messages, loaded.session)
+                            // A legacy coverage body has not been generated with this projection.
+                            // Keep missing evidence missing for these turns so source repair can rebuild it.
+                            if (sourceId in projectedActionSources) ""
+                            else MemorySourceFingerprint.semantic(sourceId, loaded.messages, loaded.session)
                         }
                     }
                     old.copy(

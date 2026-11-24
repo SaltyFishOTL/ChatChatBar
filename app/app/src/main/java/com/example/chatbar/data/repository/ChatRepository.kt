@@ -1,6 +1,7 @@
 package com.example.chatbar.data.repository
 
 import com.example.chatbar.data.local.JsonFileStorage
+import com.example.chatbar.data.local.entity.ChatContextCandidateSnapshot
 import com.example.chatbar.data.local.entity.ChatDraft
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatMessageIndex
@@ -607,6 +608,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
 
     suspend fun updateMessage(message: ChatMessage) = messageAppendMutex.withDataAccess {
         updateMessageLocked(message, getMessage(message.id, message.sessionId))
+        Unit
     }
 
     internal suspend fun messageTimelineRevision(sessionId: String): Long =
@@ -682,6 +684,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
 
     private fun hasSameRagSource(first: ChatMessage, second: ChatMessage): Boolean =
         first.id == second.id && first.role == second.role && first.displayContent == second.displayContent &&
+            first.displayActionOptionsFormat == second.displayActionOptionsFormat &&
             first.sourceTurnId == second.sourceTurnId && first.sourceTurnOrder == second.sourceTurnOrder &&
             first.timelineTurn == second.timelineTurn && first.createdAt == second.createdAt &&
             MessageAlternativeVersionPolicy.activeVersionId(first) == MessageAlternativeVersionPolicy.activeVersionId(second)
@@ -1126,23 +1129,37 @@ class ChatRepository(private val storage: JsonFileStorage) {
         sessionId: String,
         recentTurnCount: Int,
         includeSourceTurnIds: Set<String> = emptySet()
-    ): List<ChatMessage> {
-        val index = loadMessageIndex(sessionId)
-        val firstRecentIndex = index.entries.turnGroups()
-            .filter { range -> range.any { index.entries[it].role != MessageRole.SYSTEM } }
+    ): List<ChatMessage> = getContextCandidateSnapshot(sessionId, recentTurnCount, includeSourceTurnIds).messages
+
+    suspend fun getContextCandidateSnapshot(
+        sessionId: String,
+        recentTurnCount: Int,
+        includeSourceTurnIds: Set<String> = emptySet()
+    ): ChatContextCandidateSnapshot {
+        val entries = loadMessageIndex(sessionId).entries
+        val messages = loadIndexedMessages(sessionId, contextCandidateEntries(entries, recentTurnCount, includeSourceTurnIds))
+        val recent = contextCandidateEntries(entries, recentTurnCount, emptySet())
+        val byId = messages.associateBy { it.id }
+        val complete = messages.size == byId.size && recent.all { byId[it.messageId]?.toIndexEntry() == it }
+        return ChatContextCandidateSnapshot(messages,
+            if (complete) recent.mapTo(linkedSetOf()) { it.messageId } else emptySet())
+    }
+
+    private fun contextCandidateEntries(
+        entries: List<ChatMessageIndexEntry>,
+        recentTurnCount: Int,
+        includeSourceTurnIds: Set<String>
+    ): List<ChatMessageIndexEntry> {
+        val firstRecentIndex = entries.turnGroups()
+            .filter { range -> range.any { entries[it].role != MessageRole.SYSTEM } }
             .takeLast(recentTurnCount.coerceAtLeast(1))
-            .firstOrNull()
-            ?.first
-            ?: index.entries.size
-        val recentEntries = index.entries.drop(firstRecentIndex)
-        val requiredEntries = if (includeSourceTurnIds.isEmpty()) {
-            recentEntries
-        } else {
-            (recentEntries + index.entries.filter { it.sourceTurnId in includeSourceTurnIds })
+            .firstOrNull()?.first ?: entries.size
+        val recentEntries = entries.drop(firstRecentIndex)
+        return if (includeSourceTurnIds.isEmpty()) recentEntries else {
+            (recentEntries + entries.filter { it.sourceTurnId in includeSourceTurnIds })
                 .distinctBy(ChatMessageIndexEntry::messageId)
                 .sortedWith(indexComparator)
         }
-        return loadIndexedMessages(sessionId, requiredEntries)
     }
 
     /** 仅从轻量索引读取活消息 ID，供 RAG 孤儿清理。 */
@@ -1164,6 +1181,11 @@ class ChatRepository(private val storage: JsonFileStorage) {
     ): String? = loadMessageIndex(sessionId).entries
         .firstOrNull { it.sourceTurnId == sourceTurnId }
         ?.messageId
+
+    internal suspend fun getMessagesForSourceTurnOrder(sessionId: String, sourceTurnOrder: Long): List<ChatMessage> {
+        val entries = loadMessageIndex(sessionId).entries.filter { it.sourceTurnOrder == sourceTurnOrder }
+        return loadIndexedMessages(sessionId, entries)
+    }
 
     /** 轻量估算稳定 source turn 数；只用于决定是否启用历史检索。 */
     suspend fun getMessageTurnCount(sessionId: String): Int =

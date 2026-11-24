@@ -9,6 +9,9 @@ import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.MomentPost
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.domain.image.NovelAiImageModel
+import com.example.chatbar.domain.chat.RoleplayActionOptionsPolicy
+import com.example.chatbar.data.local.entity.ActionOptionsFormat
+import com.example.chatbar.data.local.entity.ActionOptionLabels
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.data.local.entity.WorldBook
 import com.example.chatbar.data.local.entity.WorldBookEntry
@@ -71,7 +74,7 @@ data class NovelAiCodexEvidence(
  * - 角色发言格式：`roleplaySpeakerFormatSystemPrompt`
  * - 空消息继续生成：`CONTINUE_GENERATION_USER_PROMPT`、`continueGenerationUserPrompt`
  * - user工具请求尾缀：`randomNumberUserToolSuffix`、`appendUserToolSuffixBlock`
- * - 消息格式修复：`MESSAGE_FORMAT_REPAIR_SYSTEM_PROMPT`、`messageFormatRepairUserPrompt`
+ * - 消息格式修复：`MESSAGE_FORMAT_REPAIR_SYSTEM_PROMPT`、`messageFormatRepairUserPrompt`、`actionOptionsRepairRequirement`
  * - 自动生图资格检查：`AUTOMATIC_CHAT_IMAGE_JUDGE_SYSTEM`、`automaticChatImageJudgeUser`
  * - 回复长度/语言尾部约束：`replyLengthConstraint`、`replyLengthTailSystemPrompt`、
  *   `replyTailSystemPrompt`、`replyLanguageConstraint`
@@ -785,6 +788,19 @@ CCB大师只存在于幕后，正文不得提及CCB大师、握手过程或这�
         }
         add("{待修复消息}\n$message")
     }.joinToString("\n\n")
+
+    fun actionOptionsRepairRequirement(format: ActionOptionsFormat?): String = buildString {
+        append("仅整理原回复已经列出的行动选项。保留每个选项的文字、数目与顺序，不能新增或合并选项。")
+        if (format != null) {
+            append("\n行动区单独一行开始于：${format.opening.trim()}")
+            append("\n行动区单独一行结束于：${format.closing.trim()}")
+            if (format.heading.isNotBlank()) append("\n区块标题：${format.heading.trim()}")
+            append(if (format.labels == ActionOptionLabels.LETTERS) "\n每项单独一行，从 A) 起连续编号。"
+                else "\n每项单独一行，从 1. 起连续编号。")
+        } else {
+            append("\n识别到有效的行动选项区时，保留原围栏、标题和编号。")
+        }
+    }
 
     fun replyLengthConstraint(replyLength: Int): String {
         return "请按照「${replyLengthLabel(replyLength)}」的长度要求构建正文进行回复。"
@@ -2218,12 +2234,21 @@ JSON only, no Markdown, no explanation:
         message: ChatMessage,
         playerName: String? = null,
         botName: String = "",
-        preserveUsername: Boolean = false
-    ): String = if (preserveUsername) {
-        renderNovelAiChatPromptText(message.displayContent, playerName, botName)
-    } else {
-        renderNovelAiPromptText(message.displayContent, playerName, botName)
+        preserveUsername: Boolean = false,
+        imageContentHint: String = "",
+    ): String {
+        val scene = novelAiImagePromptSceneSource(message, imageContentHint)
+        return if (preserveUsername) {
+            renderNovelAiChatPromptText(scene, playerName, botName)
+        } else {
+            renderNovelAiPromptText(scene, playerName, botName)
+        }
     }
+
+    private fun novelAiImagePromptSceneSource(message: ChatMessage, imageContentHint: String = ""): String =
+        if (message.role == MessageRole.ASSISTANT)
+            RoleplayActionOptionsPolicy.imageScene(message.displayContent, message.displayActionOptionsFormat, imageContentHint)
+        else message.displayContent
 
     fun novelAiImagePromptConversation(
         messages: List<ChatMessage>,
@@ -2236,7 +2261,8 @@ JSON only, no Markdown, no explanation:
         appendLine("Design an image for this scene. Recent messages:")
         messages.forEach {
             val role = if (it.role == MessageRole.USER) "User" else "Assistant"
-            appendLine("$role: ${it.displayContent}")
+            val hint = imageContentHint.takeIf { messages.size == 1 }.orEmpty()
+            appendLine("$role: ${novelAiImagePromptSceneSource(it, hint)}")
         }
         appendNovelAiImageManualRequirements(
             imageContentHint = imageContentHint,

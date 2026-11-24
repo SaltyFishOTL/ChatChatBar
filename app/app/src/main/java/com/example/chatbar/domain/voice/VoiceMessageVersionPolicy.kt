@@ -6,6 +6,7 @@ import com.example.chatbar.data.local.entity.VoiceAnchor
 import com.example.chatbar.data.local.entity.VoiceAnchorState
 import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
 import com.example.chatbar.domain.chat.MessageVersionSnapshot
+import com.example.chatbar.domain.chat.RoleplayActionOptionsPolicy
 import java.security.MessageDigest
 import kotlin.math.abs
 
@@ -147,16 +148,17 @@ object VoiceMessageVersionPolicy {
         version: MessageVersionSnapshot,
         voice: GeneratedVoiceMessage
     ): Boolean {
+        val excluded = RoleplayActionOptionsPolicy.blocks(version.content, version.actionOptionsFormat)
+        // Previously generated recordings can match the unfiltered text.
         if (voice.sourceSegmentKind == VoiceGenerationPolicy.WHOLE_MESSAGE_SOURCE_KIND) {
-            return (
-                VoiceAnchorPolicy.wholeMessageSegment(version.content)
-                    ?.spokenText
-                    ?.let { normalize(it) == normalize(voice.sourceText) }
-                ) == true
+            return sequenceOf(
+                VoiceAnchorPolicy.wholeMessageSegment(version.content),
+                VoiceAnchorPolicy.wholeMessageSegment(version.content, excluded)
+            ).filterNotNull().any { normalize(it.spokenText) == normalize(voice.sourceText) }
         }
-        return VoiceAnchorPolicy.eligibleSegments(
-            version.content,
-            includeNarration = true
+        return (
+            VoiceAnchorPolicy.eligibleSegments(version.content, includeNarration = true) +
+                VoiceAnchorPolicy.eligibleSegments(version.content, includeNarration = true, excludedActionBlocks = excluded)
         ).any { segment ->
             segment.kind.name == voice.sourceSegmentKind &&
                 normalize(segment.speakerName.orEmpty()) == normalize(voice.sourceSpeakerName) &&
