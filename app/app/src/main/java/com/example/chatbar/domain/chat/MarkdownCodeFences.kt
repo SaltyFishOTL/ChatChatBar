@@ -4,17 +4,33 @@ package com.example.chatbar.domain.chat
 object MarkdownCodeFences {
     private val fenceLine = Regex("^ {0,3}(`{3,}|~{3,})(.*)$")
     private val quotePrefix = Regex(" {0,3}>[ \\t]?")
-    private val listPrefix = Regex(" {0,3}([-+*]|[0-9]{1,9}[.)])(?: {1,4}(?=[^ \\t\\r])|[ \\t]*\\r?$)")
+    // Five or more spaces leave four for code inside the item.
+    private val listPrefix = Regex(" {0,3}([-+*]|[0-9]{1,9}[.)])(?: {1,4}(?=[^ \\t\\r])| (?= {4} *[^ \\t\\r])|[ \\t]*\\r?$)")
     private val thematicBreak = Regex(" {0,3}(?:(?:-[ \\t]*){3,}|(?:\\*[ \\t]*){3,}|(?:_[ \\t]*){3,})\\r?")
     private val heading = Regex("^ {0,3}#{1,6}(?:[ \\t]|$)")
     private val setextUnderline = Regex(" {0,3}(?:=+|-+)[ \\t]*")
+    internal const val legacyStatusLabel = "（三个点为状态包裹格式，必须完整输出）"
+    private const val legacyStatusInfo = "text$legacyStatusLabel"
+    internal const val legacyStatusOpening = "```$legacyStatusInfo"
+    private val legacyStatusClose = Regex(" {0,3}$legacyStatusLabel``` *")
 
-    data class Block(val range: IntRange, val topLevel: Boolean)
+    data class Block(
+        val range: IntRange,
+        val topLevel: Boolean,
+        val marker: Char,
+        val info: String,
+        internal val closingLineStart: Int? = null,
+        internal val legacyStatus: Boolean = false,
+        internal val markerLength: Int = 3,
+    )
 
     // A null indent identifies a block quote. A list item continues at its content indent.
     private data class Container(val indent: Int? = null, val awaitingContent: Boolean = false)
-    private data class Fence(val start: Int, val marker: String, val topLevel: Boolean) {
-        fun to(endExclusive: Int) = Block(start until endExclusive, topLevel)
+    private data class Fence(val start: Int, val marker: String, val topLevel: Boolean, val info: String) {
+        val legacyStatus = marker == "```" && info == legacyStatusInfo
+
+        fun to(endExclusive: Int, closingLineStart: Int? = null) =
+            Block(start until endExclusive, topLevel, marker[0], info, closingLineStart, legacyStatus, marker.length)
     }
 
     internal fun afterQuotePrefixes(text: String, start: Int): Int {
@@ -34,6 +50,12 @@ object MarkdownCodeFences {
         }
     }
 
+    internal fun hasListProseBefore(text: String, start: Int, before: Int): Boolean {
+        val marker = listPrefix.matchAt(text, afterQuotePrefixes(text, start)) ?: return false
+        val proseStart = marker.range.last + 1
+        return proseStart < before && text[proseStart].isLetter()
+    }
+
     fun ranges(content: String): List<IntRange> = blocks(content).filter(Block::topLevel).map(Block::range)
 
     fun blocks(content: String): List<Block> = blocks(content, null)
@@ -46,6 +68,9 @@ object MarkdownCodeFences {
         onLazyQuoteLine: ((Int) -> Unit)?,
         onIndentedCodeLine: ((IntRange) -> Unit)? = null,
         onContainerLine: ((Int) -> Unit)? = null,
+        onListItemLine: ((Int) -> Unit)? = null,
+        onIndentedParagraphLine: ((Int) -> Unit)? = null,
+        onLazyListItemLine: ((Int) -> Unit)? = null,
     ): List<Block> = buildList {
         val containers = mutableListOf<Container>()
         var offset = 0
@@ -98,14 +123,26 @@ object MarkdownCodeFences {
             }
 
             if (containers.isNotEmpty()) onContainerLine?.invoke(start)
+            // Record explicit membership before a dedented line can lazily resume a paragraph.
+            if (onListItemLine != null && containers.any { it.indent != null }) onListItemLine(start)
             val remainder = line.substring(cursor).removeSuffix("\r")
-            val match = fenceLine.matchEntire(remainder)
             val existing = open
+            // The built-in legacy status template puts its closing backticks after the label.
+            if (existing?.legacyStatus == true && legacyStatusClose.matches(remainder)) {
+                add(existing.to(start + rawLine.length, closingLineStart = start))
+                open = null
+                continue
+            }
+            val match = fenceLine.matchEntire(remainder)
             if (match == null) {
                 if (existing == null) {
-                    val startsIndentedCode = !paragraph && dedentedParagraph.isEmpty() && remainder.startsWith("    ")
+                    val hasCodeIndent = remainder.startsWith("    ")
+                    val startsIndentedCode = !paragraph && dedentedParagraph.isEmpty() && hasCodeIndent
                     if (startsIndentedCode && remainder.isNotBlank()) {
                         onIndentedCodeLine?.invoke(start until start + rawLine.length)
+                    }
+                    if (paragraph && containers.isEmpty() && hasCodeIndent && remainder.isNotBlank()) {
+                        onIndentedParagraphLine?.invoke(start)
                     }
                     val endsSetextHeading = paragraph && setextUnderline.matches(remainder)
                     paragraph = !startsIndentedCode && remainder.isNotBlank() && !thematicBreak.matches(remainder) &&
@@ -114,6 +151,9 @@ object MarkdownCodeFences {
                     if (paragraph) {
                         if (onLazyQuoteLine != null && dedentedParagraph.any { it.indent == null }) {
                             onLazyQuoteLine(start)
+                        }
+                        if (onLazyListItemLine != null && dedentedParagraph.any { it.indent != null }) {
+                            onLazyListItemLine(start)
                         }
                         containers.addAll(dedentedParagraph)
                     }
@@ -125,13 +165,13 @@ object MarkdownCodeFences {
             val rest = match.groupValues[2]
             if (existing == null) {
                 if (marker[0] == '~' || '`' !in rest) {
-                    open = Fence(start, marker, topLevel = containers.isEmpty())
+                    open = Fence(start, marker, topLevel = containers.isEmpty(), info = rest.trim())
                     paragraph = false
                 }
             } else if (marker[0] == existing.marker[0] &&
                 marker.length >= existing.marker.length && rest.isBlank()
             ) {
-                add(existing.to(start + rawLine.length))
+                add(existing.to(start + rawLine.length, closingLineStart = start))
                 open = null
             }
         }

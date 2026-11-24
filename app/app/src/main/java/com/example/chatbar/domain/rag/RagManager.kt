@@ -82,58 +82,41 @@ class RagManager(
      * @param threshold       最低相似度阈值
      * @return 相关的向量块列表
      */
-    suspend fun indexTimelineTurnMemory(
+    internal suspend fun embedTimelineTurnMemory(
         turn: ChatMemoryTurn,
         sessionId: String,
         embeddingConfig: EmbeddingConfig
-    ) {
-        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
-            if (!ChatMemoryIndexPolicy.shouldIndex(turn)) {
-                ragRepository.deleteSupersededAutomaticChatMemory(
-                    sessionId = sessionId,
-                    sourceTurnId = turn.sourceTurnId,
-                    messageIds = turn.messageIds,
-                    keepChunkIds = emptySet()
-                )
-                return
-            }
-            val memoryTexts = ChatMemoryIndexPolicy.contentsForIndex(turn)
-            val embeddings = embeddingService.getEmbeddings(memoryTexts, embeddingConfig)
-            val now = System.currentTimeMillis()
-            val chunks = memoryTexts.mapIndexed { index, memoryText ->
-                VectorChunk(
-                    id = chatMemoryChunkId(sessionId, turn.identityKey, index),
-                    sourceType = ChunkSourceType.CHAT_MEMORY,
-                    sourceId = sessionId,
-                    content = memoryText,
-                    embedding = embeddings[index],
-                    messageId = turn.anchorMessage.id,
-                    metadata = buildMap {
-                        put("sessionId", sessionId)
-                        put("messageIds", turn.messageIds.joinToString(","))
-                        if (turn.confirmedChoices.isNotEmpty()) {
-                            put(ChatMemoryIndexPolicy.ACTION_CHOICE_SOURCE_IDS,
-                                turn.confirmedChoices.values.map { it.replyId }.distinct().joinToString(","))
-                        }
-                        put("messageTime", turn.anchorMessage.createdAt.toString())
-                        put("indexMode", ChatMemoryIndexPolicy.INDEX_MODE)
-                        put("contentVersion", ChatMemoryIndexPolicy.CONTENT_VERSION)
-                        put("chunkIndex", index.toString())
-                        put("chunkCount", memoryTexts.size.toString())
-                        put("embeddingKey", embeddingKey(embeddingConfig))
-                        put("sourceHash", hashContent(memoryText))
-                        turn.sourceTurnId?.let { put("sourceTurnId", it) }
-                        turn.sourceTurnOrder?.let { put("sourceTurnOrder", it.toString()) }
-                    },
-                    createdAt = now
-                )
-            }
-            ragRepository.saveChunks(chunks)
-            ragRepository.deleteSupersededAutomaticChatMemory(
-                sessionId = sessionId,
-                sourceTurnId = turn.sourceTurnId,
-                messageIds = turn.messageIds,
-                keepChunkIds = chunks.mapTo(mutableSetOf()) { it.id }
+    ): List<VectorChunk> {
+        if (!ChatMemoryIndexPolicy.shouldIndex(turn)) return emptyList()
+        val memoryTexts = ChatMemoryIndexPolicy.contentsForIndex(turn)
+        val embeddings = embeddingService.getEmbeddings(memoryTexts, embeddingConfig)
+        val now = System.currentTimeMillis()
+        return memoryTexts.mapIndexed { index, memoryText ->
+            VectorChunk(
+                id = chatMemoryChunkId(sessionId, turn.identityKey, index),
+                sourceType = ChunkSourceType.CHAT_MEMORY,
+                sourceId = sessionId,
+                content = memoryText,
+                embedding = embeddings[index],
+                messageId = turn.anchorMessage.id,
+                metadata = buildMap {
+                    put("sessionId", sessionId)
+                    put("messageIds", turn.messageIds.joinToString(","))
+                    if (turn.confirmedChoices.isNotEmpty()) {
+                        put(ChatMemoryIndexPolicy.ACTION_CHOICE_SOURCE_IDS,
+                            turn.confirmedChoices.values.map { it.replyId }.distinct().joinToString(","))
+                    }
+                    put("messageTime", turn.anchorMessage.createdAt.toString())
+                    put("indexMode", ChatMemoryIndexPolicy.INDEX_MODE)
+                    put("contentVersion", ChatMemoryIndexPolicy.CONTENT_VERSION)
+                    put("chunkIndex", index.toString())
+                    put("chunkCount", memoryTexts.size.toString())
+                    put("embeddingKey", embeddingKey(embeddingConfig))
+                    put("sourceHash", hashContent(memoryText))
+                    turn.sourceTurnId?.let { put("sourceTurnId", it) }
+                    turn.sourceTurnOrder?.let { put("sourceTurnOrder", it.toString()) }
+                },
+                createdAt = now
             )
         }
     }
@@ -164,10 +147,6 @@ class RagManager(
     /**
      * 删除指定消息关联的记忆向量
      */
-    suspend fun deleteMemoryForMessage(messageId: String) {
-        ragRepository.deleteChunksByMessageId(messageId)
-    }
-
     fun hashContent(content: String): String = sha256(content)
 
     fun embeddingKey(config: EmbeddingConfig): String = config.key()

@@ -10,6 +10,8 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.example.chatbar.data.local.entity.GeneratedVoiceMessage
 import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -129,6 +131,26 @@ class VoicePlaybackController(context: Context) {
         _state.value = VoicePlaybackState(currentVoiceId = PREVIEW_MEDIA_ID)
         player.prepare()
         player.play()
+    }
+
+    /** Remove deleted recordings before their files can be unlinked. */
+    internal suspend fun removeQueuedVoices(ids: Set<String>) {
+        if (ids.isEmpty()) return
+        withContext(Dispatchers.Main.immediate) {
+            val indices = (0 until player.mediaItemCount).filter { player.getMediaItemAt(it).mediaId in ids }
+            if (indices.isEmpty()) return@withContext
+            if (indices.size == player.mediaItemCount) {
+                stopOnPlayerThread()
+            } else {
+                val current = player.currentMediaItemIndex
+                // Drop removed upcoming items before removing the current item can advance to one.
+                indices.asReversed().filterNot { it == current }.forEach(player::removeMediaItem)
+                if (current in indices) {
+                    player.removeMediaItem(current - indices.count { it < current })
+                }
+                publish(player.isPlaying)
+            }
+        }
     }
 
     fun stop() {

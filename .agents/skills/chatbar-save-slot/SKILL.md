@@ -18,7 +18,7 @@ Keep archive size independent from peak app memory. Treat SaveSlot as a cross-st
 - Voice file restore: `domain/voice/FishAudioStorage.kt`; use `chatbar-fish-audio-voice` when voice ownership changes.
 - Image metadata/display behavior: use `chatbar-image-generation-runtime`.
 - Long-term-memory snapshot semantics: use `chatbar-long-term-memory`.
-- Home duplication: `domain/chat/SessionCopyService.kt` uses a temporary original-media/audio package without adding a SaveSlot. It copies `ChatSession` settings directly, remaps message/image-anchor/RAG references through `SessionCopyPolicy`, preserves session-scoped source-turn/version identities, restores independent memory nodes and voice anchors, and removes the temporary package. Only current memory is copied; SaveSlot lists and memory revision history are not duplicated.
+- Home duplication: `domain/chat/SessionCopyService.kt` settles pending reply cleanup before reading voices and RAG, then uses a temporary original-media/audio package without adding a SaveSlot. It copies `ChatSession` settings directly, remaps message/image-anchor/RAG references through `SessionCopyPolicy`, preserves session-scoped source-turn/version identities, restores independent memory nodes and voice anchors, and removes the temporary package. Only current memory is copied; SaveSlot lists and memory revision history are not duplicated.
 
 All abbreviated source paths are under `app/app/src/main/java/com/example/chatbar/`.
 
@@ -26,7 +26,7 @@ Whole-app .cbbackup is independent; use chatbar-app-backup. Per-session archive 
 
 ## Package Contract
 
-- Schema 8 uses a ZIP `.cbsave`: `manifest.json`, line-delimited `messages.jsonl`, `rag.jsonl`, optional `voices.jsonl`, and media beneath `media/images/` or `media/audio/`.
+- Schema 8 uses a ZIP `.cbsave`: `manifest.json`, line-delimited `messages.jsonl`, `rag.jsonl`, optional `voices.jsonl` and `voice_anchors.jsonl`, and media beneath `media/images/` or `media/audio/`. Voice anchors carry the exact written reply layout and are keyed by the archived session, message, and stable version. Importing into another session changes the outer owner and rebinds archived layout during restore. `.cbbackup` merge remaps both message and voice-anchor owners inside the package.
 - Keep manifest lists empty for v8; `SaveSlotPackageRef` owns counts and package metadata. Old schema 1–7 remains inline JSON and decode-compatible.
 - Summary listing must parse only lightweight top-level fields. Do not deserialize old Base64 media to show the SaveSlot list or export an unchanged legacy archive.
 - Detect import format from stream bytes, not filename or MIME type. Export v8 as `.cbsave`; retain legacy JSON export.
@@ -44,8 +44,9 @@ Whole-app .cbbackup is independent; use chatbar-app-backup. Per-session archive 
 ## Restore and Ownership
 
 - Stage and validate the package plus materialize resources before committing session data. Replace message and RAG entity sets through their streaming transactional APIs.
-- Remap restored message session IDs, RAG IDs, voice IDs, image paths, metadata paths, and background path to the target session.
-- Persist replacement records before deleting old owned media. On pre-commit failure or cancellation, delete only files created by that attempt.
+- For automatic RAG affected by pending reply cleanup, validate archived current-format chunk content against the restored active messages before authorizing it to survive retry. Preserve manual chunks and keep legacy automatic formats eligible for explicit rebuild.
+- Remap restored message session IDs, RAG IDs, voice IDs, image paths, metadata paths, and background path to the target session. Stop queued and active voice playback before replacing messages in both restore routes.
+- Persist replacement records before deleting old owned media. Legacy and v8 reads reuse reply-media ownership scans for current messages, backgrounds, other surviving references and legacy archives. The final media check runs after publication with cancellation disabled. Failed cleanup leaves the newly read conversation available and reports the remaining files. On pre-commit failure or cancellation, delete only files created by that attempt.
 - Never delete external files. Package deletion may target only the deterministic app-private SaveSlot package path.
 - Restore only the current long-term-memory snapshot. Do not archive histories, running jobs, coordinator state, or stale runtime progress.
 - `automaticImageGenerationEnabled` is a default-false manifest/session setting. ChatViewModel writes it at SaveSlot creation and restores it in packaged and legacy paths; loading history never triggers automatic images.
@@ -54,7 +55,7 @@ Whole-app .cbbackup is independent; use chatbar-app-backup. Per-session archive 
 
 ## UI and Lifecycle
 
-- ChatScreen hides/disables regeneration in whole-message/segment menus during archive work. ChatViewModel checks admission before changing response state and again after message reads. Once regeneration reserves response state, sendMessageInternal must enter its normal completion cleanup even if an archive starts meanwhile. SessionCharacterRebindTest covers busy-archive admission without hiding the original reply.
+- ChatScreen hides/disables regeneration in whole-message/segment menus during archive work. ChatViewModel checks admission before and after reading the target. Completed and stopped regeneration can append only to the original message snapshot in the original timeline revision. A later restore cannot receive the old completion, even when it restores an identical row. Keep normal response cleanup after that stale-result rejection.
 - Session settings retain a dedicated 存档 tab. Before loading, the settings host resolves pending parameter drafts through save/discard/continue, then rebases on restored session values; switching tool tabs alone keeps parameter drafts.
 
 - Default new SaveSlot to no images. Offer compressed and original policies explicitly; audio inclusion is independent.

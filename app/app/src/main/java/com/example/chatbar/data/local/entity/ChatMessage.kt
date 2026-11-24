@@ -28,7 +28,9 @@ data class MessageFormatRepairNotice(
     val kind: MessageFormatRepairNoticeKind,
     val targetContent: String,
     val originalContent: String? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val restored: Boolean = false,
+    val versionId: String? = null
 )
 
 const val MESSAGE_ORDER_STEP: Long = 1_000_000L
@@ -90,7 +92,9 @@ data class ChatMessage(
     /** v2草稿兼容字段；v4仅作为旧sourceTurnOrder迁移来源。 */
     val timelineTurn: Long? = null,
     val actionOptionsFormat: ActionOptionsFormat? = null,
-    val alternativeActionOptionsFormats: List<ActionOptionsFormat?> = emptyList()
+    val alternativeActionOptionsFormats: List<ActionOptionsFormat?> = emptyList(),
+    /** 其他备选的修复记录，以稳定版本 ID 关联。 */
+    val otherFormatRepairNotices: List<MessageFormatRepairNotice> = emptyList()
 ) {
     /** 获取当前显示的内容（考虑替代回复） */
     val displayContent: String

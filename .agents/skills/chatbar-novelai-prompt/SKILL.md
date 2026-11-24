@@ -81,6 +81,8 @@ Use chatbar-image-generation-runtime for NovelAI HTTP generation, streaming fram
 
 ## Prompt Shape
 
+- Shared design instructions can depict an action sequence in a single frame or across comic panels. Keep shared scene tags in `baseCaption` and use per-panel `characters[].caption` entries for visual details. The V5 structured prompt illustrates dialogue with weighted ASCII-quoted text.
+
 `NovelAiPromptPlan.stylePrompt` records the deterministic style prefix separately for later editing; `baseCaption` remains the full outbound prompt. Keep both when materializing card-backed plans. Regeneration splits only that recorded prefix and joins edited style once; it never uses current card settings to guess an old image's style.
 
 Preferred flow:

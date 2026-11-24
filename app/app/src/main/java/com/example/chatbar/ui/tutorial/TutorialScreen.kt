@@ -341,7 +341,7 @@ private val advancedTutorialPages = listOf(
                 title = "复制、导出与删除",
                 steps = listOf(
                     "进入“管理”，切换到角色、格式、世界书或模型标签。",
-                    "长按列表项，打开包含编辑、复制、导出和删除的操作菜单。",
+                    "长按列表项，打开包含编辑、复制、导出和删除的操作菜单。聊天回复菜单只显示一个删除入口，先确认删除当前备选；确认窗口右上角“删除全部备选”可进入整条删除确认。当前备选可以删到0；删除最后一个时，该条回复及其关联附件一并移除。格式修复后可撤销与本地重做；AI修复格式会重新请求模型。",
                     "世界书菜单还可导出为 SillyTavern JSON；社区下载的角色卡可先复制，再编辑本地副本。"
                 )
             ),
@@ -356,7 +356,7 @@ private val advancedTutorialPages = listOf(
     ),
     TutorialPage(
         title = "朋友圈与社区",
-        summary = "朋友圈删除带二次确认，社区作品管理使用长按入口。",
+        summary = "朋友圈删除带二次确认，重生图保留备选，可用图片旁的左右按钮切换；切换不生成新图。社区作品管理使用长按入口。",
         sections = listOf(
             TutorialSection(
                 title = "朋友圈",

@@ -64,21 +64,12 @@ class RagRepository(private val storage: JsonFileStorage) {
         }
     }
 
-    /**
-     * 删除与指定消息关联的向量块
-     */
-    suspend fun deleteChunksByMessageId(messageId: String) {
-        storage.deleteWhereUncached(ENTITY_TYPE, VectorChunk.serializer()) { chunk ->
-            chunk.messageId == messageId || chunk.metadataMessageIds().contains(messageId)
-        }
-    }
-
     suspend fun deleteChatMemoryDependingOnActionReply(sessionId: String, messageId: String) {
         storage.deleteWhereUncached(ENTITY_TYPE, VectorChunk.serializer()) { chunk ->
-            chunk.isChatMemoryForSession(sessionId) && messageId in chunk.actionChoiceSourceIds()
+            chunk.isChatMemoryForSession(sessionId) && ChatMemoryIndexPolicy.isAutomaticChunk(chunk) &&
+                messageId in chunk.actionChoiceSourceIds()
         }
     }
-
     suspend fun deleteAllChunksBySourceType(sourceType: ChunkSourceType) {
         storage.deleteWhereUncached(ENTITY_TYPE, VectorChunk.serializer()) { it.sourceType == sourceType }
     }
@@ -136,20 +127,36 @@ class RagRepository(private val storage: JsonFileStorage) {
     }
 
     /** 新T块保存成功后清理同来源旧自动块；手动块和长期记忆旧块不受影响。 */
-    suspend fun deleteSupersededAutomaticChatMemory(
+    internal suspend fun deleteSupersededAutomaticChatMemory(
         sessionId: String,
         sourceTurnId: String?,
         messageIds: Set<String>,
-        keepChunkIds: Set<String>
+        keepChunkIds: Set<String>,
+        keepCurrent: ChatMemoryProjection? = null
     ): Int {
+        val chunks = getAllChunksForSession(sessionId)
+        val currentIds = chunks.filter { chunk ->
+            keepCurrent?.matches(chunk) == true
+        }.map { it.id }
         val idsToDelete = automaticChatMemoryChunkIdsToReplace(
-            chunks = getAllChunksForSession(sessionId),
+            chunks = chunks,
             sourceTurnId = sourceTurnId,
             messageIds = messageIds,
-            keepChunkIds = keepChunkIds
+            keepChunkIds = keepChunkIds + currentIds
         )
         idsToDelete.forEach { id -> storage.deleteEntityUncached(ENTITY_TYPE, id) }
         return idsToDelete.size
+    }
+
+    internal suspend fun invalidateReplyMemory(
+        sessionId: String,
+        sourceTurnId: String?,
+        messageId: String,
+        keepChunkIds: Set<String>
+    ) {
+        storage.deleteWhereUncached(ENTITY_TYPE, VectorChunk.serializer(), requireSuccessfulDelete = true) { chunk ->
+            chunk.isAutomaticReplyMemory(sessionId, sourceTurnId, messageId) && chunk.id !in keepChunkIds
+        }
     }
 
     /** 完整重建成功后只保留本次生成的自动块；所有手动块永久保留。 */
@@ -219,13 +226,13 @@ internal fun chatMemoryChunkIdsToPrune(
     val idsToDelete = mutableSetOf<String>()
     val liveChunks = chunks.filter { chunk ->
         val messageIds = chunk.metadataMessageIds() + listOfNotNull(chunk.messageId) + chunk.actionChoiceSourceIds()
-        val isOrphan = messageIds.isNotEmpty() && messageIds.any { it !in liveMessageIds }
+        val isOrphan = !ChatMemoryIndexPolicy.isManualChunk(chunk) && messageIds.any { it !in liveMessageIds }
         if (isOrphan) idsToDelete.add(chunk.id)
         !isOrphan
     }
 
     liveChunks
-        .filter { it.metadata["indexMode"] == "single_message_contextual" }
+        .filter { it.metadata["indexMode"] == "single_message_contextual" && !ChatMemoryIndexPolicy.isManualChunk(it) }
         .groupBy { chunk ->
             (chunk.metadataMessageIds() + listOfNotNull(chunk.messageId))
                 .sorted()
@@ -261,12 +268,31 @@ internal fun automaticChatMemoryChunkIdsToReplace(
 internal fun VectorChunk.isChatMemoryForSession(sessionId: String): Boolean =
     sourceType == ChunkSourceType.CHAT_MEMORY && sourceId == sessionId
 
-private fun VectorChunk.actionChoiceSourceIds(): List<String> {
-    if (metadata["indexMode"] != ChatMemoryIndexPolicy.INDEX_MODE) return emptyList()
-    return metadata[ChatMemoryIndexPolicy.ACTION_CHOICE_SOURCE_IDS]?.split(",").orEmpty().filter(String::isNotBlank)
+internal fun VectorChunk.actionChoiceSourceIds(): Set<String> {
+    if (metadata["indexMode"] != ChatMemoryIndexPolicy.INDEX_MODE) return emptySet()
+    return metadata[ChatMemoryIndexPolicy.ACTION_CHOICE_SOURCE_IDS]?.split(",").orEmpty()
+        .filterTo(mutableSetOf(), String::isNotBlank)
 }
 
-private fun VectorChunk.metadataMessageIds(): Set<String> {
+internal fun VectorChunk.isAutomaticReplyMemory(sessionId: String, sourceTurnId: String?, messageId: String): Boolean =
+    isChatMemoryForSession(sessionId) && ChatMemoryIndexPolicy.isAutomaticChunk(this) &&
+        (sourceTurnId != null && metadata["sourceTurnId"] == sourceTurnId ||
+            messageId == this.messageId || messageId in metadataMessageIds() || messageId in actionChoiceSourceIds())
+
+private const val CURRENT_REPLY_REMOVALS = "currentForReplyRemovals"
+private const val CURRENT_REPLY_SOURCE_PROOF = "currentReplySourceProof"
+
+internal fun VectorChunk.isCurrentForReplyRemoval(id: String): Boolean =
+    metadata[CURRENT_REPLY_REMOVALS]?.split(',')?.contains(id) == true
+
+internal val VectorChunk.currentReplySourceProof: String?
+    get() = metadata[CURRENT_REPLY_SOURCE_PROOF]
+
+internal fun VectorChunk.withCurrentReplyRemovals(ids: List<String>, sourceProof: String?): VectorChunk =
+    copy(metadata = if (ids.isEmpty() || sourceProof == null) metadata - CURRENT_REPLY_REMOVALS - CURRENT_REPLY_SOURCE_PROOF
+        else metadata + (CURRENT_REPLY_REMOVALS to ids.joinToString(",")) + (CURRENT_REPLY_SOURCE_PROOF to sourceProof))
+
+internal fun VectorChunk.metadataMessageIds(): Set<String> {
     return metadata["messageIds"]
         ?.split(",")
         ?.map { it.trim() }

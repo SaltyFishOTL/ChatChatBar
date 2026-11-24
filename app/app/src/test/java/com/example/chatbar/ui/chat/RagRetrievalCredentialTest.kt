@@ -1,13 +1,45 @@
 package com.example.chatbar.ui.chat
 
 import com.example.chatbar.data.local.entity.ChatMessage
+import com.example.chatbar.data.local.entity.ChunkSourceType
+import com.example.chatbar.data.local.entity.VectorChunk
 import com.example.chatbar.data.local.entity.MessageRole
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RagRetrievalCredentialTest {
+    @Test
+    fun archivedMemoryUsesOnlyMatchingEmbeddingSpaceForVectorRank() {
+        fun chunk(content: String, key: String?, vector: List<Float> = listOf(1f, 0f)) =
+            VectorChunk.create(
+                ChunkSourceType.CHAT_MEMORY, "session-1", content, vector,
+                metadata = key?.let { mapOf("embeddingKey" to it) }.orEmpty()
+            )
+
+        val sameSpace = chunk("Vector match without keyword", "current")
+        val otherSpace = chunk("Unrelated restored memory", "previous")
+        val lexicalOtherSpace = chunk("Archived lantern", "previous")
+        val lexicalLegacy = chunk("Legacy lantern", null)
+        val wrongDimension = chunk("Wrong dimension lantern", "current", listOf(1f))
+        val ranks = rankChunksByMultiRoute(
+            listOf(sameSpace, otherSpace, lexicalOtherSpace, lexicalLegacy, wrongDimension),
+            listOf(1f, 0f), "lantern", "current", 5
+        ).associateBy { it.chunk.id }
+
+        assertEquals(1, ranks.getValue(sameSpace.id).vectorRank)
+        assertEquals(1f, ranks.getValue(sameSpace.id).vectorScore!!, 0f)
+        assertFalse(otherSpace.id in ranks)
+        for (lexical in listOf(lexicalOtherSpace, lexicalLegacy, wrongDimension)) {
+            val hit = ranks.getValue(lexical.id)
+            assertNull(hit.vectorRank)
+            assertNull(hit.vectorScore)
+            assertTrue(hit.lexicalScore > 0f)
+        }
+    }
+
     @Test
     fun retrievalCredentials_keepOnlyLastAssistantReply() {
         val messages = listOf(

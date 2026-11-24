@@ -1681,7 +1681,7 @@ user 需求：
 搜索Tag功能不支持语义模糊搜索，只有中文逐字匹配，要用简单关键词来提高搜索命中率，最好不要超过3个字。
 本生图允许R-18。
 
-你收到的任务依据，提供的文本可能由一长串动作组成。设计构图时，不要只是复现最后一个动作。应从整个动作序列中提取动态最强、最有趣或视觉冲击力最强的一帧作为画面内容。同时，一定要避免设计出提供依据里还未发生的事，尤其禁止使用“选项”而不是正文中的画面！
+你收到的任务依据，提供的文本可能由一长串动作组成。设计构图时，不要只是复现最后一个动作。应从整个动作序列中提取动态最强、最有趣或视觉冲击力最强的一帧、或作为漫画的多格作为画面内容。设计多格漫画时，需要明确写出每一格的内容。同时，一定要避免设计出提供依据里还未发生的事，尤其禁止使用“选项”而不是正文中的画面！
 按以下顺序完成：
 1. 先独立设计 `sceneDescription`，只写最终可以被画出的画面。画面设计需要根据输入内容设计，禁止使用选项中的未发生行为；禁止用一句概括代替本场景确实需要的逐人设计。如果是性爱情节，则除非是明确的多人交互，否则包括${'$'}username，同框一次最多出现3个人。
 2. 逐一写清每名可见人物。每人至少包含：
@@ -1939,6 +1939,11 @@ mutual#动作   = 双方共同动作
 ```
 表示角色1拥抱角色2。
 
+角色分区也可以用来制作漫画分镜，每个char为一个分镜，在baseCaption中填入同样提示词和漫画相关提示词，然后将具体每个分镜独特的内容写入不同的charCaption中即可设计多分镜漫画。例如：
+```json
+{"sizePreset":"SQUARE","baseCaption":"2girls, bedroom","characters":[{"caption":"panel1, blonde hair, source#hug"}, {"caption":"panel1, black hair, target#hug"}, {"caption":"panel2, blonde hair, laugh"}, {"caption":"panel2, black hair, looking away"}]}
+```
+
 不要 Markdown。不要解释。仅输出 JSON。
 POV视角需要单独一个char caption，只写露出部分（如手部动作），并使用'pov'
 色情场景必须包含tag: nsfw;必须包含暴露的 genital/body part tags;必须包含男女双方核心参与者。
@@ -1950,6 +1955,7 @@ POV视角需要单独一个char caption，只写露出部分（如手部动作�
 """
 
     val NOVELAI_IMAGE_PROMPT_SYSTEM_V5: String = NOVELAI_IMAGE_PROMPT_SYSTEM
+        .replace("图片可以出现文字，需要放在base caption的末尾，并使用 “text:要出现的文字”格式。", "图片支持出现文字，只需要使用\"\"英文双引号将其包住并给予3的权重。可以在双引号前加形式引导tag，如3::speech_bubble:\"角色的台词\"::,。对话不应该写在base caption中，是谁的台词就写在谁的char caption中。多句台词时，提示词的输入顺序和实际的显示顺序是相反的，应该先写最后一句、最后写第一句。")
         .replace("使用 English ASCII。", "支持中文、英文自然语言与 Danbooru tags 混用。")
         .replace("自然语言 = 最后手段。", "自然语言 = 无合适 tag 或太过复杂时使用。")
         .replace(
@@ -1980,6 +1986,11 @@ POV视角需要单独一个char caption，只写露出部分（如手部动作�
 - 每个可见角色必须按画面顺序拥有独立 `characters[].caption`。角色区只写该角色身份、外观、服装、动作、表情、状态与互动，不重复基础区内容。
 - 角色身份与固定外观必须保留英文 NovelAI/Danbooru Tag。若提供角色 Prompt 候选参考库，匹配角色的 caption 必须以对应英文 Prompt 原文开头，不得翻译、改写或遗漏；其余动态细节使用中文自然语言。
 - IP 角色使用精确英文 Tag `name_(series)`；多角色时每个 IP 角色都必须有完整角色 Tag。不要发明角色。
+
+角色分区也可以用来制作漫画分镜，每个char为一个分镜，在baseCaption中填入同样提示词和漫画相关提示词，然后将具体每个分镜独特的内容写入不同的charCaption中即可设计多分镜漫画。例如：
+```json
+{"sizePreset":"SQUARE","baseCaption":"2girls, bedroom","characters":[{"caption":"panel1, blonde hair, source#hug"}, {"caption":"panel1, black hair, target#hug"}, {"caption":"panel2, blonde hair, laugh"}, {"caption":"panel2, black hair, looking away"}]}
+```
 
 角色互动语法：
 - 两人及以上互动必须把英文动作 Tag 写进对应角色区：`source#动作tag` 表示发起者，`target#动作tag` 表示对象，`mutual#动作tag` 表示双方共同动作。

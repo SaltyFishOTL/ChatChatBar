@@ -79,10 +79,10 @@ class ChatBarApp : Application() {
         private set
     lateinit var ragRepository: RagRepository
         private set
-    val sessionCopyService by lazy {
+    internal val sessionCopyService by lazy {
         com.example.chatbar.domain.chat.SessionCopyService(
             chatRepository, memoryRepository, longTermMemoryService, ragRepository,
-            voiceMessageRepository, fishAudioStorage, saveSlotPackageStorage
+            voiceMessageRepository, fishAudioStorage, saveSlotPackageStorage, replyRemovalCoordinator
         )
     }
 
@@ -193,6 +193,8 @@ class ChatBarApp : Application() {
         private set
     lateinit var voicePlaybackController: VoicePlaybackController
         private set
+    internal lateinit var replyRemovalCoordinator: com.example.chatbar.domain.deletion.ReplyRemovalCoordinator
+        private set
     lateinit var qqVoiceTransferCoordinator: QqVoiceTransferCoordinator
         private set
     lateinit var qqVoiceGestureGateway: QqVoiceGestureGatewayRegistry
@@ -265,7 +267,7 @@ class ChatBarApp : Application() {
         saveSlotRepository = SaveSlotRepository(jsonFileStorage, saveSlotPackageStorage)
         settingsRepository = SettingsRepository(jsonFileStorage)
         momentRepository = MomentRepository(jsonFileStorage)
-        voiceMessageRepository = VoiceMessageRepository(jsonFileStorage)
+        voiceMessageRepository = VoiceMessageRepository(jsonFileStorage, chatRepository::getMessage)
         novelAiCredentialStore = NovelAiCredentialStore(this)
         fishAudioCredentialStore = FishAudioCredentialStore(this)
         ragRepository = RagRepository(jsonFileStorage)
@@ -275,7 +277,7 @@ class ChatBarApp : Application() {
         novelAiImageStorage = NovelAiImageStorage(this)
         novelAiStudioRepository = NovelAiStudioRepository(jsonFileStorage, novelAiImageStorage)
         novelAiDesignConversationRepository = NovelAiDesignConversationRepository(jsonFileStorage)
-        appBackupService = AppBackupService(this, applicationScope) {
+        appBackupService = AppBackupService(this, applicationScope, settleReplyRemovals = { replyRemovalCoordinator.resumePending() }) {
             persistentInitializationMutex.withLock { novelAiStudioRepository.flushLatestDraft() }
         }
         editorDraftAssetService = EditorDraftAssetService(this)
@@ -295,6 +297,10 @@ class ChatBarApp : Application() {
         fishAudioService = FishAudioService(fishAudioStorage)
         fishAudioTagService = FishAudioTagService(streamingChatService)
         voicePlaybackController = VoicePlaybackController(this)
+        replyRemovalCoordinator = com.example.chatbar.domain.deletion.ReplyRemovalCoordinator(
+            jsonFileStorage, chatRepository, voiceMessageRepository, fishAudioStorage, novelAiImageStorage,
+            voicePlaybackController, ragRepository
+        )
         qqVoiceTransferCoordinator = QqVoiceTransferCoordinator()
         qqVoiceGestureGateway = QqVoiceGestureGatewayRegistry()
         val novelAiCodexJson = Json {
@@ -571,11 +577,16 @@ class ChatBarApp : Application() {
         ).run()
         settingsRepository.initialize()
         voiceMessageRepository.initialize()
+        replyRemovalCoordinator.resumePending()
         fishAudioStorage.cleanupPartialFiles()
         saveSlotPackageStorage.cleanupPartialFiles()
-        fishAudioStorage.cleanupOrphanFiles(
-            voiceMessageRepository.voices.value.mapTo(mutableSetOf()) { it.audioPath }
-        )
+        try {
+            voiceMessageRepository.withPersistedAudioPaths { fishAudioStorage.cleanupOrphanFiles(it, jsonFileStorage) }
+        } catch (error: kotlinx.coroutines.CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            Log.w(TAG, "Skipped orphan audio cleanup because ownership could not be verified")
+        }
         momentRepository.initialize()
         novelAiStudioRepository.initialize()
         novelAiDesignConversationRepository.initialize()

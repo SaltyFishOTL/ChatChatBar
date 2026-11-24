@@ -60,12 +60,20 @@ class ChatMemoryIndexPolicyTest {
         fun choiceTurn(menu: ChatMessage) = ChatMemoryIndexPolicy.buildTurns(listOf(menu, user)).last()
 
         assertEquals(listOf("user:\nB\n交出铜钥匙"), ChatMemoryIndexPolicy.contentsForIndex(choiceTurn(original)))
+        val active = chunk(ChatMemoryIndexPolicy.INDEX_MODE, ChatMemoryIndexPolicy.CONTENT_VERSION)
+        val indexed = active.copy(
+            messageId = user.id,
+            content = ChatMemoryIndexPolicy.contentForIndex(choiceTurn(original)),
+            metadata = active.metadata + (ChatMemoryIndexPolicy.ACTION_CHOICE_SOURCE_IDS to original.id)
+        )
+        assertTrue(ChatMemoryProjection(choiceTurn(original)).matches(indexed))
         val reordered = "[choices]\nChoices\nA. 交出铜钥匙\nB. 封好地图\n[/choices]"
         val edited = original.copy(content = reordered, updatedAt = 300)
         val ambiguous = MessageAlternativeVersionPolicy.append(original, reordered, "second", updatedAt = 150)
         listOf(edited, edited.copy(updatedAt = 200), ambiguous).forEach { changed ->
             val rawTurn = choiceTurn(changed)
             assertTrue(rawTurn.confirmedChoices.isEmpty())
+            assertFalse(ChatMemoryProjection(rawTurn).matches(indexed))
             assertEquals(listOf("user:\nB"), ChatMemoryIndexPolicy.contentsForIndex(rawTurn))
             assertFalse(ChatMemoryIndexPolicy.shouldIndex(rawTurn))
         }
@@ -286,6 +294,26 @@ class ChatMemoryIndexPolicyTest {
         assertTrue(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("timeline_turn", "8")))
         assertFalse(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("timeline_turn", ChatMemoryIndexPolicy.CONTENT_VERSION)))
         assertFalse(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("manual", "1")))
+    }
+
+    @Test
+    fun projectionAcceptsCurrentRestoredChunksAndRejectsRetiredContent() {
+        val reply = message("reply", MessageRole.ASSISTANT, "The surviving answer", sourceTurnId = "turn-1")
+        val turn = ChatMemoryIndexPolicy.buildTurns(listOf(reply)).single()
+        val projection = ChatMemoryProjection(turn)
+        val active = chunk(ChatMemoryIndexPolicy.INDEX_MODE, ChatMemoryIndexPolicy.CONTENT_VERSION)
+        val restored = active.copy(
+            id = "remapped-archive-id",
+            messageId = reply.id,
+            content = ChatMemoryIndexPolicy.contentForIndex(turn),
+            metadata = active.metadata + mapOf("sourceTurnId" to "turn-1", "chunkIndex" to "0")
+        )
+
+        assertTrue(projection.matches(restored))
+        assertTrue(projection.matches(restored.copy(metadata = restored.metadata - "sourceTurnId")))
+        assertFalse(projection.matches(restored.copy(content = "assistant:\nThe retired answer")))
+        assertFalse(projection.matches(restored.copy(metadata = restored.metadata + ("messageIds" to "foreign"))))
+        assertFalse(projection.matches(restored.copy(metadata = restored.metadata + ("chunkIndex" to "1"))))
     }
 
     private fun chunk(indexMode: String, version: String) = VectorChunk(

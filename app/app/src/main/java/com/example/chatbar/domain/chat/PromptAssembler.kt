@@ -20,8 +20,15 @@ data class PromptCachePromptLayers(
     val memoryRagSystemPrompt: String = "",
     val supplementarySystemPrompt: String = "",
     val replyConstraintsSystemPrompt: String = "",
-    val narrativeModeSystemPrompt: String = ""
-)
+    val narrativeModeSystemPrompt: String = "",
+    internal val worldBookHeadingSource: String = "",
+) {
+    internal fun recordDispatchedWorldBookHeadings(cleanup: NarrativeHistoryEcho.RequestCleanup) {
+        if (worldBookHeadingSource.isNotBlank() && (settingReferenceSystemPrompt == worldBookHeadingSource ||
+                settingReferenceSystemPrompt.startsWith("$worldBookHeadingSource\n\n"))
+        ) cleanup.recordDispatchedWorldBookHeadings(worldBookHeadingSource)
+    }
+}
 
 internal fun resolveFormatCardForRequest(
     sessionFormatCardId: String?,
@@ -141,10 +148,9 @@ class PromptAssembler {
         fun renderRag(cards: List<RetrievedKnowledgeCard>, offset: Int = 0): String =
             buildRagCardsSection(cards, ragInjectionMode, offset).takeIf(String::isNotBlank)
                 ?.let { "【${PromptTemplates.SECTION_REFERENCE}】\n$it" }.orEmpty()
-        val settingReferenceRaw = listOf(
-            renderSections(sections.filter { it.title == PromptTemplates.SECTION_WORLD_BOOK }),
-            renderRag(settingCards)
-        ).filter(String::isNotBlank).joinToString("\n\n")
+        val worldBookRaw = renderSections(sections.filter { it.title == PromptTemplates.SECTION_WORLD_BOOK })
+        val settingReferenceRaw = listOf(worldBookRaw, renderRag(settingCards))
+            .filter(String::isNotBlank).joinToString("\n\n")
         val memoryRagRaw = renderRag(memoryCards, settingCards.size)
         fun rendered(raw: String) = renderLayer(raw, playerName, characterCard.effectiveBotName, worldBookOutlets)
         val dynamicRaw = renderSections(sections.filter { it.layer == PromptLayer.DYNAMIC })
@@ -182,7 +188,8 @@ class PromptAssembler {
                 memoryRagSystemPrompt = rendered(memoryRagRaw),
                 supplementarySystemPrompt = rendered(supplementaryRaw),
                 replyConstraintsSystemPrompt = rendered(replyRaw),
-                narrativeModeSystemPrompt = rendered(modeRaw)
+                narrativeModeSystemPrompt = rendered(modeRaw),
+                worldBookHeadingSource = rendered(worldBookRaw),
             )
         }
 
@@ -217,7 +224,8 @@ class PromptAssembler {
             memoryRagSystemPrompt = rendered(memoryRagRaw),
             supplementarySystemPrompt = rendered(supplementaryRaw),
             replyConstraintsSystemPrompt = rendered(replyRaw),
-            narrativeModeSystemPrompt = rendered(modeRaw)
+            narrativeModeSystemPrompt = rendered(modeRaw),
+            worldBookHeadingSource = rendered(worldBookRaw),
         )
     }
 

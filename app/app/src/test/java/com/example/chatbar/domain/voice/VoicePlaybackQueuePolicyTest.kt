@@ -30,6 +30,17 @@ class VoicePlaybackQueuePolicyTest {
         assertEquals(listOf("selected"), sequence.map { it.id })
     }
 
+    @Test
+    fun `queue keeps the exact selected recording and later voices of that displayed version`() {
+        val selected = voice("selected").copy(messageVersionId = "version")
+        val replacement = selected.copy(audioPath = "replacement.mp3")
+        val next = voice("next").copy(messageVersionId = "version")
+        val sequence = VoicePlaybackQueuePolicy.sequenceFrom(selected, listOf(
+            replacement, voice("other-version"), next, next.copy(id = "another-session", sessionId = "other")
+        ))
+        assertEquals(listOf(selected, next), sequence)
+    }
+
     private fun voice(id: String) = GeneratedVoiceMessage(
         id = id,
         sessionId = "session",

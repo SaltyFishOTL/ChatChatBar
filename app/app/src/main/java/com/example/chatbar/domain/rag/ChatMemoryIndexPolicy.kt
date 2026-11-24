@@ -21,10 +21,30 @@ data class ChatMemoryTurn(
         ?: messages.last()
 }
 
+internal class ChatMemoryProjection(turn: ChatMemoryTurn) {
+    private val messageIds = turn.messageIds
+    private val sourceTurnId = turn.sourceTurnId
+    private val contents = ChatMemoryIndexPolicy.contentsForIndex(turn)
+    private val actionSources = turn.confirmedChoices.values.mapTo(mutableSetOf()) { it.replyId }
+
+    fun matches(chunk: VectorChunk): Boolean {
+        if (!ChatMemoryIndexPolicy.isAutomaticChunk(chunk) ||
+            chunk.metadata["indexMode"] != ChatMemoryIndexPolicy.INDEX_MODE ||
+            ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk) ||
+            chunk.metadata["sourceTurnId"]?.takeIf(String::isNotBlank)?.let { it != sourceTurnId } == true ||
+            chunk.actionChoiceSourceIds() != actionSources ||
+            chunk.metadataMessageIds() + listOfNotNull(chunk.messageId) != messageIds) return false
+
+        val index = chunk.metadata["chunkIndex"] ?: return chunk.content in contents
+        return index.toIntOrNull()?.let(contents::getOrNull) == chunk.content
+    }
+}
+
 object ChatMemoryIndexPolicy {
     const val INDEX_MODE = "timeline_turn"
     const val CONTENT_VERSION = "9"
     const val ACTION_CHOICE_SOURCE_IDS = "actionChoiceSourceIds"
+    const val MANUAL_MODE = "manual"
 
     private const val LONG_TURN_SPLIT_THRESHOLD = 600
     private const val SPLIT_SEARCH_START = 300
@@ -104,14 +124,16 @@ object ChatMemoryIndexPolicy {
         }
     }
 
-    fun isAutomaticChunk(chunk: VectorChunk): Boolean =
-        chunk.metadata["indexMode"] in automaticIndexModes
+    // Older editors marked explicit edits with editedAt but could retain the automatic index mode.
+    fun isManualChunk(chunk: VectorChunk): Boolean =
+        chunk.metadata["indexMode"] == MANUAL_MODE || chunk.metadata["editedAt"]?.toLongOrNull() != null
 
-    fun needsAutomaticRebuild(chunk: VectorChunk): Boolean = when (chunk.metadata["indexMode"]) {
-        "single_message_contextual", "single_message", "message_pair", "memory_node" -> true
-        INDEX_MODE -> chunk.metadata["contentVersion"] != CONTENT_VERSION
-        else -> false
-    }
+    fun isAutomaticChunk(chunk: VectorChunk): Boolean =
+        chunk.metadata["indexMode"] in automaticIndexModes && !isManualChunk(chunk)
+
+    fun needsAutomaticRebuild(chunk: VectorChunk): Boolean =
+        isAutomaticChunk(chunk) && (chunk.metadata["indexMode"] != INDEX_MODE ||
+            chunk.metadata["contentVersion"] != CONTENT_VERSION)
 
     private fun userIndexText(turn: ChatMemoryTurn, message: ChatMessage): String =
         RoleplayActionOptionsPolicy.preserveConfirmedUserChoice(message.displayContent.trim(), turn.confirmedChoices[message.id])

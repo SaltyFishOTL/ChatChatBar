@@ -5,7 +5,8 @@ data class ChatReplyCompletion(
     val finishReason: String? = null,
     val refused: Boolean = false,
     val transportFailed: Boolean = false,
-    val toolReplyCompleted: Boolean = false
+    val toolReplyCompleted: Boolean = false,
+    val toolReplyPartLengths: List<Int> = emptyList(),
 )
 
 object AutomaticChatImagePolicy {

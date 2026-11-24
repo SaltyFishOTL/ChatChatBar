@@ -1,19 +1,27 @@
 package com.example.chatbar.ui.manage
 
+import android.system.Os
+import android.system.OsConstants
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
+import androidx.test.platform.app.InstrumentationRegistry
+import com.example.chatbar.BuildConfig
 import com.example.chatbar.ChatBarApp
+import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.*
+import com.example.chatbar.data.repository.EditorDraftRepository
 import com.example.chatbar.ui.character.CharacterEditViewModel
 import com.example.chatbar.ui.character.CharacterEditViewModelFactory
 import com.example.chatbar.ui.worldbook.WorldBookEditViewModel
 import com.example.chatbar.ui.worldbook.WorldBookEditViewModelFactory
+import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import org.junit.After
 import org.junit.Assert.*
+import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -84,6 +92,95 @@ class ManagementDraftDiscardTest {
         withContext(Dispatchers.Main) { assertEquals("synthetic unsaved book", otherVm.name) }
     }
 
+    @Test fun failedManagementDiscardKeepsTheDraftAndItsResourcesUntilRetry() = runBlocking<Unit> {
+        assumeTrue("Use the repository-supported isolated Android test build", BuildConfig.ISOLATED_ANDROID_TEST)
+        val packageName = InstrumentationRegistry.getInstrumentation().targetContext.packageName
+        check(packageName == BuildConfig.APPLICATION_ID && packageName.startsWith("com.example.chatbar."))
+        val saved = card()
+        val vm = characterEditor(saved.id)
+        val added = CompletableDeferred<Unit>()
+        withContext(Dispatchers.Main) {
+            vm.addDocument("preserve.txt", "Synthetic draft bytes") { added.complete(Unit) }
+        }
+        withTimeout(10_000) { added.await() }
+        saveCardDraft(vm)
+        val draft = requireNotNull(app.editorDraftRepository.getForTarget(EditorDraftType.CHARACTER_CARD, saved.id))
+        val staged = File(draft.characterPayload!!.customDocuments.single().filePath)
+        val directory = File(app.filesDir, "entities/edit_drafts")
+        val mode = Os.stat(directory.path).st_mode and 0x1ff
+        val writePermissions = OsConstants.S_IWUSR or OsConstants.S_IWGRP or OsConstants.S_IWOTH
+        val coldRead = suspend { EditorDraftRepository(JsonFileStorage(app)).getById(draft.id) }
+        try {
+            Os.chmod(directory.path, mode and writePermissions.inv())
+            assertNotNull(managerDiscard(draft))
+            assertEquals(draft, coldRead())
+            assertEquals(draft, app.editorDraftRepository.getById(draft.id))
+            assertEquals("Synthetic draft bytes", staged.readText())
+        } finally {
+            Os.chmod(directory.path, mode)
+        }
+        assertNull(managerDiscard(draft))
+        assertNull(coldRead())
+        assertFalse(staged.exists())
+        assertEquals(saved, app.characterRepository.getById(saved.id))
+    }
+
+    @Test fun managementDiscardPreservesTheOtherRecoveryDraftInTheSameAssetDirectory() = runBlocking<Unit> {
+        assumeTrue("Use the repository-supported isolated Android test build", BuildConfig.ISOLATED_ANDROID_TEST)
+        val profile = card()
+        val session = UUID.randomUUID().toString()
+        val path = app.editorDraftAssetService.writeDocumentToDraft(session, "shared.txt", "Shared recovery bytes")
+        val staged = File(path)
+        val first = app.editorDraftRepository.save(app.editorDraftRepository.characterDraft(
+            targetId = profile.id,
+            draftSessionId = session,
+            payload = profile.copy(customDocuments = listOf(DocumentInfo.create("shared.txt", path, "txt"))),
+            base = profile,
+            draftAssetPaths = listOf(path),
+            pendingDeletedAssets = emptyList(),
+            pendingDeletedDocumentIds = emptyList(),
+        ))
+        try {
+            app.characterRepository.delete(profile.id)
+            val retained = characterEditor(profile.id, session)
+            withContext(Dispatchers.Main) { assertTrue(retained.sourceDeleted) }
+            saveCardDraft(retained)
+            val recovered = requireNotNull(app.editorDraftRepository.getForTarget(EditorDraftType.CHARACTER_CARD, null))
+            assertNull(managerDiscard(recovered))
+            awaitMain { retained.draftReady && !retained.sourceDeleted && retained.name.isEmpty() }
+            assertEquals(first, EditorDraftRepository(JsonFileStorage(app)).getById(first.id))
+            assertEquals("Shared recovery bytes", staged.readText())
+
+            val reopened = characterEditor(profile.id, session)
+            saveCardDraft(reopened)
+            val other = requireNotNull(app.editorDraftRepository.getForTarget(EditorDraftType.CHARACTER_CARD, null))
+            assertNull(managerDiscard(first))
+            assertNull(EditorDraftRepository(JsonFileStorage(app)).getById(first.id))
+            assertEquals(other, EditorDraftRepository(JsonFileStorage(app)).getById(other.id))
+            assertEquals("Shared recovery bytes", staged.readText())
+            assertNull(managerDiscard(other))
+            assertFalse(staged.exists())
+        } finally {
+            app.editorDraftAssetService.deleteDraft(session)
+        }
+    }
+
+    @Test fun queuedAutosaveCannotPublishEitherIdentityAfterItsExpectedRowIsDiscarded() = runBlocking<Unit> {
+        assumeTrue("Use the repository-supported isolated Android test build", BuildConfig.ISOLATED_ANDROID_TEST)
+        val saved = card()
+        val retained = characterEditor(saved.id)
+        saveCardDraft(retained)
+        val repository = app.editorDraftRepository
+        val expected = requireNotNull(repository.getForTarget(EditorDraftType.CHARACTER_CARD, saved.id))
+        val queued = expected.copy(characterPayload = expected.characterPayload!!.copy(name = "queued autosave"))
+        assertNull(managerDiscard(expected))
+        assertNull(repository.saveIfUnchanged(queued, expected))
+        assertNull(repository.saveIfUnchanged(queued.copy(mode = EditorDraftMode.CREATE, targetId = null), expected))
+        val cold = EditorDraftRepository(JsonFileStorage(app))
+        assertNull(cold.getById(expected.id))
+        assertNull(cold.getForTarget(EditorDraftType.CHARACTER_CARD, null))
+    }
+
     @Test fun managementDiscardResetsRetainedBookAndDoesNotRecreateItsDraft() = runBlocking<Unit> {
         val saved = book()
         val vm = worldEditor(saved.id)
@@ -129,14 +226,17 @@ class ManagementDraftDiscardTest {
 
     private suspend fun managerDiscard(type: EditorDraftType, id: String?) {
         val draft = requireNotNull(app.editorDraftRepository.getForTarget(type, id))
+        assertNull(managerDiscard(draft))
+    }
+
+    private suspend fun managerDiscard(draft: EditorDraft): String? {
+        val done = CompletableDeferred<String?>()
         withContext(Dispatchers.Main) {
             val store = ViewModelStore().also { stores += it }
             ViewModelProvider(store, ViewModelProvider.NewInstanceFactory())[ManageViewModel::class.java]
-                .discardEditorDraft(draft)
+                .discardEditorDraft(draft) { done.complete(it) }
         }
-        withTimeout(10_000) {
-            while (app.editorDraftRepository.getForTarget(type, id) != null) delay(10)
-        }
+        return withTimeout(10_000) { done.await() }
     }
 
     private suspend fun saveCardDraft(vm: CharacterEditViewModel) {
@@ -162,12 +262,13 @@ class ManagementDraftDiscardTest {
         withTimeout(10_000) { while (!predicate()) delay(10) }
     }
 
-    private suspend fun characterEditor(id: String?): CharacterEditViewModel = withContext(Dispatchers.Main) {
-        val store = ViewModelStore().also { stores += it }
-        ViewModelProvider(store, CharacterEditViewModelFactory(id, UUID.randomUUID().toString()))[
-            CharacterEditViewModel::class.java
-        ].also { vm -> withTimeout(30_000) { while (!vm.draftReady) delay(10) } }
-    }
+    private suspend fun characterEditor(id: String?, draftSessionId: String = UUID.randomUUID().toString()): CharacterEditViewModel =
+        withContext(Dispatchers.Main) {
+            val store = ViewModelStore().also { stores += it }
+            ViewModelProvider(store, CharacterEditViewModelFactory(id, draftSessionId))[
+                CharacterEditViewModel::class.java
+            ].also { vm -> withTimeout(30_000) { while (!vm.draftReady) delay(10) } }
+        }
 
     private suspend fun worldEditor(id: String?): WorldBookEditViewModel = withContext(Dispatchers.Main) {
         val store = ViewModelStore().also { stores += it }

@@ -26,10 +26,25 @@ data class RoleplaySegmentEditOutcome(
     val deleteMemoryForMessage: Boolean
 )
 
-private data class VisibleRoleplayText(
+private class VisibleRoleplayText(
     val text: String,
     val rawIndexes: IntArray
-)
+) {
+    val literalCode = NarrativeHistoryEcho.roleplayLiteralCodeRanges(text)
+    val dashFenceText = if (literalCode.isEmpty()) text else {
+        val masked = text.toCharArray()
+        // Delimiter matching needs the original line boundaries and character offsets.
+        for (range in literalCode) {
+            for (index in range) {
+                if (!masked[index].isWhitespace()) masked[index] = '\uFFFC'
+            }
+        }
+        String(masked)
+    }
+    val longDashRanges by lazy(LazyThreadSafetyMode.NONE) {
+        findLongDashWrappedRanges(dashFenceText, 0, dashFenceText.length)
+    }
+}
 
 private data class VisibleRange(
     val start: Int,
@@ -43,9 +58,12 @@ private data class RoleplaySpeakerPrefix(
 
 internal val roleplayDialogueMarkerPattern =
     Regex("(?<![!！])[\\[［]([^\\]］]+)[\\]］](?:[(（]([^\\)）]*)[)）])?")
+private val markdownCodeIndent = Regex(" {4}| {0,3}\t")
 
-fun parseRoleplayTextSegments(content: String): List<RoleplayTextSegment> {
-    val visible = visibleRoleplayText(content)
+fun parseRoleplayTextSegments(content: String): List<RoleplayTextSegment> =
+    parseRoleplayTextSegments(content, visibleRoleplayText(content))
+
+private fun parseRoleplayTextSegments(content: String, visible: VisibleRoleplayText): List<RoleplayTextSegment> {
     if (visible.text.isBlank()) return emptyList()
     val segments = splitCodeFenceSegments(visible)
         .flatMap { segment ->
@@ -63,14 +81,14 @@ fun parseRoleplayTextSegments(content: String): List<RoleplayTextSegment> {
             }
         }
         .flatMap { segment ->
-            if (segment.kind == RoleplaySegmentKind.STATUS || isLongDashWrappedText(segment.rawText)) {
+            if (segment.kind == RoleplaySegmentKind.STATUS || isLongDashWrappedSegment(segment, visible)) {
                 listOf(segment)
             } else {
-                splitRoleplayMarkers(segment, visible)
+                splitRoleplayMarkers(segment, visible, visible.literalCode)
             }
         }
         .filter { it.rawText.isNotBlank() || it.displayText.isNotBlank() }
-    return attachRoleplaySpeakerPrefixes(content, segments)
+    return attachRoleplaySpeakerPrefixes(content, segments, visible, visible.literalCode)
 }
 
 /** Raw boundaries reused by read-only action projections; never edit message storage here. */
@@ -83,7 +101,21 @@ fun roleplayLongDashRawRanges(content: String): List<IntRange> {
 }
 
 fun stripRoleplaySpeakerMarkers(content: String): String =
-    roleplaySpeakerMarkerPattern.replace(content, "")
+    transformRoleplayProse(content) { roleplaySpeakerMarkerPattern.replace(it, "") }
+
+internal inline fun transformRoleplayProse(content: String, transform: (String) -> String): String {
+    val literalCode = NarrativeHistoryEcho.roleplayLiteralCodeRanges(content)
+    if (literalCode.isEmpty()) return transform(content)
+    return buildString(content.length) {
+        var cursor = 0
+        for (range in literalCode) {
+            append(transform(content.substring(cursor, range.first)))
+            append(content, range.first, range.last + 1)
+            cursor = range.last + 1
+        }
+        append(transform(content.substring(cursor)))
+    }
+}
 
 /** 移除状态栏与横线包裹的选项块，保留叙事、对白、心理和人物标记。 */
 fun stripRoleplayStatusSegments(
@@ -100,7 +132,7 @@ fun stripRoleplayStatusSegments(
         .fold(content) { text, range ->
             text.removeRange(range.first, range.last + 1)
         }
-        .let(::cleanupAfterRoleplaySegmentDeletion)
+        .let(::cleanupAfterRoleplayStatusDeletion)
 }
 
 fun renameRoleplaySpeakerMarkers(
@@ -172,10 +204,27 @@ fun replaceRoleplaySegmentContent(
 }
 
 fun cleanupAfterRoleplaySegmentDeletion(content: String): String =
+    collapseRoleplayWhitespace(content).trim()
+
+private fun collapseRoleplayWhitespace(content: String): String =
     content
         .replace(Regex("[ \t]+\n"), "\n")
         .replace(Regex("\n{3,}"), "\n\n")
-        .trim()
+
+private fun cleanupAfterRoleplayStatusDeletion(content: String): String {
+    val literalCode = NarrativeHistoryEcho.roleplayLiteralCodeRanges(content)
+    if (literalCode.isEmpty()) return cleanupAfterRoleplaySegmentDeletion(content)
+    return buildString(content.length) {
+        var cursor = 0
+        for (range in literalCode) {
+            val prose = collapseRoleplayWhitespace(content.substring(cursor, range.first))
+            append(if (cursor == 0) prose.trimStart() else prose)
+            append(content, range.first, range.last + 1)
+            cursor = range.last + 1
+        }
+        append(collapseRoleplayWhitespace(content.substring(cursor)).trimEnd())
+    }
+}
 
 fun editRoleplayMessageSegment(
     message: ChatMessage,
@@ -190,8 +239,29 @@ fun editRoleplayMessageSegment(
         endExclusive = endExclusive,
         replacement = replacement
     )
-    if (updatedContent.isBlank() && message.images.isEmpty()) {
-        return RoleplaySegmentEditOutcome(message = null, deleteMemoryForMessage = false)
+    val hasImages = message.images.isNotEmpty() || message.generatedImageMetadata.isNotEmpty()
+    if (updatedContent.isBlank() && !hasImages) {
+        return RoleplaySegmentEditOutcome(
+            message = MessageAlternativeVersionPolicy.remove(message, MessageAlternativeVersionPolicy.activeVersionId(message), updatedAt),
+            deleteMemoryForMessage = false
+        )
+    }
+    if (updatedContent.isBlank() && message.displayContent.isNotBlank() && message.role == MessageRole.ASSISTANT) {
+        val retained = MessageAlternativeVersionPolicy.remove(message, MessageAlternativeVersionPolicy.activeVersionId(message), updatedAt)
+        return RoleplaySegmentEditOutcome(
+            message = retained ?: MessageAlternativeVersionPolicy.normalize(message).copy(
+                content = "",
+                alternatives = emptyList(),
+                alternativeVersionIds = emptyList(),
+                currentAlternativeIndex = 0,
+                currentAlternativeVersionId = MessageAlternativeVersionPolicy.newVersionId(message),
+                alternativeNarrativeModes = emptyList(),
+                formatRepairNotice = null,
+                otherFormatRepairNotices = emptyList(),
+                updatedAt = updatedAt
+            ),
+            deleteMemoryForMessage = retained == null
+        )
     }
     return RoleplaySegmentEditOutcome(
         message = MessageAlternativeVersionPolicy.editCurrentContent(
@@ -203,44 +273,30 @@ fun editRoleplayMessageSegment(
     )
 }
 
+internal fun stripRoleplayHiddenComments(content: String): String {
+    if ("<!--" !in content) return content
+    return buildString(content.length) {
+        forEachVisibleRoleplayRange(content) { start, end -> append(content, start, end) }
+    }
+}
+
 private fun visibleRoleplayText(content: String): VisibleRoleplayText {
     val result = StringBuilder(content.length)
     val indexes = mutableListOf<Int>()
+    forEachVisibleRoleplayRange(content) { start, end ->
+        for (index in start until end) {
+            result.append(content[index])
+            indexes += index
+        }
+    }
+    return VisibleRoleplayText(result.toString(), indexes.toIntArray())
+}
+
+private inline fun forEachVisibleRoleplayRange(content: String, appendRange: (Int, Int) -> Unit) {
     var cursor = 0
-    while (cursor < content.length) {
-        val open = content.indexOf(HIDDEN_COMMENT_OPEN, cursor)
-        if (open < 0) {
-            appendVisibleRange(content, cursor, content.length, result, indexes)
-            break
-        }
-
-        var depth = 1
-        var search = open + HIDDEN_COMMENT_OPEN.length
-        var closedAt = -1
-
-        while (search < content.length) {
-            val nextOpen = content.indexOf(HIDDEN_COMMENT_OPEN, search)
-            val nextClose = content.indexOf(HIDDEN_COMMENT_CLOSE, search)
-            if (nextClose < 0) break
-
-            if (nextOpen >= 0 && nextOpen < nextClose) {
-                depth++
-                search = nextOpen + HIDDEN_COMMENT_OPEN.length
-            } else {
-                depth--
-                search = nextClose + HIDDEN_COMMENT_CLOSE.length
-                if (depth == 0) {
-                    closedAt = search
-                    break
-                }
-            }
-        }
-
-        if (closedAt < 0) {
-            appendVisibleRange(content, cursor, content.length, result, indexes)
-            break
-        }
-
+    for (comment in NarrativeHistoryEcho.hiddenHtmlCommentRanges(content)) {
+        val open = comment.first
+        val closedAt = comment.last + 1
         val lineStart = content.lastIndexOf('\n', open - 1).let { if (it < 0) 0 else it + 1 }
         val openerStartsLine = content.substring(lineStart, open).all(::isHorizontalWhitespace)
         var afterCloseLineEnd = closedAt
@@ -250,35 +306,31 @@ private fun visibleRoleplayText(content: String): VisibleRoleplayText {
         val closesLine = afterCloseLineEnd >= content.length || content[afterCloseLineEnd] == '\n'
         val standaloneBlock = openerStartsLine && closesLine
 
-        appendVisibleRange(content, cursor, if (standaloneBlock) lineStart else open, result, indexes)
-        cursor = if (standaloneBlock && afterCloseLineEnd < content.length) {
-            afterCloseLineEnd + 1
-        } else {
-            closedAt
+        appendRange(cursor, if (standaloneBlock) lineStart else open)
+        cursor = when {
+            !standaloneBlock || afterCloseLineEnd == content.length -> closedAt
+            // A preceding paragraph would absorb this indented block if the separator vanished.
+            markdownCodeIndent.matchAt(content, afterCloseLineEnd + 1) != null -> afterCloseLineEnd
+            else -> afterCloseLineEnd + 1
         }
     }
-    return VisibleRoleplayText(result.toString(), indexes.toIntArray())
-}
-
-private fun appendVisibleRange(
-    content: String,
-    start: Int,
-    endExclusive: Int,
-    result: StringBuilder,
-    indexes: MutableList<Int>
-) {
-    for (index in start until endExclusive) {
-        result.append(content[index])
-        indexes += index
-    }
+    appendRange(cursor, content.length)
 }
 
 private fun splitCodeFenceSegments(visible: VisibleRoleplayText): List<RoleplayTextSegment> {
     val marker = "```"
+    fun findMarker(start: Int): Int {
+        var markerStart = visible.text.indexOf(marker, start)
+        for (span in visible.literalCode) {
+            if (markerStart < span.first) break
+            if (markerStart in span) markerStart = visible.text.indexOf(marker, span.last + 1)
+        }
+        return markerStart
+    }
     val segments = mutableListOf<RoleplayTextSegment>()
     var cursor = 0
     while (cursor < visible.text.length) {
-        val open = visible.text.indexOf(marker, cursor)
+        val open = findMarker(cursor)
         if (open < 0) {
             addTextSegment(segments, visible, RoleplaySegmentKind.NARRATION, cursor, visible.text.length)
             break
@@ -286,7 +338,7 @@ private fun splitCodeFenceSegments(visible: VisibleRoleplayText): List<RoleplayT
         addTextSegment(segments, visible, RoleplaySegmentKind.NARRATION, cursor, open)
         val headerEnd = visible.text.indexOf('\n', open + marker.length)
         val bodyStart = if (headerEnd >= 0) headerEnd + 1 else open + marker.length
-        val close = visible.text.indexOf(marker, bodyStart)
+        val close = findMarker(bodyStart)
         if (close < 0) {
             addTextSegment(segments, visible, RoleplaySegmentKind.STATUS, open, visible.text.length)
             break
@@ -298,17 +350,71 @@ private fun splitCodeFenceSegments(visible: VisibleRoleplayText): List<RoleplayT
 }
 
 private val dashFencePattern = Regex("(?m)^[ \t]*---[ \t]*$")
+private const val actionOptionsTitle = "**【行动选项】**"
+private val actionOptionsHeading = Regex(" {0,3}${Regex.escape(actionOptionsTitle)}[ \\t]*")
+private val numberedActionOption = Regex(" {0,3}([1-9][0-9]{0,8})\\.(?:[ \\t]+|(?=\\*\\*))\\S.*")
+private val bulletedActionOption = Regex(" {0,3}([-+*])[ \\t]+\\S.*")
+private val actionListBoundary = Regex("(?m)^ {0,3}([-—―─－]{3,})[ \\t]*$")
+
+private fun matchesNumberedActionOption(line: String, ordinal: Int): Boolean =
+    numberedActionOption.matchEntire(line)?.groupValues?.get(1) == ordinal.toString()
+
+private fun String.isActionListDelimiter(): Boolean =
+    this == "---" || isNotEmpty() && length >= minLongWrapperDashCount(first()) && all { it == first() }
+
+private fun actionBullet(line: String): String? = bulletedActionOption.matchEntire(line)?.groupValues?.get(1)
+
+private data class ActionListPrefix(val choices: Int, val consumed: Int)
+
+private fun numberedActionPrefix(lines: List<String>, allowsContinuation: Boolean): ActionListPrefix {
+    var count = 0
+    var contentIndent = Int.MAX_VALUE
+    for ((index, line) in lines.withIndex()) {
+        if (matchesNumberedActionOption(line, count + 1)) {
+            count++
+            val afterPeriod = line.indexOf('.') + 1
+            val padding = line.substring(afterPeriod).takeWhile { it == ' ' }
+            contentIndent = if (padding.isEmpty()) Int.MAX_VALUE else afterPeriod + padding.length
+        } else if (!allowsContinuation || line.takeWhile { it == ' ' }.length < contentIndent ||
+            numberedActionOption.matches(line.trimStart())
+        ) return ActionListPrefix(count, index)
+    }
+    return ActionListPrefix(count, lines.size)
+}
+
+/** Paired dashes need an actual choice list. Legacy long delimiters require ordered choices. */
+internal fun roleplayListedActionRanges(text: String): Sequence<IntRange> =
+    actionListBoundary.findAll(text)
+        .filter { it.groupValues[1].isActionListDelimiter() }
+        .zipWithNext()
+        .mapNotNull { (opening, closing) ->
+            val delimiter = opening.groupValues[1]
+            if (delimiter != closing.groupValues[1]) return@mapNotNull null
+            val lines = text.subSequence(opening.range.last + 1, closing.range.first)
+                .lineSequence().filter { it.isNotBlank() }.toList()
+            val hasHeading = lines.firstOrNull()?.let(actionOptionsHeading::matches) == true
+            val options = if (hasHeading) lines.drop(1) else lines
+            val minimumOptions = if (hasHeading) 1 else 2
+            val bullet = options.firstOrNull()?.takeIf { delimiter == "---" }?.let(::actionBullet)
+            val listed = if (bullet == null) {
+                val prefix = numberedActionPrefix(options, allowsContinuation = hasHeading && delimiter == "---")
+                prefix.consumed == options.size && prefix.choices >= minimumOptions
+            } else {
+                options.size >= minimumOptions && options.all { actionBullet(it) == bullet }
+            }
+            if (listed) opening.range.first..closing.range.last else null
+        }
 
 private fun splitDashFenceSegments(
     segment: RoleplayTextSegment,
     visible: VisibleRoleplayText
 ): List<RoleplayTextSegment> {
-    val text = visible.text.substring(segmentVisibleStart(segment, visible), segmentVisibleEnd(segment, visible))
+    val offset = segmentVisibleStart(segment, visible)
+    val text = visible.dashFenceText.substring(offset, segmentVisibleEnd(segment, visible))
     val matches = dashFencePattern.findAll(text).toList()
     if (matches.size < 2) return listOf(segment)
 
     val segments = mutableListOf<RoleplayTextSegment>()
-    val offset = segmentVisibleStart(segment, visible)
     var cursor = 0
     var index = 0
     while (index < matches.size) {
@@ -361,8 +467,7 @@ private fun splitLongDashNarrationSegments(
     val end = segmentVisibleEnd(segment, visible)
     // 先按完整消息识别包裹区，再投影到当前片段。否则删除包裹区前一个片段后，
     // 上游分段边界变化可能让相同横线块失去保护，内部 Markdown 链接被拆成对白。
-    val ranges = findLongDashWrappedRanges(visible.text, 0, visible.text.length)
-        .filter { range -> range.start >= start && range.endExclusive <= end }
+    val ranges = visible.longDashRanges.filter { range -> range.start >= start && range.endExclusive <= end }
     if (ranges.isEmpty()) return listOf(segment)
 
     val segments = mutableListOf<RoleplayTextSegment>()
@@ -379,12 +484,12 @@ private fun splitLongDashNarrationSegments(
 private fun excludedRoleplayRawRanges(content: String): List<VisibleRange> {
     if (content.isBlank()) return emptyList()
     val visible = visibleRoleplayText(content)
-    val ranges = parseRoleplayTextSegments(content)
+    val ranges = parseRoleplayTextSegments(content, visible)
         .asSequence()
         .filter { segment -> segment.kind == RoleplaySegmentKind.STATUS }
         .map { segment -> VisibleRange(segment.start, segment.endExclusive) }
         .toMutableList()
-    findLongDashWrappedRanges(visible.text, 0, visible.text.length).forEach { range ->
+    visible.longDashRanges.forEach { range ->
         val rawStart = visible.rawIndexes.getOrNull(range.start) ?: return@forEach
         val rawEnd = (visible.rawIndexes.getOrNull(range.endExclusive - 1) ?: return@forEach) + 1
         ranges += VisibleRange(rawStart, rawEnd)
@@ -409,10 +514,112 @@ private fun mergeVisibleRanges(ranges: List<VisibleRange>): List<VisibleRange> {
     return merged
 }
 
+private const val annotatedActionLabel = "（横线为选项包裹格式，必须完整输出）"
+private const val annotatedActionDashCount = 22
+internal val annotatedRoleplayActionOpening = "—".repeat(annotatedActionDashCount) + annotatedActionLabel
+private val annotatedActionBoundary = Regex(
+    "(?m)^ {0,3}(—{$annotatedActionDashCount}$annotatedActionLabel|" +
+        "$annotatedActionLabel—{$annotatedActionDashCount})[ \\t]*(?=\\r?\\n|\\z)",
+)
+private val annotatedActionBodyStart = Regex(
+    "(?:[ \\t]*\\r?\\n)*${actionOptionsHeading.pattern}\\r?\\n" +
+        "(?:[ \\t]*\\r?\\n)* {0,3}1\\.[ \\t]*\\S",
+)
+
+/** Match the partial opening only when the active format card established this option block. */
+internal fun isPendingAnnotatedRoleplayActionOpening(text: String): Boolean {
+    val line = text.lineSequence().first()
+    val opening = line.trim()
+    if (opening.isEmpty()) return false
+    if (opening != annotatedRoleplayActionOpening) {
+        return line.length == text.length && annotatedRoleplayActionOpening.startsWith(opening)
+    }
+
+    val heading = text.substring(line.length).trimStart().trimEnd(' ', '\t')
+    return actionOptionsTitle.startsWith(heading)
+}
+
+/** Recognize a received option suffix before its closing delimiter arrives. */
+internal fun isPendingRoleplayActionSuffix(text: String): Boolean {
+    val lines = text.lineSequence().filter { it.isNotBlank() }.toList()
+    val opening = lines.firstOrNull() ?: return false
+    val annotated = annotatedActionBoundary.matchEntire(opening)
+        ?.groupValues?.get(1)?.startsWith('—') == true
+    val delimiter = actionListBoundary.matchEntire(opening)?.groupValues?.get(1)
+    if (!annotated && delimiter?.isActionListDelimiter() != true) return false
+    val hasHeading = lines.getOrNull(1)?.let(actionOptionsHeading::matches) == true
+    if (annotated && !hasHeading) return false
+
+    // Without either the annotated delimiter or an exact heading, require two ordered choices.
+    val minimumOptions = when {
+        annotated -> 0
+        hasHeading -> 1
+        else -> 2
+    }
+    val options = lines.drop(if (hasHeading) 2 else 1)
+    val bullet = options.firstOrNull()?.takeIf { delimiter == "---" }?.let(::actionBullet)
+    val prefix = if (bullet == null) {
+        numberedActionPrefix(options, allowsContinuation = hasHeading && delimiter == "---")
+    } else {
+        val count = options.takeWhile { actionBullet(it) == bullet }.size
+        ActionListPrefix(count, count)
+    }
+    if (prefix.choices < minimumOptions) return false
+    if (prefix.consumed == options.size) return true
+    if (prefix.consumed != options.lastIndex) return false
+    val lastCharacter = text.trimEnd(' ', '\t').lastOrNull()
+    if (lastCharacter == '\n' || lastCharacter == '\r') return false
+
+    val line = options.last()
+    val content = line.trimStart(' ')
+    if (line.length - content.length > 3) return false
+    val closing = if (annotated) annotatedActionLabel + "—".repeat(annotatedActionDashCount) else requireNotNull(delimiter)
+    if (closing.startsWith(content)) return true
+    if (bullet != null) return content.trimEnd(' ', '\t') == bullet
+    val ordinal = prefix.choices + 1
+    val marker = "$ordinal."
+    if (marker.startsWith(content)) return true
+    if (!content.startsWith(marker)) return false
+    val partialBody = content.substring(marker.length).trim(' ', '\t')
+    return partialBody.length <= 2 && partialBody.all { it == '*' }
+}
+
+/** The labeled option block in the bundled roleplay preset has mirrored, exact delimiters. */
+internal fun roleplayAnnotatedActionRanges(text: String): List<IntRange> {
+    if (annotatedActionLabel !in text) return emptyList()
+    return buildList {
+        var opening: Int? = null
+        for (boundary in annotatedActionBoundary.findAll(text)) {
+            if (boundary.groupValues[1].startsWith('—')) {
+                opening = null
+                val lineEnd = boundary.range.last + 1
+                val newline = if (text.getOrNull(lineEnd) == '\r') lineEnd + 1 else lineEnd
+                if (text.getOrNull(newline) == '\n' && annotatedActionBodyStart.matchAt(text, newline + 1) != null) {
+                    opening = boundary.range.first
+                }
+            } else {
+                val start = opening ?: continue
+                add(start..boundary.range.last)
+                opening = null
+            }
+        }
+    }
+}
+
 private fun findLongDashWrappedRanges(text: String, start: Int, end: Int): List<VisibleRange> {
     val ranges = mutableListOf<VisibleRange>()
+    val annotatedActions = roleplayAnnotatedActionRanges(text)
+        .filter { range -> range.first >= start && range.last < end }
+        .associateBy { it.first }
     var lineStart = start
     while (lineStart < end) {
+        val annotated = annotatedActions[lineStart]
+        if (annotated != null) {
+            val endExclusive = annotated.last + 1
+            ranges += VisibleRange(annotated.first, endExclusive)
+            lineStart = nextLineStart(endExclusive, end)
+            continue
+        }
         val lineEnd = text.indexOf('\n', lineStart).takeIf { it >= 0 && it < end } ?: end
         val sameLineRanges = findSameLineLongDashWrappedRanges(text, lineStart, lineEnd)
         if (sameLineRanges.isNotEmpty()) {
@@ -528,23 +735,27 @@ private fun hasLongDashWrappedBody(text: String, start: Int, end: Int): Boolean 
     return text.substring(start, end).any { !it.isWhitespace() && !isLongWrapperDash(it) }
 }
 
-private fun isLongDashWrappedText(text: String): Boolean {
-    val trimmed = text.trim()
+private fun isLongDashWrappedSegment(segment: RoleplayTextSegment, visible: VisibleRoleplayText): Boolean {
+    val trimmed = visible.dashFenceText.substring(
+        segmentVisibleStart(segment, visible),
+        segmentVisibleEnd(segment, visible)
+    ).trim()
     val range = findLongDashWrappedRanges(trimmed, 0, trimmed.length).singleOrNull() ?: return false
     return range.start == 0 && range.endExclusive == trimmed.length
 }
 
 private fun splitRoleplayMarkers(
     segment: RoleplayTextSegment,
-    visible: VisibleRoleplayText
+    visible: VisibleRoleplayText,
+    literalCode: List<IntRange>,
 ): List<RoleplayTextSegment> {
     val start = segmentVisibleStart(segment, visible)
     val end = segmentVisibleEnd(segment, visible)
     val segments = mutableListOf<RoleplayTextSegment>()
     var cursor = start
     while (cursor < end) {
-        val nextDialogue = findNextDialogueOpen(visible.text, cursor, end)
-        val nextThought = findNextThoughtOpen(visible.text, cursor, end)
+        val nextDialogue = findNextDialogueOpen(visible.text, cursor, end, literalCode)
+        val nextThought = findNextThoughtOpen(visible.text, cursor, end, literalCode)
         val next = listOf(nextDialogue, nextThought).filter { it >= 0 }.minOrNull() ?: -1
         if (next < 0) {
             addTextSegment(segments, visible, RoleplaySegmentKind.NARRATION, cursor, end)
@@ -552,12 +763,12 @@ private fun splitRoleplayMarkers(
         }
         addTextSegment(segments, visible, RoleplaySegmentKind.NARRATION, cursor, next)
         if (next == nextDialogue) {
-            val close = findDialogueClose(visible.text, next, end)
+            val close = findDialogueClose(visible.text, next, end, literalCode)
             val segmentEnd = if (close >= 0) close else end
             addTextSegment(segments, visible, RoleplaySegmentKind.DIALOGUE, next, segmentEnd)
             cursor = segmentEnd
         } else {
-            val segmentEnd = findThoughtClose(visible.text, next, end)
+            val segmentEnd = findThoughtClose(visible.text, next, end, literalCode)
             addTextSegment(segments, visible, RoleplaySegmentKind.THOUGHT, next, segmentEnd)
             cursor = segmentEnd
         }
@@ -620,12 +831,49 @@ private fun segmentVisibleStart(segment: RoleplayTextSegment, visible: VisibleRo
 private fun segmentVisibleEnd(segment: RoleplayTextSegment, visible: VisibleRoleplayText): Int =
     visible.rawIndexes.indexOf(segment.endExclusive - 1).takeIf { it >= 0 }?.plus(1) ?: visible.text.length
 
-private fun findNextDialogueOpen(text: String, start: Int, end: Int): Int {
+internal fun roleplaySpokenDialogueRanges(
+    text: String,
+    nonProse: List<IntRange>,
+    includeUnclosed: Boolean,
+    historyClosingPositions: List<Int>,
+    isEscaped: (Int) -> Boolean,
+): List<IntRange> = buildList {
+    var cursor = 0
+    while (cursor < text.length) {
+        val open = findNextDialogueOpen(text, cursor, text.length, nonProse, isEscaped)
+        if (open < 0) break
+        val lineStart = maxOf(text.lastIndexOf('\n', open - 1), text.lastIndexOf('\r', open - 1)) + 1
+        val speaker = findRoleplaySpeakerPrefix(text, open, lineStart)?.takeIf { prefix ->
+            !isEscaped(prefix.start) && nonProse.none { prefix.start in it }
+        }
+        val close = findDialogueClose(text, open, text.length, nonProse, isEscaped)
+        val balanced = open until close
+        if (close > 0 && (speaker != null || isDialogueParenthesisClose(text[close - 1]) ||
+                historyClosingPositions.any { it in balanced })) {
+            add(balanced)
+            cursor = close
+        } else if (close < 0 && speaker != null && includeUnclosed) {
+            add(open until text.length)
+            break
+        } else {
+            cursor = open + 1
+        }
+    }
+}
+
+private fun findNextDialogueOpen(
+    text: String,
+    start: Int,
+    end: Int,
+    literalCode: List<IntRange>,
+    isEscaped: ((Int) -> Boolean)? = null,
+): Int {
     var index = start
     while (index < end) {
         if (
             isDialogueBracketOpen(text[index]) &&
-            (index == 0 || !isImageMarkerPrefix(text[index - 1]))
+            (index == 0 || !isImageMarkerPrefix(text[index - 1])) && literalCode.none { index in it } &&
+            isEscaped?.invoke(index) != true
         ) {
             return index
         }
@@ -634,9 +882,17 @@ private fun findNextDialogueOpen(text: String, start: Int, end: Int): Int {
     return -1
 }
 
-private fun findDialogueClose(text: String, open: Int, end: Int): Int {
+private fun findDialogueClose(
+    text: String,
+    open: Int,
+    end: Int,
+    literalCode: List<IntRange>,
+    isEscaped: ((Int) -> Boolean)? = null,
+): Int {
     var bracketClose = open + 1
-    while (bracketClose < end && !isDialogueBracketClose(text[bracketClose])) {
+    while (bracketClose < end && (!isDialogueBracketClose(text[bracketClose]) ||
+            literalCode.any { bracketClose in it } || isEscaped?.invoke(bracketClose) == true)
+    ) {
         bracketClose++
     }
     if (bracketClose >= end) return -1
@@ -644,25 +900,27 @@ private fun findDialogueClose(text: String, open: Int, end: Int): Int {
         return bracketClose + 1
     }
     var parenthesisClose = bracketClose + 2
-    while (parenthesisClose < end && !isDialogueParenthesisClose(text[parenthesisClose])) {
+    while (parenthesisClose < end && (!isDialogueParenthesisClose(text[parenthesisClose]) ||
+            literalCode.any { parenthesisClose in it } || isEscaped?.invoke(parenthesisClose) == true)
+    ) {
         parenthesisClose++
     }
     return if (parenthesisClose < end) parenthesisClose + 1 else bracketClose + 1
 }
 
-private fun findNextThoughtOpen(text: String, start: Int, end: Int): Int {
+private fun findNextThoughtOpen(text: String, start: Int, end: Int, literalCode: List<IntRange>): Int {
     var index = start
     while (index < end) {
-        if (isThoughtBracketOpen(text[index])) return index
+        if (isThoughtBracketOpen(text[index]) && literalCode.none { index in it }) return index
         index++
     }
     return -1
 }
 
-private fun findThoughtClose(text: String, open: Int, end: Int): Int {
+private fun findThoughtClose(text: String, open: Int, end: Int, literalCode: List<IntRange>): Int {
     var index = open + 1
     while (index < end) {
-        if (isThoughtBracketClose(text[index])) return index + 1
+        if (isThoughtBracketClose(text[index]) && literalCode.none { index in it }) return index + 1
         index++
     }
     return end
@@ -691,21 +949,26 @@ private fun isThoughtBracketClose(char: Char): Boolean =
 
 private fun attachRoleplaySpeakerPrefixes(
     content: String,
-    segments: List<RoleplayTextSegment>
+    segments: List<RoleplayTextSegment>,
+    visible: VisibleRoleplayText,
+    literalCode: List<IntRange>,
 ): List<RoleplayTextSegment> {
     val result = mutableListOf<RoleplayTextSegment>()
-    val visibleRawIndexes = visibleRoleplayText(content).rawIndexes.toHashSet()
+    val eligibleRawIndexes = visible.rawIndexes.toHashSet()
+    for (range in literalCode) {
+        for (index in range) eligibleRawIndexes.remove(visible.rawIndexes[index])
+    }
     var lastSpeakerName: String? = null
     var pendingSpeakerPrefix: RoleplaySpeakerPrefix? = null
     segments.forEach { segment ->
         if (segment.kind != RoleplaySegmentKind.DIALOGUE && segment.kind != RoleplaySegmentKind.THOUGHT) {
             result += segment
-            if (segment.kind == RoleplaySegmentKind.NARRATION && !isLongDashWrappedText(segment.rawText)) {
+            if (segment.kind == RoleplaySegmentKind.NARRATION && !isLongDashWrappedSegment(segment, visible)) {
                 findLastRoleplaySpeakerPrefix(
                     content = content,
                     start = segment.start,
                     endExclusive = segment.endExclusive,
-                    visibleRawIndexes = visibleRawIndexes
+                    eligibleRawIndexes = eligibleRawIndexes
                 )?.let { prefix ->
                     pendingSpeakerPrefix?.let { pending ->
                         hideRoleplaySpeakerMarkerInNarration(result, pending)
@@ -716,7 +979,7 @@ private fun attachRoleplaySpeakerPrefixes(
             return@forEach
         }
 
-        val directPrefix = findRoleplaySpeakerPrefix(content, segment.start)
+        val directPrefix = findRoleplaySpeakerPrefix(content, segment.start)?.takeIf { it.start in eligibleRawIndexes }
         val prefix = directPrefix ?: pendingSpeakerPrefix
         if (prefix == null) {
             result += segment.copy(speakerName = lastSpeakerName)
@@ -772,13 +1035,13 @@ private fun findLastRoleplaySpeakerPrefix(
     content: String,
     start: Int,
     endExclusive: Int,
-    visibleRawIndexes: Set<Int>
+    eligibleRawIndexes: Set<Int>
 ): RoleplaySpeakerPrefix? {
     val safeStart = start.coerceIn(0, content.length)
     val safeEnd = endExclusive.coerceIn(safeStart, content.length)
     val match = roleplaySpeakerMarkerPattern
         .findAll(content.substring(safeStart, safeEnd))
-        .lastOrNull { match -> safeStart + match.range.first in visibleRawIndexes }
+        .lastOrNull { match -> safeStart + match.range.first in eligibleRawIndexes }
         ?: return null
     return RoleplaySpeakerPrefix(
         start = safeStart + match.range.first,
@@ -786,16 +1049,16 @@ private fun findLastRoleplaySpeakerPrefix(
     )
 }
 
-private fun findRoleplaySpeakerPrefix(content: String, segmentStart: Int): RoleplaySpeakerPrefix? {
+private fun findRoleplaySpeakerPrefix(content: String, segmentStart: Int, minimumStart: Int = 0): RoleplaySpeakerPrefix? {
     var markerEnd = segmentStart.coerceIn(0, content.length)
-    while (markerEnd > 0 && content[markerEnd - 1].isWhitespace()) markerEnd--
-    if (markerEnd <= 0) return null
+    while (markerEnd > minimumStart && content[markerEnd - 1].isWhitespace()) markerEnd--
+    if (markerEnd <= minimumStart || content[markerEnd - 1] !in ">＞") return null
 
-    val match = roleplaySpeakerMarkerPattern.findAll(content.substring(0, markerEnd)).lastOrNull()
+    val match = roleplaySpeakerMarkerPattern.findAll(content.substring(minimumStart, markerEnd)).lastOrNull()
         ?: return null
-    if (match.range.last + 1 != markerEnd) return null
+    if (match.range.last + 1 != markerEnd - minimumStart) return null
     return RoleplaySpeakerPrefix(
-        start = match.range.first,
+        start = minimumStart + match.range.first,
         speakerName = match.groupValues[1].trim()
     )
 }
@@ -811,8 +1074,6 @@ private fun minLongWrapperDashCount(char: Char): Int =
 
 private const val LONG_WRAPPER_MIN_ASCII_DASHES = 6
 private const val LONG_WRAPPER_MIN_WIDE_DASHES = 4
-private const val HIDDEN_COMMENT_OPEN = "<!--"
-private const val HIDDEN_COMMENT_CLOSE = "-->"
 private val roleplaySpeakerMarkerPattern = Regex(
     pattern = "[<＜]\\s*[nｎ]\\s*[=＝]\\s*[\"“”＂]([^\\r\\n\"“”＂]*?)[\"“”＂]\\s*[/／]?\\s*[>＞]",
     option = RegexOption.IGNORE_CASE

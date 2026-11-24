@@ -9,7 +9,11 @@ import kotlinx.serialization.json.intOrNull
 
 /** Per-request decoder; tool argument fragments must never be rendered as raw JSON. */
 internal class ExperimentalToolReplyDecoder {
-    data class Completion(val remainingText: String, val toolReplyCompleted: Boolean)
+    data class Completion(
+        val remainingText: String,
+        val toolReplyCompleted: Boolean,
+        val partLengths: List<Int> = emptyList(),
+    )
 
     private class Call {
         val name = StringBuilder()
@@ -45,23 +49,48 @@ internal class ExperimentalToolReplyDecoder {
     }
 
     @Synchronized
-    fun finish(validate: Boolean = true): Completion {
+    fun finish(validate: Boolean = true, retainCompletePrefix: Boolean = false): Completion {
         if (completed) return Completion("", false)
         completed = true
         if (calls.isEmpty()) {
             if (validate) require(ordinaryText.isNotBlank()) { "实验模式未收到正文或 game_content 工具参数" }
             return Completion(ordinaryText.toString(), false)
         }
-        if (!validate) return Completion("", false)
-        val fullText = calls.values.joinToString("\n") { call ->
+        if (!validate && !retainCompletePrefix) return Completion("", false)
+        val parts = if (!validate) completeCallPrefix() else calls.entries.mapIndexed { expected, (index, call) ->
+            require(index == expected) { "实验模式工具调用索引不连续：预期 $expected，收到 $index" }
             require(call.name.toString() == ExperimentalToolChatPolicy.OUTPUT_TOOL) {
                 "实验模式收到非正文工具调用：${call.name}，预期 game_content"
             }
             decodeArguments(call.arguments.toString())
         }
-        require(fullText.startsWith(emitted.toString())) { "实验模式工具参数与已接收正文不一致" }
-        require(fullText.isNotBlank()) { "实验模式工具回复正文为空" }
-        return Completion(fullText.substring(emitted.length), true)
+        val fullText = parts.joinToString("\n")
+        val matchesEmitted = fullText.startsWith(emitted.toString())
+        if (!validate && !matchesEmitted) return Completion("", false)
+        require(matchesEmitted) { "实验模式工具参数与已接收正文不一致" }
+        if (validate) require(fullText.isNotBlank()) { "实验模式工具回复正文为空" }
+        val partLengths = if (parts.size > 1) parts.map(String::length) else emptyList()
+        return Completion(fullText.substring(emitted.length), validate, partLengths)
+    }
+
+    /** Snapshot buffered validated calls for user Stop without altering live or terminal output. */
+    @Synchronized
+    fun interruptedMultipartPrefix(): List<String> {
+        if (calls.size < 2) return emptyList()
+        val parts = completeCallPrefix()
+        return parts.takeIf { it.size > 1 && it.first().startsWith(emitted.toString()) }.orEmpty()
+    }
+
+    private fun completeCallPrefix(): List<String> = buildList {
+        for ((index, call) in calls) {
+            if (index != size || call.name.toString() != ExperimentalToolChatPolicy.OUTPUT_TOOL) break
+            val content = try {
+                decodeArguments(call.arguments.toString())
+            } catch (_: IllegalArgumentException) {
+                break
+            }
+            add(content)
+        }
     }
 
     companion object {

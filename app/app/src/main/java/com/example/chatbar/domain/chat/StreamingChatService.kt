@@ -68,8 +68,8 @@ private const val PARAM_REASONING_EFFORT = "reasoning_effort"
  * SSE 流事件
  */
 sealed class StreamEvent {
-    /** 增量文本片段 */
-    data class Delta(val text: String) : StreamEvent()
+    /** Validated tool-part lengths accompany the delta that completes the joined body. */
+    data class Delta(val text: String, val toolReplyPartLengths: List<Int> = emptyList()) : StreamEvent()
 
     /** Main-chat preview snapshot; canonical Delta output may replace it after tool selection. */
     data class ContentPreview(val text: String) : StreamEvent()
@@ -208,6 +208,7 @@ class StreamingChatService(
         ragChunks: List<String> = emptyList(),
         promptCacheKey: String? = null,
         maxTokens: Int? = null,
+        onToolReplyPrefixReader: ((() -> List<String>) -> Unit)? = null,
         onReplyCompletion: (ChatReplyCompletion) -> Unit = {}
     ): Flow<StreamEvent> = callbackFlow {
         val maxRetries = 2
@@ -254,6 +255,11 @@ class StreamingChatService(
                 val finishReasonObserved = AtomicBoolean(false)
                 val replyCompletion = AtomicReference(ChatReplyCompletion())
                 val toolDecoder = if (experimentalApiMode) ExperimentalToolReplyDecoder() else null
+                if (toolDecoder != null && onToolReplyPrefixReader != null) {
+                    onToolReplyPrefixReader {
+                        if (replyCompletion.get().refused) emptyList() else toolDecoder.interruptedMultipartPrefix()
+                    }
+                }
                 var previewedOrdinaryText = false
                 var finishReasonCompletionJob: Job? = null
 
@@ -275,14 +281,20 @@ class StreamingChatService(
                         try {
                             val evidence = replyCompletion.get()
                             val decoded = toolDecoder.finish(
-                                validate = completed && !evidence.refused && evidence.finishReason != "length"
+                                validate = completed && !evidence.refused && evidence.finishReason != "length",
+                                retainCompletePrefix = completed && !evidence.refused && evidence.finishReason == "length",
                             )
                             if (decoded.remainingText.isNotEmpty()) {
                                 DebugLogManager.appendResponseChunk(mainLogId, "", decoded.remainingText)
-                                trySend(StreamEvent.Delta(decoded.remainingText))
+                                trySend(StreamEvent.Delta(decoded.remainingText, decoded.partLengths))
                             }
-                            if (decoded.toolReplyCompleted) {
-                                replyCompletion.updateAndGet { it.copy(toolReplyCompleted = true) }
+                            if (decoded.toolReplyCompleted || decoded.partLengths.isNotEmpty()) {
+                                replyCompletion.updateAndGet {
+                                    it.copy(
+                                        toolReplyCompleted = decoded.toolReplyCompleted,
+                                        toolReplyPartLengths = decoded.partLengths,
+                                    )
+                                }
                             } else if (completed && !toolDecoder.hasToolCalls) {
                                 DebugLogManager.appendResponseChunk(mainLogId, "[实验模式] 模型返回普通文本，未调用 game_content")
                             }
@@ -470,7 +482,9 @@ class StreamingChatService(
         taskContext: AiTaskContext? = null,
         reasoningEffort: String? = null,
         isolatedTaskParameters: Boolean = false,
-        responseFormatJson: Boolean = false
+        responseFormatJson: Boolean = false,
+        emitOrdinaryPreview: Boolean = false,
+        onToolReplyPrefixReader: ((() -> List<String>) -> Unit)? = null,
     ): Flow<StreamEvent> = callbackFlow {
         val context = taskContext?.forRequest()
         val actualMessages = context?.let { AiTaskMessageAssembler.assemble(messages, it) } ?: messages
@@ -514,6 +528,13 @@ class StreamingChatService(
         var graceJob: Job? = null
         var inactivityJob: Job? = null
         var lastMeaningfulEvent = System.nanoTime()
+        if (toolDecoder != null && onToolReplyPrefixReader != null) {
+            onToolReplyPrefixReader {
+                synchronized(lock) {
+                    if (refused) emptyList() else toolDecoder.interruptedMultipartPrefix()
+                }
+            }
+        }
 
         fun fail(eventSource: EventSource, error: Throwable) {
             if (!closed.compareAndSet(false, true)) return
@@ -540,7 +561,7 @@ class StreamingChatService(
                             text.append(decoded.remainingText)
                             progress?.append(logId, null, decoded.remainingText)
                             DebugLogManager.appendResponseChunk(logId, "", decoded.remainingText)
-                            trySend(StreamEvent.Delta(decoded.remainingText))
+                            trySend(StreamEvent.Delta(decoded.remainingText, decoded.partLengths))
                         }
                         if (!toolDecoder.hasToolCalls) {
                             DebugLogManager.appendResponseChunk(logId, "[实验模式] 模型返回普通文本，未调用 game_content")
@@ -591,9 +612,11 @@ class StreamingChatService(
                             if (!toolDecoder.hasToolCalls && !rawDelta.content.isNullOrEmpty()) {
                                 previewedOrdinaryText = true
                                 progress?.replaceContent(logId, toolDecoder.ordinaryContent)
+                                if (emitOrdinaryPreview) trySend(StreamEvent.ContentPreview(toolDecoder.ordinaryContent))
                             } else if (toolDecoder.hasToolCalls && previewedOrdinaryText) {
                                 previewedOrdinaryText = false
                                 progress?.replaceContent(logId, text.toString())
+                                if (emitOrdinaryPreview) trySend(StreamEvent.ContentPreview(""))
                             }
                             rawDelta.copy(content = decodedContent)
                         }
@@ -1017,7 +1040,7 @@ class StreamingChatService(
                 is JsonPrimitive -> part.contentOrNull ?: ""
                 else -> ""
             }
-        }.takeIf(String::isNotBlank)
+        }.takeIf(String::isNotEmpty)
         else -> null
     }
 

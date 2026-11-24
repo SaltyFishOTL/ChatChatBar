@@ -23,7 +23,7 @@ if (isolatedAndroidTest) {
 android {
     namespace = "com.example.chatbar"
     compileSdk = 36
-    val baseVersionCode = 91
+    val baseVersionCode = 92
     val releaseKeystorePath = providers.environmentVariable("ANDROID_KEYSTORE_PATH")
     val releaseKeystorePassword = providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD")
     val releaseKeyAlias = providers.environmentVariable("ANDROID_KEY_ALIAS")
@@ -53,7 +53,7 @@ android {
             ?: baseVersionCode
         versionName = providers.gradleProperty("CHATBAR_VERSION_NAME")
             .orElse(providers.environmentVariable("CHATBAR_VERSION_NAME"))
-            .orElse("1.4.12")
+            .orElse("1.4.13")
             .get()
         fun configValue(name: String, defaultValue: String = ""): String =
             providers.gradleProperty(name)
@@ -166,6 +166,7 @@ dependencies {
   androidTestImplementation(libs.androidx.test.ext.junit)
   androidTestImplementation(libs.androidx.test.runner)
   androidTestImplementation(libs.androidx.test.espresso.core)
+  androidTestImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 
   // Navigation
   implementation(libs.androidx.navigation3.ui)
