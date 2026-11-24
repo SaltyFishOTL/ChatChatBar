@@ -25,8 +25,7 @@ class MessageFormatRepairService(
 
         private fun dispatchEvidence(): NarrativeHistoryEcho.RepairDispatch {
             val authoredSections = listOfNotNull(formatCard, segmentedBubbleFormat, originalContent)
-            val boundaries = mutableListOf<String>()
-            var messageBoundary: String? = null
+            val generatedBoundaries = mutableListOf<String>()
             var start = 0
             for ((index, authoredContent) in authoredSections.withIndex()) {
                 val boundaryEnd = userPrompt.indexOf('\n', start)
@@ -40,13 +39,11 @@ class MessageFormatRepairService(
                 if (isMessageBoundary && contentEnd != userPrompt.length ||
                     !isMessageBoundary && !userPrompt.startsWith("\n\n", contentEnd)
                 ) return NarrativeHistoryEcho.RepairDispatch()
-                val boundary = userPrompt.substring(start, boundaryEnd)
-                if (authoredSections.none { boundary in it }) {
-                    boundaries += boundary
-                    if (isMessageBoundary) messageBoundary = boundary
-                }
+                generatedBoundaries += userPrompt.substring(start, boundaryEnd)
                 start = contentEnd + 2
             }
+            val boundaries = generatedBoundaries.filter { boundary -> authoredSections.none { boundary in it } }
+            val messageBoundary = generatedBoundaries.last().takeIf { it in boundaries }
             val preamble = systemPrompt.lineSequence().first()
             val sentenceEnd = preamble.indexOfFirst { it in ".。!?！？" }
             val firstSentence = if (sentenceEnd < 0) preamble else preamble.take(sentenceEnd + 1)
@@ -60,6 +57,9 @@ class MessageFormatRepairService(
             return NarrativeHistoryEcho.RepairDispatch(
                 boundaries, authoredSections, continuations, fullUnlabelledIntroduction,
                 unlabelledSystemBlock = systemPrompt.takeUnless { hasAuthoredSystemBlock },
+                userPromptBlock = userPrompt.takeIf {
+                    generatedBoundaries.size >= 2 && !NarrativeHistoryEcho.isAuthoredRepairSystemText(authoredSections, it)
+                },
             )
         }
     }

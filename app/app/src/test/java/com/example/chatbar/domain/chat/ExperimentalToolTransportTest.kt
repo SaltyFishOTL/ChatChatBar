@@ -296,8 +296,11 @@ class ExperimentalToolTransportTest {
         narrativeModesEnabled: Boolean = true,
         issueRoutineHistoryHeading: Boolean = false,
         checkHeldStop: Boolean = false,
+        requestNarrativeMode: ChatNarrativeMode? = null,
     ): String {
-        val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.FOCUS.takeIf { narrativeModesEnabled }, formatCard)
+        val cleanup = NarrativeHistoryEcho.forRequest(
+            (requestNarrativeMode ?: ChatNarrativeMode.FOCUS).takeIf { narrativeModesEnabled }, formatCard,
+        )
         val request = messages.toMutableList()
         userText?.let {
             cleanup.recordNarrativePrompt("", it)
@@ -318,6 +321,12 @@ class ExperimentalToolTransportTest {
         }
         formatCard?.let {
             request.add(1, ChatApiMessage.text("system", PromptTemplates.currentTurnOutputRequirementsSystemPrompt(it, 300)))
+        }
+        val modeTail = requestNarrativeMode?.let { mode ->
+            ChatHistoryPromptPolicy.narrativeTailDispatch(mode, listOfNotNull(previousAssistant), null).also {
+                request.add(ChatApiMessage.text("system", it.text))
+                it.record(cleanup, userText)
+            }
         }
         val frames = parts.mapIndexed { index, part ->
             chunk(buildJsonObject { put("content", part) }.toString(), "game_content", index = index)
@@ -363,6 +372,11 @@ class ExperimentalToolTransportTest {
                 .single { it.getValue("name").jsonPrimitive.content == "context" }
                 .getValue("description").jsonPrimitive.content
             val sentHistory = Json.parseToJsonElement(sent).jsonArray
+            if (modeTail != null) assertTrue(sentHistory.any {
+                val item = it.jsonObject
+                item.getValue("role").jsonPrimitive.content == "system" &&
+                    item.getValue("content").jsonPrimitive.content == modeTail.text
+            })
             if (userText != null) assertTrue(sentHistory.any {
                 val item = it.jsonObject
                 item.getValue("role").jsonPrimitive.content == "user" &&
@@ -384,6 +398,49 @@ class ExperimentalToolTransportTest {
             assertEquals("Preview", expected, cleanup.completedBody(raw, partLengths = lengths, streaming = true))
             assertEquals("Stop", expected, cleanup.completedBody(raw, partLengths = lengths, interrupted = true))
             done
+        }
+    }
+
+    @Test
+    fun `exact dispatched switch inside its own validated tool call stays out of the story`() = runBlocking {
+        val first = "The lantern went out.\r\n"
+        val second = "The old door opened."
+        for (mode in ChatNarrativeMode.entries) {
+            val previous = ChatNarrativeMode.entries.first { it != mode }
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Waiting.").copy(narrativeMode = previous)
+            val switch = PromptTemplates.narrativeModeTailSystemPrompt(mode, previous).lineSequence().drop(1).first()
+            val parts = listOf(first, switch, second)
+            assertMultipartNarrativeReply(parts, parts.joinToString("\n"), previousAssistant = prior, checkHeldStop = true)
+            val quoted = listOf("The note quoted this line:", switch, "She folded the note.")
+            assertMultipartNarrativeReply(
+                quoted, quoted.joinToString("\n"), previousAssistant = prior, requestNarrativeMode = mode, checkHeldStop = true,
+            )
+            val fenced = listOf("She unfolded the note.\n~~~text", switch, "~~~\n$second")
+            assertMultipartNarrativeReply(
+                fenced, fenced.joinToString("\n"), previousAssistant = prior, requestNarrativeMode = mode, checkHeldStop = true,
+            )
+            assertMultipartNarrativeReply(
+                parts, "$first\n$second", previousAssistant = prior, requestNarrativeMode = mode, checkHeldStop = true,
+            )
+        }
+    }
+
+    @Test
+    fun `isolated sent history headings keep adjacent tool call line breaks`() = runBlocking {
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "She waited.")
+        val heading = PromptTemplates.sectionHeading(PromptTemplates.SECTION_PREVIOUS_TURN)
+        val prose = "She walked through the door."
+        for ((parts, expected) in listOf(
+            listOf(heading, "\r\n$prose") to "\r\n$prose",
+            listOf("$prose\r\n", heading) to "$prose\r\n",
+        )) {
+            assertMultipartNarrativeReply(
+                parts, parts.joinToString("\n"), previousAssistant = prior, narrativeModesEnabled = false, checkHeldStop = true,
+            )
+            assertMultipartNarrativeReply(
+                parts, expected, previousAssistant = prior, narrativeModesEnabled = false,
+                issueRoutineHistoryHeading = true, checkHeldStop = true,
+            )
         }
     }
 
@@ -6941,6 +6998,64 @@ class ExperimentalToolTransportTest {
         val issued = MessageFormatRepairService.PreparedRequest(original, null, null).systemPrompt
         assertRepairBoundaryReply(original, null, null, listOf(issued, revised), revised,
             experimental = true, tool = true, expectedFirstPreview = "")
+    }
+
+    @Test
+    fun `exact multi section repair user prompt stays out of replacement prose`() = runBlocking {
+        val original = "The door was open."
+        val card = "Retain all dialogue."
+        val bubble = "Keep each speaker on a separate line."
+        val revised = "The door clicked shut."
+        val following = "The lamp went out."
+        val payload = MessageFormatRepairService.PreparedRequest(original, card, bubble).userPrompt
+        val echoed = "$payload\n\n$revised"
+        for (experimental in listOf(false, true)) {
+            val literal = "~~~text\n$payload\n~~~\n\n$revised"
+            assertRepairBoundaryReply(original, card, bubble, listOf(literal), literal, experimental, tool = false)
+            val altered = payload.replace(card, "$card Edited.")
+            val alteredReply = "$altered\n\n$revised"
+            assertRepairBoundaryReply(
+                original, card, bubble, listOf(alteredReply), alteredReply.substringAfter('\n'), experimental, tool = false,
+            )
+            val single = MessageFormatRepairService.PreparedRequest(original, null, null).userPrompt
+            assertRepairBoundaryReply(
+                original, null, null, listOf("$single\n\n$revised"), "$original\n\n$revised", experimental, tool = false,
+            )
+            assertRepairBoundaryReply(payload, card, bubble, listOf(echoed), echoed, experimental, tool = false)
+            assertRepairBoundaryReply(original, card, bubble, listOf(echoed), revised, experimental, tool = false)
+        }
+        assertRepairBoundaryReply(
+            original, card, bubble, listOf(revised, payload, following), "$revised\n$following",
+            experimental = true, tool = true, expectedFirstPreview = revised,
+        )
+        val cardWithLiteralHeading = "$card Mention {待修复消息} exactly."
+        val mixed = MessageFormatRepairService.PreparedRequest(original, cardWithLiteralHeading, bubble).userPrompt
+        assertRepairBoundaryReply(
+            original, cardWithLiteralHeading, bubble, listOf(mixed.replace("\n", "\r\n") + "\r\n\r\n$revised"),
+            revised, experimental = false, tool = false,
+        )
+    }
+
+    @Test
+    fun `partial next repair system rule after four exact lines stays out of preview and Stop`() = runBlocking {
+        val original = "The lamp was out."
+        val card = "Keep the sentence short."
+        val revised = "The lamp flickered."
+        val issued = MessageFormatRepairService.PreparedRequest(original, card, null).systemPrompt
+        val lines = issued.lines()
+        val fragment = (lines.take(4) + lines[4].take(14)).joinToString("\n")
+        val echo = "$issued\n\n$revised"
+        for ((experimental, tool) in listOf(false to false, true to false, true to true)) {
+            val literal = "$fragment\n\n$revised"
+            assertRepairBoundaryReply(
+                "$original\n\n$fragment", card, null, listOf(literal), literal, experimental, tool,
+                expectedFirstPreview = fragment, expectedStopped = fragment, firstWireFragment = fragment,
+            )
+            assertRepairBoundaryReply(
+                original, card, null, listOf(echo), revised, experimental, tool,
+                expectedFirstPreview = "", expectedStopped = "", firstWireFragment = fragment,
+            )
+        }
     }
 
     @Test
