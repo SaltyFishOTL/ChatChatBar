@@ -153,12 +153,13 @@ object NarrativeHistoryEcho {
             "请(?:逐字|原样)(?:复制|照抄)以下(?:文字|文本)[，,]?[ \\t]*并保留首尾标签)[：:][ \\t]*",
         RegexOption.IGNORE_CASE,
     )
+    private const val citationXmlBoundary = "(?:its|the)[ \\t]+(?:(?:outer|surrounding)[ \\t]+)?XML[ \\t]+(?:wrapper|history[ \\t]+tags)"
     private val exactPreviousReplyCitation = Regex(
         " {0,3}(?:please[ \\t]+)?(?:quote|copy|reproduce)[ \\t]+the[ \\t]+" +
             "(?:previous|last|immediately[ \\t]+preceding)[ \\t]+" +
             "(?:assistant(?:[’']s)?[ \\t]+)?(?:displayed[ \\t]+)?(?:answer|reply|response)[ \\t]+(?:" +
-            "(?:with|including)[ \\t]+(?:its|the)[ \\t]+XML[ \\t]+history[ \\t]+tags[ \\t]+(?:verbatim|exactly)|" +
-            "(?:literally|verbatim)[ \\t]+with[ \\t]+(?:its|the)[ \\t]+XML[ \\t]+history[ \\t]+tags|" +
+            "(?:with|including|along[ \\t]+with)[ \\t]+$citationXmlBoundary(?:[ \\t]+(?:verbatim|exactly))?|" +
+            "(?:literally|verbatim)[ \\t]+with[ \\t]+$citationXmlBoundary|" +
             "verbatim,[ \\t]+including[ \\t]+both[ \\t]+XML[ \\t]+history[ \\t]+tags|" +
             "(?:literally|verbatim),[ \\t]+with[ \\t]+the[ \\t]+surrounding[ \\t]+XML[ \\t]+included)" +
             "(?:,[ \\t]+then[ \\t]+(?:explain[ \\t]+(?:(?<plainProse>in[ \\t]+plain[ \\t]+prose)|[^\\r\\n.!?]+)|" +
@@ -170,6 +171,21 @@ object NarrativeHistoryEcho {
     private val exactPreviousReplyCitationInChinese = Regex(
         " {0,3}请?(?:原样|逐字)引用(?:上一条|上一轮)(?:助手|助理)(?:回复|回答)[，,][ \\t]*" +
             "(?:连同|并保留)(?:外层的?)?[ \\t]*XML[ \\t]*历史标签[。.!！]?[ \\t]*",
+        RegexOption.IGNORE_CASE,
+    )
+    private const val xmlExampleTerm = "(?:sample|example)"
+    private const val xmlElementTerm = "XML(?:[ \\t]+(?:element|tag|snippet|block))?"
+    private val plainXmlExampleRequest = Regex(
+        " {0,3}(?:please[ \\t]+)?(?:show|give|provide|display|print|output)[ \\t]+(?:me[ \\t]+)?" +
+            "(?:an?|one)[ \\t]+(?:$xmlExampleTerm[ \\t]+(?:of[ \\t]+(?:an?[ \\t]+)?)?$xmlElementTerm|" +
+            "$xmlElementTerm[ \\t]+$xmlExampleTerm)[ \\t]+(?:as|in)[ \\t]+plain[ \\t]+text" +
+            "(?:[.!?][ \\t]*(?:\\r?\\n {0,3})?(?:please[ \\t]+)?(?:put|place|write|show)[ \\t]+" +
+            "(?:the|a)[ \\t]+caption[ \\t]+(?:before|above)[ \\t]+the[ \\t]+$xmlExampleTerm)?" +
+            "[.!?]?[ \\t]*",
+        RegexOption.IGNORE_CASE,
+    )
+    private val xmlExampleCaption = Regex(
+        " {0,3}(?:$xmlExampleTerm[ \\t]+$xmlElementTerm|$xmlElementTerm[ \\t]+$xmlExampleTerm)[ \\t]*[:：][ \\t]*",
         RegexOption.IGNORE_CASE,
     )
     private val standaloneOpeningInstruction = Regex(
@@ -394,6 +410,7 @@ object NarrativeHistoryEcho {
         private val authoredModeBlockSources = mutableSetOf<String>()
         private val currentHeadingSources = mutableSetOf<String>()
         private var omitInheritedXmlTemplates = false
+        private var preserveCaptionedXmlExamples = false
         private var currentLiteralOutput = LiteralOutput()
 
         fun recordNarrativePrompt(
@@ -492,14 +509,15 @@ object NarrativeHistoryEcho {
             }
             recordCurrentOutput(authoredSources[source] ?: declaredUserOutput(source))
             omitInheritedXmlTemplates = currentUserOmitsXml(source)
-            val citationSource = citationWithoutOuterPadding(source)
-            val citation = exactPreviousReplyCitation.matchEntire(citationSource)
+            val requestText = requestWithoutOuterPadding(source)
+            preserveCaptionedXmlExamples = plainXmlExampleRequest.matches(requestText)
+            val citation = exactPreviousReplyCitation.matchEntire(requestText)
             citeLatestProjectionVerbatim = citation != null ||
-                exactPreviousReplyCitationInChinese.matches(citationSource)
+                exactPreviousReplyCitationInChinese.matches(requestText)
             explainCitationInPlainProse = citation?.groups?.get("plainProse") != null
         }
 
-        private fun citationWithoutOuterPadding(source: String): CharSequence {
+        private fun requestWithoutOuterPadding(source: String): CharSequence {
             var start = 0
             while (start < source.length) {
                 var afterPadding = start
@@ -871,6 +889,7 @@ object NarrativeHistoryEcho {
                 cleanPartOrphan = { part, isJoinedLiteral ->
                     withoutOrphanClosing(part, closings, provisional, formatOutput, ::authoredClosingEvidence, isJoinedLiteral)
                 },
+                preserveCaptionedXmlExamples = preserveCaptionedXmlExamples,
             )
             if (cleaned != body) {
                 return preservedPrefix + removeDispatchEchoBeforeTrailer(cleaned)
@@ -2209,6 +2228,7 @@ object NarrativeHistoryEcho {
         protectCaptionedPartHeading: Boolean = false,
         isQuotedDispatchBlock: (Int) -> Boolean = { false },
         cleanPartOrphan: ((String, (Int) -> Boolean) -> String)? = null,
+        preserveCaptionedXmlExamples: Boolean = false,
     ): String {
         fun clean(part: String, requirePair: Boolean = false) = cleanReply(
             part, streaming, interrupted, requirePair = requirePair, formatOutput = formatOutput,
@@ -2344,9 +2364,10 @@ object NarrativeHistoryEcho {
                     var cleaned = cleanParts(first, first)
                     var next = first + 1
                     val followsExampleLead = (cleaned.matchedOuterPair || cleaned.couldSpanToolCalls) &&
-                        joinedLiterals.matchesVisibleLine(
-                            previousVisibleLine(joinedLiterals.markdown, parts[first].first), metadataExampleBridge,
-                        )
+                        previousVisibleLine(joinedLiterals.markdown, parts[first].first).let { lead ->
+                            joinedLiterals.matchesVisibleLine(lead, metadataExampleBridge) ||
+                                preserveCaptionedXmlExamples && joinedLiterals.matchesVisibleLine(lead, xmlExampleCaption)
+                        }
                     if (cleaned.matchedOuterPair &&
                         (followsExampleLead || explainsPreviousExample(next, afterFrame = true) || isBoundedLogQuotation(first, first))
                     ) {

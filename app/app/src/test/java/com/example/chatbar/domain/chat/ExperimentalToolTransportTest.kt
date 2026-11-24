@@ -514,6 +514,85 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `an explicitly requested plain XML sample keeps its captioned tool call intact`(): Unit = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "A real preceding scene.").copy(narrativeMode = mode)
+        val example = PromptTemplates.narrativeModeHistoryReply("A fictional excerpt.", mode)
+        val caption = "Example XML:"
+        val explanation = "The element stores a story excerpt."
+        val parts = listOf(caption, example, explanation)
+        val raw = parts.joinToString("\n")
+        val user = "Show a sample XML element as plain text. Put the caption before the sample."
+        assertMultipartNarrativeReply(
+            parts, "$caption\nA fictional excerpt.\n$explanation", previousAssistant = prior, checkHeldStop = true,
+        )
+        assertMultipartNarrativeReply(
+            listOf("She put down the book.", example, "Then she went out."),
+            "She put down the book.\nA fictional excerpt.\nThen she went out.",
+            previousAssistant = prior, userText = user, checkHeldStop = true,
+        )
+        assertNarrativeReplyDeltas(
+            listOf(raw), listOf(raw), raw, previousAssistant = prior, currentUserText = user,
+            requestNarrativeMode = mode, experimental = false, checkHeldStop = true,
+        )
+        assertMultipartNarrativeReply(parts, raw, previousAssistant = prior, userText = user, checkHeldStop = true)
+    }
+
+    @Test
+    fun `a quote of the previous answer with its XML wrapper survives the explanation paragraph`(): Unit = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val body = "The window opened."
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, body).copy(narrativeMode = mode)
+        val projection = PromptTemplates.narrativeModeHistoryReply(body, mode)
+        val suffix = "\n\nThis XML element is a literal copy of the preceding reply."
+        val raw = projection + suffix
+        val user = "Please quote the previous answer along with its XML wrapper, then explain the example."
+        for ((experimental, tool) in listOf(false to false, true to false, true to true)) {
+            assertNarrativeReplyDeltas(
+                listOf(raw), listOf(body + suffix), body + suffix, previousAssistant = prior,
+                currentUserText = "Continue the scene.", requestNarrativeMode = mode, experimental = experimental, toolCall = tool,
+            )
+            assertNarrativeReplyDeltas(
+                listOf(raw), listOf(raw), raw, previousAssistant = prior, currentUserText = user,
+                requestNarrativeMode = mode, experimental = experimental, toolCall = tool, checkHeldStop = true,
+            )
+        }
+        assertMultipartNarrativeReply(
+            listOf(projection, suffix.removePrefix("\n")), raw,
+            previousAssistant = prior, userText = user, checkHeldStop = true,
+        )
+    }
+
+    @Test
+    fun `simple own line wrappers preserve proved body bytes and normalize undecidable padding`(): Unit = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val prose = "The window opened."
+        val padded = "\n$prose  \n"
+        val raw = PromptTemplates.narrativeModeHistoryReply(padded, mode)
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "A different scene.").copy(narrativeMode = mode)
+        val exactPrior = prior.copy(content = padded)
+        val parts = listOf(raw.lineSequence().first(), padded, "</历史回复>")
+        assertEquals(raw, parts.joinToString("\n"))
+        assertNarrativeReplyDeltas(
+            listOf(raw), listOf(prose), prose, previousAssistant = prior,
+            requestNarrativeMode = mode, experimental = false, checkHeldStop = true,
+        )
+        assertNarrativeReplyDeltas(
+            listOf(raw), listOf(padded), padded, previousAssistant = exactPrior,
+            requestNarrativeMode = mode, experimental = false, checkHeldStop = true,
+        )
+        assertMultipartNarrativeReply(parts, padded, previousAssistant = prior, checkHeldStop = true)
+
+        val sample = PromptTemplates.narrativeModeHistoryReply("Literal training example.", mode)
+        val card = "以下是禁止输出的反例：\n$sample"
+        assertRepairBoundaryReply("The window was closed.", card, null, listOf(raw), prose, experimental = false, tool = false)
+        assertRepairBoundaryReply(
+            "The window was closed.", card, null, parts, padded,
+            experimental = true, tool = true, expectedFirstPreview = "",
+        )
+    }
+
+    @Test
     fun `actual streams honor verbatim copies and explicit tags inside a separate history echo`(): Unit = runBlocking {
         val opening = "<历史回复 模式=\"聚焦\">"
         val closing = "</历史回复>"
