@@ -1706,18 +1706,24 @@ class NarrativeHistoryWireTest {
                 val saved = ChatRepository(JsonFileStorage(app)).getMessages(session.id).single()
                 assertEquals(message.id, saved.id)
                 assertEquals(expected, saved.displayContent)
+                val stoppedWithoutReplacement = stop && expected == original && toolIndexes == null &&
+                    orphan != RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY
                 val expectedNotice = when {
                     toolIndexes != null || orphan == RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY || echoUserPayload && !stop ->
                         MessageFormatRepairNoticeKind.ERROR
+                    stoppedWithoutReplacement -> message.formatRepairNotice?.kind
                     stop -> MessageFormatRepairNoticeKind.STOPPED
                     else -> MessageFormatRepairNoticeKind.APPLIED
                 }
                 assertEquals(expectedNotice, saved.formatRepairNotice?.kind)
-                if (orphan == RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY || echoUserPayload && !stop) {
+                if (stoppedWithoutReplacement) {
+                    // An empty cleaned prefix leaves the display and its existing recovery state untouched.
+                    assertEquals(message.formatRepairNotice, saved.formatRepairNotice)
+                } else if (orphan == RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY || echoUserPayload && !stop) {
                     assertNull(saved.formatRepairNotice?.originalContent)
                     assertEquals("格式修复模型返回空结果", saved.formatRepairNotice?.errorMessage)
                 } else if (toolIndexes == null) assertEquals(original, saved.formatRepairNotice?.originalContent)
-                assertEquals(expected, saved.formatRepairNotice?.targetContent)
+                if (!stoppedWithoutReplacement) assertEquals(expected, saved.formatRepairNotice?.targetContent)
             } finally {
                 try {
                     editor?.let { vm ->
