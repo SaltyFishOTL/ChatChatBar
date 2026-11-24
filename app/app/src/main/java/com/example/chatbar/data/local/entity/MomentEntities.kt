@@ -5,6 +5,14 @@ import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
 @Serializable
+data class MomentImageVersion(
+    val id: String,
+    val imagePath: String,
+    val imagePrompt: String = "",
+    val generatedImageMetadata: GeneratedImageMetadata? = null
+)
+
+@Serializable
 data class MomentPost(
     val id: String,
     val characterCardId: String,
@@ -27,7 +35,8 @@ data class MomentPost(
     val scheduledAt: Long,
     val generatedAt: Long,
     val createdAt: Long = generatedAt,
-    val updatedAt: Long = generatedAt
+    val updatedAt: Long = generatedAt,
+    val imageVersions: List<MomentImageVersion> = emptyList()
 ) {
     val displayLikeCount: Int
         get() = (if (isPrivate) 0 else baseLikeCount) + if (userLiked) 1 else 0

@@ -1,0 +1,719 @@
+package com.example.chatbar.ui.character
+
+import android.graphics.Bitmap
+import android.net.Uri
+import android.system.Os
+import android.system.OsConstants
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.platform.app.InstrumentationRegistry
+import com.example.chatbar.BuildConfig
+import com.example.chatbar.ChatBarApp
+import com.example.chatbar.data.local.JsonFileStorage
+import com.example.chatbar.data.local.entity.CharacterCard
+import com.example.chatbar.data.local.entity.CharacterInfo
+import com.example.chatbar.data.local.entity.DocumentInfo
+import com.example.chatbar.data.local.entity.EditorDraftType
+import com.example.chatbar.data.repository.EditorDraftRepository
+import com.example.chatbar.domain.draft.CharacterOpenModalKind
+import com.example.chatbar.domain.draft.CharacterOpenModalState
+import com.example.chatbar.domain.image.ImageCropFractionRect
+import java.util.UUID
+import java.io.File
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import org.junit.After
+import org.junit.Assert.*
+import org.junit.Assume.assumeTrue
+import org.junit.Before
+import org.junit.Test
+
+/** Real retained editors, formal saves and private draft files. No model or image requests. */
+class CharacterDraftSaveLifecycleTest {
+    private lateinit var app: ChatBarApp
+    private val stores = mutableListOf<ViewModelStore>()
+    private val cardIds = mutableListOf<String>()
+    private val files = mutableListOf<File>()
+
+    @Before fun setup() = runBlocking<Unit> {
+        assumeTrue("Use the repository-supported isolated Android test build", BuildConfig.ISOLATED_ANDROID_TEST)
+        val id = InstrumentationRegistry.getInstrumentation().targetContext.packageName
+        check(id == BuildConfig.APPLICATION_ID && id.startsWith("com.example.chatbar."))
+        app = ApplicationProvider.getApplicationContext()
+        withTimeout(30_000) { app.dependenciesReady.first { it } }
+    }
+
+    @After fun cleanup() = runBlocking<Unit> {
+        if (!::app.isInitialized) return@runBlocking
+        withContext(Dispatchers.Main) { stores.forEach(ViewModelStore::clear) }
+        cardIds.forEach {
+            app.editorDraftRepository.deleteForTarget(EditorDraftType.CHARACTER_CARD, it)
+            app.characterRepository.delete(it)
+        }
+        files.forEach { it.delete() }
+    }
+
+    @Test fun formalSaveDoesNotRecreateDraftWhenOpeningAnotherCard() = runBlocking<Unit> {
+        verifyCardSwitch(otherEdited = false)
+    }
+
+    @Test fun formalSaveDoesNotRecreateDraftOrDeleteOtherCardsRealDraft() = runBlocking<Unit> {
+        verifyCardSwitch(otherEdited = true)
+    }
+
+    @Test fun successfulFormalSaveClearsSavedDraftStatus() = runBlocking<Unit> {
+        val card = card()
+        val vm = editor(card.id)
+        editAndSaveDraft(vm, "saved name-${UUID.randomUUID()}")
+        withContext(Dispatchers.Main) { assertNotNull(vm.draftSavedAt) }
+        action { vm.saveCharacterCard(it) }
+        withContext(Dispatchers.Main) {
+            assertNull("Formal save must clear the old draft banner", vm.draftSavedAt)
+            assertFalse(vm.hasLocalChanges)
+            assertFalse(vm.hasUnsavedDraftChanges)
+        }
+        assertNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, card.id))
+    }
+
+    @Test fun formalSaveAfterViewingOriginalRemovesTheIgnoredDraftAndItsAssets() = runBlocking<Unit> {
+        verifyFormalSaveAfterViewingOriginal(newerDraftWritten = false)
+    }
+
+    @Test fun formalSaveAfterViewingOriginalPreservesANewerDraftAndItsAssets() = runBlocking<Unit> {
+        verifyFormalSaveAfterViewingOriginal(newerDraftWritten = true)
+    }
+
+    private suspend fun verifyFormalSaveAfterViewingOriginal(newerDraftWritten: Boolean) {
+        val original = card()
+        val active = editor(original.id)
+        action { active.addDocument("ignored.txt", "Draft-only document", it) }
+        editAndSaveDraft(active, "ignored name")
+        val ignored = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        val staged = File(ignored.characterPayload!!.customDocuments.single().filePath).also(files::add)
+        try {
+            val viewer = editor(original.id)
+            withContext(Dispatchers.Main) {
+                assertEquals(ignored, viewer.restoreDraft)
+                viewer.keepOriginal()
+                assertNull(viewer.restoreDraft)
+                assertEquals(original.name, viewer.name)
+                assertTrue(viewer.documentsList.isEmpty())
+                assertFalse(viewer.hasLocalChanges)
+            }
+            assertEquals("Viewing the original must leave the draft available until Save",
+                ignored, coldDrafts().getById(ignored.id))
+
+            val newer = if (newerDraftWritten) {
+                val competingEditor = editor(original.id)
+                withContext(Dispatchers.Main) { competingEditor.restoreDraft() }
+                editAndSaveDraft(competingEditor, "new competing draft")
+                requireNotNull(coldDrafts().getById(ignored.id)).also {
+                    assertEquals("new competing draft", it.characterPayload?.name)
+                    assertNotEquals(ignored, it)
+                }
+            } else null
+
+            action { viewer.saveCharacterCard(it) }
+            val saved = requireNotNull(app.characterRepository.getById(original.id))
+            assertEquals(original.name, saved.name)
+            assertTrue(saved.customDocuments.isEmpty())
+            assertEquals(newer, coldDrafts().getById(ignored.id))
+            val reopened = editor(original.id)
+            withContext(Dispatchers.Main) { assertEquals(newer, reopened.restoreDraft) }
+            if (newer != null) {
+                assertEquals(staged.path, newer.characterPayload!!.customDocuments.single().filePath)
+                assertEquals("Draft-only document", staged.readText())
+            } else {
+                assertFalse("The consumed draft's staged file must be reclaimed", staged.exists())
+            }
+        } finally {
+            app.editorDraftAssetService.deleteDraft(ignored.draftSessionId)
+        }
+    }
+
+    @Test fun autosaveAfterViewingOriginalCannotOverwriteANewerDraft() = runBlocking<Unit> {
+        val original = card()
+        editAndSaveDraft(editor(original.id), "old ignored draft")
+        val viewer = editor(original.id)
+        withContext(Dispatchers.Main) { viewer.keepOriginal() }
+        val competingEditor = editor(original.id)
+        withContext(Dispatchers.Main) { competingEditor.restoreDraft() }
+        editAndSaveDraft(competingEditor, "new competing draft")
+        val newer = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        assertDraftExitRejected(viewer)
+        assertEquals("new competing draft", newer.characterPayload?.name)
+        assertEquals(newer, coldDrafts().getById(newer.id))
+        assertEquals(original.name, app.characterRepository.getById(original.id)?.name)
+    }
+
+    @Test fun clearingTheIgnoredDraftLetsTheRetainedEditorSaveAgain() = runBlocking<Unit> {
+        val original = card()
+        editAndSaveDraft(editor(original.id), "old ignored draft")
+        val ignored = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        val viewer = editor(original.id)
+        withContext(Dispatchers.Main) {
+            viewer.keepOriginal()
+            viewer.name = "unsaved edit from original"
+        }
+
+        assertTrue(app.editorDraftRepository.deleteIfUnchanged(ignored))
+        action { viewer.saveDraftAndExit(it) }
+
+        val saved = requireNotNull(coldDrafts().getById(ignored.id))
+        assertEquals("unsaved edit from original", saved.characterPayload?.name)
+        assertEquals(original.name, app.characterRepository.getById(original.id)?.name)
+    }
+
+    @Test fun formalSaveAfterViewingOriginalReclaimsAssetsFromAnEarlierDraftSession() = runBlocking<Unit> {
+        verifyCarriedAssetCleanup(blockFirstDeletion = false)
+    }
+
+    @Test fun failedCarriedAssetDeletionCanRetryWithoutWritingTheCardAgain() = runBlocking<Unit> {
+        verifyCarriedAssetCleanup(blockFirstDeletion = true)
+    }
+
+    private suspend fun verifyCarriedAssetCleanup(blockFirstDeletion: Boolean) {
+        val original = card()
+        val initialEditor = editor(original.id)
+        action { initialEditor.addDocument("carried.txt", "Document carried across draft sessions", it) }
+        action { initialEditor.saveDraftAndExit(it) }
+        val first = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        val staged = File(first.characterPayload!!.customDocuments.single().filePath).also(files::add)
+        try {
+            val resaver = editor(original.id)
+            withContext(Dispatchers.Main) {
+                assertEquals(first, resaver.restoreDraft)
+                resaver.restoreDraft()
+            }
+            action { resaver.saveDraftAndExit(it) }
+            val carried = requireNotNull(coldDrafts().getById(first.id))
+            assertNotEquals(first.draftSessionId, carried.draftSessionId)
+            assertEquals(staged.path, carried.characterPayload!!.customDocuments.single().filePath)
+            assertEquals("Document carried across draft sessions", staged.readText())
+
+            val viewer = editor(original.id)
+            withContext(Dispatchers.Main) { viewer.keepOriginal() }
+            val committedBeforeRetry = if (blockFirstDeletion) {
+                val folder = requireNotNull(staged.parentFile)
+                val mode = Os.stat(folder.path).st_mode and 0x1ff
+                val writePermissions = OsConstants.S_IWUSR or OsConstants.S_IWGRP or OsConstants.S_IWOTH
+                var navigated = false
+                try {
+                    Os.chmod(folder.path, mode and writePermissions.inv())
+                    withContext(Dispatchers.Main) { viewer.saveCharacterCard({ navigated = true }) }
+                    withTimeout(15_000) {
+                        while (withContext(Dispatchers.Main) { viewer.isSaving.value }) delay(20)
+                    }
+                    withContext(Dispatchers.Main) {
+                        assertFalse(navigated)
+                        assertTrue(viewer.isDraftCleanupPending)
+                    }
+                    assertNull(coldDrafts().getById(first.id))
+                    assertEquals("Document carried across draft sessions", staged.readText())
+                    requireNotNull(app.characterRepository.getById(original.id))
+                } finally {
+                    Os.chmod(folder.path, mode)
+                }
+            } else null
+
+            action { viewer.saveCharacterCard(it) }
+            val saved = requireNotNull(app.characterRepository.getById(original.id))
+            committedBeforeRetry?.let { assertEquals(it.updatedAt, saved.updatedAt) }
+            assertEquals(original.name, saved.name)
+            assertEquals(original.greeting, saved.greeting)
+            assertNull(coldDrafts().getById(first.id))
+            assertFalse("Formal save must reclaim the consumed snapshot's earlier staged file", staged.exists())
+            assertTrue(saved.customDocuments.isEmpty())
+        } finally {
+            app.editorDraftAssetService.deleteDraft(first.draftSessionId)
+        }
+    }
+
+    @Test fun retainedEditorAfterFormalSaveCannotCreateOverANewerDraft() = runBlocking<Unit> {
+        val original = card()
+        editAndSaveDraft(editor(original.id), "draft to consume")
+        val viewer = editor(original.id)
+        withContext(Dispatchers.Main) { viewer.keepOriginal() }
+        action { viewer.saveCharacterCard(it) }
+        assertNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+
+        editAndSaveDraft(editor(original.id), "draft created after formal save")
+        val newer = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        assertDraftExitRejected(viewer)
+        assertEquals(newer, coldDrafts().getById(newer.id))
+        assertEquals(original.name, app.characterRepository.getById(original.id)?.name)
+    }
+
+    private suspend fun assertDraftExitRejected(viewer: CharacterEditViewModel) {
+        var exited = false
+        withContext(Dispatchers.Main) {
+            viewer.name = "edit from original"
+            viewer.saveDraftAndExit { exited = true }
+        }
+        withTimeout(15_000) { while (withContext(Dispatchers.Main) { viewer.isSaving.value }) delay(20) }
+        withContext(Dispatchers.Main) { assertFalse(exited) }
+    }
+    @Test fun retainedEditorCanCreateAndRestoreAGenuineDraftAfterFormalSave() = runBlocking<Unit> {
+        val card = card()
+        val vm = editor(card.id)
+        val formalName = "formal-${UUID.randomUUID()}"
+        editAndSaveDraft(vm, formalName)
+        action { vm.saveCharacterCard(it) }
+        val secondName = "unsaved-${UUID.randomUUID()}"
+        editAndSaveDraft(vm, secondName)
+        assertEquals(secondName, coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, card.id)?.characterPayload?.name)
+        assertEquals(formalName, app.characterRepository.getById(card.id)?.name)
+        val reopened = editor(card.id)
+        withContext(Dispatchers.Main) {
+            assertNotNull(reopened.restoreDraft)
+            reopened.restoreDraft()
+            assertEquals(secondName, reopened.name)
+            assertTrue(reopened.hasLocalChanges)
+        }
+    }
+
+    @Test fun croppedAvatarInUnconfirmedCharacterDialogSurvivesDraftRestore() = runBlocking<Unit> {
+        val card = card()
+        val vm = editor(card.id)
+        editAndSaveDraft(vm, "unsaved card name")
+        val image = File(app.filesDir, "synthetic-avatar-${UUID.randomUUID()}.png").also { files += it }
+        val bitmap = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888)
+        try {
+            image.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+        } finally {
+            bitmap.recycle()
+        }
+        val croppedPath = CompletableDeferred<String>()
+        val character = CharacterInfo.create("Synthetic draft character")
+        withContext(Dispatchers.Main) {
+            vm.cropUriToLocalFile(Uri.fromFile(image), ImageCropFractionRect(0f, 0f, 1f, 1f), 4, 4) { path ->
+                assertTrue(vm.isSaving.value)
+                vm.updateOpenModalState(
+                    CharacterOpenModalState(CharacterOpenModalKind.CHARACTER, character.copy(appearanceImage = path))
+                )
+                croppedPath.complete(path)
+            }
+        }
+        val path = withTimeout(15_000) { croppedPath.await() }
+        files += File(path)
+        withTimeout(8_000) {
+            while (coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, card.id)
+                    ?.openModalState.isNullOrBlank()) delay(40)
+        }
+        val reopened = editor(card.id)
+        withContext(Dispatchers.Main) {
+            assertNotNull(reopened.restoreDraft)
+            reopened.restoreDraft()
+            assertEquals(path, reopened.restoredOpenModalState?.character?.appearanceImage)
+        }
+        assertTrue(File(path).isFile)
+        assertTrue(app.characterRepository.getById(card.id)?.characters.isNullOrEmpty())
+    }
+
+    @Test fun rejectedFormalSaveStillAutosavesTheActualUnsavedEdit() = runBlocking<Unit> {
+        val card = card()
+        val other = card()
+        val vm = editor(card.id)
+        var saved = false
+        withContext(Dispatchers.Main) {
+            vm.name = other.name
+            vm.scheduleDraftSave()
+            vm.saveCharacterCard({ saved = true })
+        }
+        withTimeout(15_000) { while (withContext(Dispatchers.Main) { vm.isSaving.value }) delay(20) }
+        withTimeout(15_000) {
+            while (app.editorDraftRepository.getForTarget(EditorDraftType.CHARACTER_CARD, card.id)?.characterPayload?.name != other.name) delay(40)
+        }
+        withContext(Dispatchers.Main) { assertFalse(saved) }
+        assertEquals(card.name, app.characterRepository.getById(card.id)?.name)
+        assertEquals(other.name, app.characterRepository.getById(other.id)?.name)
+    }
+
+    @Test fun autosavingAfterRejectedStaleDraftPreservesTheSourceConflictOnRetry() = runBlocking<Unit> {
+        val original = card()
+        val vm = editor(original.id)
+        editAndSaveDraft(vm, "stale local name")
+        val firstDraft = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        val updatedSource = original.copy(creatorNotes = "new notes from a different editor")
+        app.characterRepository.save(updatedSource)
+
+        val reopened = editor(original.id)
+        var saved = false
+        withContext(Dispatchers.Main) {
+            assertTrue(reopened.restoreConflict)
+            reopened.restoreDraft()
+            reopened.name = "stale local name with another edit"
+            reopened.scheduleDraftSave()
+            reopened.saveCharacterCard({ saved = true })
+        }
+        withTimeout(15_000) {
+            while (withContext(Dispatchers.Main) { reopened.isSaving.value }) delay(20)
+        }
+        withContext(Dispatchers.Main) { assertTrue(reopened.saveConflict) }
+        withTimeout(15_000) {
+            app.editorDraftRepository.drafts.first { rows ->
+                rows.any { it.targetId == original.id && it.characterPayload?.name == "stale local name with another edit" }
+            }
+        }
+        val updatedDraft = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        assertNotNull(firstDraft.baseHash)
+        assertEquals(firstDraft.baseHash, updatedDraft.baseHash)
+        assertEquals(firstDraft.baseUpdatedAt, updatedDraft.baseUpdatedAt)
+
+        withContext(Dispatchers.Main) {
+            reopened.saveConflict = false
+            reopened.saveCharacterCard({ saved = true })
+        }
+        withTimeout(15_000) {
+            while (withContext(Dispatchers.Main) { reopened.isSaving.value }) delay(20)
+        }
+        withContext(Dispatchers.Main) {
+            assertTrue(reopened.saveConflict)
+            assertFalse(saved)
+        }
+        assertEquals(updatedSource.creatorNotes, app.characterRepository.getById(original.id)?.creatorNotes)
+        assertEquals(original.name, app.characterRepository.getById(original.id)?.name)
+    }
+
+    @Test fun confirmedDocumentEditSurvivesAnImmediateFormalSaveAttempt() = runBlocking<Unit> {
+        val originalFile = File(app.filesDir, "before-${UUID.randomUUID()}.txt").also {
+            it.writeText("Original document bytes")
+            files += it
+        }
+        val doc = DocumentInfo.create("before.txt", originalFile.path, "txt")
+        val card = card(doc)
+        val vm = editor(card.id)
+        val confirmed = CompletableDeferred<Unit>()
+        var prematureSave = false
+        var prematureExit = false
+        withContext(Dispatchers.Main) {
+            // The document stage must return to Main to publish its file. Request
+            // Save in the same turn, before the file is registered in the editor.
+            vm.updateDocument(doc, "after.txt", "Confirmed replacement bytes") { confirmed.complete(Unit) }
+            assertTrue(vm.isSaving.value)
+            vm.saveCharacterCard({ prematureSave = true })
+            vm.saveDraftAndExit { prematureExit = true }
+        }
+        withTimeout(15_000) { confirmed.await() }
+        assertFalse(prematureSave)
+        assertFalse(prematureExit)
+        action { vm.saveDraftAndExit(it) }
+        val draft = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, card.id))
+        val staged = draft.characterPayload!!.customDocuments.single()
+        assertEquals("after.txt", staged.fileName)
+        assertEquals("Confirmed replacement bytes", File(staged.filePath).readText())
+        action { vm.saveCharacterCard(it) }
+        val saved = app.characterRepository.getById(card.id)!!.customDocuments.single()
+        files += File(saved.filePath)
+        assertNotEquals(staged.filePath, saved.filePath)
+        assertEquals("Confirmed replacement bytes", File(saved.filePath).readText())
+        assertFalse(File(staged.filePath).exists())
+    }
+
+    @Test fun unchangedCardCanRecoverAnEditedPersonDialogAndDiscardItOnDismissal() = runBlocking<Unit> {
+        val card = card()
+        val vm = editor(card.id)
+        val person = CharacterInfo.create("Unconfirmed person")
+        withContext(Dispatchers.Main) {
+            vm.updateOpenModalState(CharacterOpenModalState(CharacterOpenModalKind.CHARACTER, person))
+            assertTrue(vm.hasLocalChanges)
+        }
+        action { vm.saveDraftAndExit(it) }
+        val reopened = editor(card.id)
+        withContext(Dispatchers.Main) {
+            assertNotNull(reopened.restoreDraft)
+            reopened.restoreDraft()
+            assertEquals(person, reopened.restoredOpenModalState?.character)
+            assertTrue(reopened.charactersList.isEmpty())
+            reopened.updateOpenModalState(null)
+        }
+        action { reopened.saveDraftAndExit(it) }
+        assertNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, card.id))
+        assertTrue(app.characterRepository.getById(card.id)!!.characters.isEmpty())
+    }
+
+    @Test fun coldOpeningAnIdenticalOldDraftDoesNotOfferToRestoreIt() = runBlocking<Unit> {
+        val original = card()
+        val oldDraft = app.editorDraftRepository.characterDraft(
+            original.id, UUID.randomUUID().toString(), original.copy(ragIndexDone = 4), original,
+            emptyList(), emptyList(), emptyList()
+        )
+        app.editorDraftRepository.save(oldDraft)
+        assertNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        val reopened = editor(original.id)
+        withContext(Dispatchers.Main) {
+            assertNull(reopened.restoreDraft)
+            assertFalse(reopened.hasLocalChanges)
+        }
+        assertNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+    }
+
+    @Test fun revertingOnlyAddedDocumentRetainsBytesUntilTheOldDraftCanBeRemoved() = runBlocking<Unit> {
+        val original = card()
+        val vm = editor(original.id)
+        action { vm.addDocument("temporary.txt", "Synthetic draft content", it) }
+        action { vm.saveDraftAndExit(it) }
+        val retained = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        val document = retained.characterPayload!!.customDocuments.single()
+        val staged = File(document.filePath).also(files::add)
+        val directory = File(app.filesDir, "entities/edit_drafts")
+        val mode = Os.stat(directory.path).st_mode and 0x1ff
+        val writePermissions = OsConstants.S_IWUSR or OsConstants.S_IWGRP or OsConstants.S_IWOTH
+        var navigated = false
+        try {
+            Os.chmod(directory.path, mode and writePermissions.inv())
+            withContext(Dispatchers.Main) { vm.deleteDocument(document) }
+            withTimeout(15_000) { while (withContext(Dispatchers.Main) { vm.isSaving.value }) delay(20) }
+            withContext(Dispatchers.Main) {
+                vm.requestExit(onUnsavedChanges = { fail("Reverted form is clean") }, onDone = { navigated = true })
+            }
+            withTimeout(15_000) { while (withContext(Dispatchers.Main) { vm.isSaving.value }) delay(20) }
+            assertFalse(navigated)
+            assertEquals(retained, coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+            assertEquals("Synthetic draft content", staged.readText())
+        } finally {
+            Os.chmod(directory.path, mode)
+        }
+        action { vm.requestExit(onUnsavedChanges = { fail("Reverted form is clean") }, onDone = it) }
+        assertNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        assertFalse(staged.exists())
+        assertEquals(original, app.characterRepository.getById(original.id))
+    }
+
+    @Test fun manualDiscardDoesNotReviveADraftAfterResourceCleanupFails() = runBlocking<Unit> {
+        val original = card()
+        val vm = editor(original.id)
+        action { vm.addDocument("locked.txt", "Synthetic draft content", it) }
+        action { vm.saveDraftAndExit(it) }
+        val retained = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        val staged = File(retained.characterPayload!!.customDocuments.single().filePath)
+        val folder = requireNotNull(staged.parentFile)
+        val mode = Os.stat(folder.path).st_mode and 0x1ff
+        val writePermissions = OsConstants.S_IWUSR or OsConstants.S_IWGRP or OsConstants.S_IWOTH
+        try {
+            Os.chmod(folder.path, mode and writePermissions.inv())
+            action { vm.discardDraft(it) }
+            assertTrue(staged.exists())
+            assertNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+            withContext(Dispatchers.Main) {
+                assertEquals(original.name, vm.name)
+                assertTrue(vm.documentsList.isEmpty())
+                assertNull(vm.draftSavedAt)
+                vm.scheduleDraftSave()
+            }
+            delay(900)
+            assertNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        } finally {
+            Os.chmod(folder.path, mode)
+            app.editorDraftAssetService.deleteDraft(retained.draftSessionId)
+        }
+    }
+
+    @Test fun revertingAnAddedDocumentKeepsItForADraftReusingItsStagedPath() = runBlocking<Unit> {
+        val original = card()
+        val recoveryTarget = card()
+        val vm = editor(original.id)
+        action { vm.addDocument("shared.txt", "Retained recovery bytes", it) }
+        action { vm.saveDraftAndExit(it) }
+        val draft = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        val document = draft.characterPayload!!.customDocuments.single()
+        val staged = File(document.filePath)
+        val other = app.editorDraftRepository.save(draft.copy(
+            targetId = recoveryTarget.id,
+            draftSessionId = UUID.randomUUID().toString(),
+            draftAssetPaths = emptyList(),
+        ))
+        try {
+            withContext(Dispatchers.Main) { vm.deleteDocument(document) }
+            withTimeout(15_000) { while (withContext(Dispatchers.Main) { vm.isSaving.value }) delay(20) }
+            action { vm.requestExit(onUnsavedChanges = { fail("Reverted form is clean") }, onDone = it) }
+            assertNull(coldDrafts().getById(draft.id))
+            assertEquals(other, coldDrafts().getById(other.id))
+            assertEquals("Retained recovery bytes", staged.readText())
+        } finally {
+            app.editorDraftAssetService.deleteDraft(draft.draftSessionId)
+        }
+    }
+
+    @Test fun discardingTheRecoveredDraftPreservesItsOriginalRecoveryRow() = runBlocking<Unit> {
+        verifyRecoveredDraftCleanup(saveFormally = false)
+    }
+
+    @Test fun formallySavingTheRecoveredDraftPreservesItsOriginalRecoveryRow() = runBlocking<Unit> {
+        verifyRecoveredDraftCleanup(saveFormally = true)
+    }
+
+    private suspend fun verifyRecoveredDraftCleanup(saveFormally: Boolean) {
+        val original = card()
+        val active = editor(original.id)
+        action { active.addDocument("recover.txt", "Shared draft bytes", it) }
+        action { active.saveDraftAndExit(it) }
+        val oldDraft = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        val staged = File(oldDraft.characterPayload!!.customDocuments.single().filePath).also(files::add)
+        app.characterRepository.delete(original.id)
+        val recovery = editor(original.id)
+        withContext(Dispatchers.Main) { assertTrue(recovery.sourceDeleted) }
+        try {
+            action { recovery.saveDraftAndExit(it) }
+            val newDraft = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, null))
+            if (saveFormally) {
+                action { recovery.saveCharacterCard(it) }
+                val saved = requireNotNull(withContext(Dispatchers.Main) { recovery.characterCard.value })
+                cardIds += saved.id
+                val durable = File(saved.customDocuments.single().filePath).also(files::add)
+                assertEquals("Shared draft bytes", durable.readText())
+            } else {
+                action { recovery.discardDraft(it) }
+            }
+            assertNull(coldDrafts().getById(newDraft.id))
+            assertEquals(oldDraft, coldDrafts().getById(oldDraft.id))
+            assertEquals("Shared draft bytes", staged.readText())
+        } finally {
+            app.editorDraftRepository.deleteForTarget(EditorDraftType.CHARACTER_CARD, null)
+            app.editorDraftAssetService.deleteDraft(oldDraft.draftSessionId)
+        }
+    }
+
+    @Test fun failedDraftDeletionRetainsItsResourcesAndCanRetryWithoutWritingTheCardAgain() = runBlocking<Unit> {
+        val original = card()
+        val vm = editor(original.id)
+        action { vm.addDocument("protected.txt", "Recoverable draft bytes", it) }
+        action { vm.saveDraftAndExit(it) }
+        val retained = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        val staged = File(retained.characterPayload!!.customDocuments.single().filePath)
+        files += staged
+        val draftFolder = File(app.filesDir, "entities/edit_drafts")
+        val draftFile = File(draftFolder, "${retained.id}.json")
+        assertTrue(draftFile.isFile)
+        val mode = Os.stat(draftFolder.path).st_mode and 0x1ff
+        val writePermissions = OsConstants.S_IWUSR or OsConstants.S_IWGRP or OsConstants.S_IWOTH
+        var navigated = false
+        try {
+            Os.chmod(draftFolder.path, mode and writePermissions.inv())
+            withContext(Dispatchers.Main) { vm.saveCharacterCard({ navigated = true }) }
+            withTimeout(15_000) { while (withContext(Dispatchers.Main) { vm.isSaving.value }) delay(20) }
+            withContext(Dispatchers.Main) {
+                assertTrue(vm.isDraftCleanupPending)
+                assertFalse(navigated)
+            }
+            assertTrue(draftFile.isFile)
+            assertEquals("Recoverable draft bytes", staged.readText())
+            val durable = app.characterRepository.getById(original.id)!!.customDocuments.single()
+            files += File(durable.filePath)
+            assertEquals("Recoverable draft bytes", File(durable.filePath).readText())
+        } finally {
+            Os.chmod(draftFolder.path, mode)
+        }
+        val durablePath = app.characterRepository.getById(original.id)!!.customDocuments.single().filePath
+        action { vm.saveCharacterCard(it) }
+        assertEquals(durablePath, app.characterRepository.getById(original.id)!!.customDocuments.single().filePath)
+        assertFalse(draftFile.exists())
+        assertFalse(staged.exists())
+    }
+
+    @Test fun derivedDocumentIndexUpdatesDoNotCreateADraftButRealDocumentEditsDo() = runBlocking<Unit> {
+        val file = File(app.filesDir, "synthetic-doc-${UUID.randomUUID()}.txt").also {
+            it.writeText("synthetic reference document")
+            files += it
+        }
+        val doc = DocumentInfo.create("original.txt", file.path, "txt")
+        val card = card(doc)
+        val vm = editor(card.id)
+        withContext(Dispatchers.Main) {
+            vm.documentsList[0] = doc.copy(contentHash = "derived-content-hash", indexedHash = "derived-index-hash",
+                ragStatus = "INDEXED", ragChunkCount = 4, ragIndexedAt = 123L, ragError = "derived status")
+            vm.scheduleDraftSave()
+        }
+        delay(1_100)
+        assertNull("Background index progress must not create a character draft",
+            coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, card.id))
+        withContext(Dispatchers.Main) {
+            assertFalse(vm.hasLocalChanges)
+            vm.documentsList[0] = vm.documentsList[0].copy(fileName = "user-renamed.txt")
+            vm.scheduleDraftSave()
+        }
+        action { vm.saveDraftAndExit(it) }
+        val savedDoc = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, card.id))
+            .characterPayload!!.customDocuments.single()
+        assertEquals("user-renamed.txt", savedDoc.fileName)
+        assertEquals("derived-content-hash", savedDoc.contentHash)
+        assertEquals("original.txt", app.characterRepository.getById(card.id)?.customDocuments?.single()?.fileName)
+        assertEquals("synthetic reference document", file.readText())
+    }
+
+    private suspend fun verifyCardSwitch(otherEdited: Boolean) = coroutineScope {
+        val a = card()
+        val b = card()
+        val vmA = editor(a.id)
+        val formalName = "formal-${UUID.randomUUID()}"
+        editAndSaveDraft(vmA, formalName)
+        val oldDraft = requireNotNull(app.editorDraftRepository.getForTarget(EditorDraftType.CHARACTER_CARD, a.id))
+        val attempted = CompletableDeferred<Unit>()
+        // Deliver the same autosave scheduling that a Compose snapshot can deliver
+        // while formal save suspends deleting its consumed draft. No production hooks.
+        val observer = launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
+            app.editorDraftRepository.drafts.first { rows ->
+                vmA.isSaving.value && rows.none { it.id == oldDraft.id }
+            }
+            assertTrue(vmA.isSaving.value)
+            vmA.scheduleDraftSave()
+            attempted.complete(Unit)
+        }
+        try {
+            action { vmA.saveCharacterCard(it) }
+            withTimeout(10_000) { attempted.await() }
+            val vmB = editor(b.id)
+            if (otherEdited) editAndSaveDraft(vmB, "real other-card draft")
+            else withContext(Dispatchers.Main) { vmB.scheduleDraftSave() }
+            // Let any incorrect debounce from A complete while B is the active editor.
+            delay(1_100)
+            assertNull("Saving A must not recreate its draft after switching to B",
+                coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, a.id))
+            assertFalse(app.editorDraftRepository.getAll().any { it.targetId == a.id })
+            val bDraft = coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, b.id)
+            if (otherEdited) assertEquals("real other-card draft", bDraft?.characterPayload?.name)
+            else assertNull(bDraft)
+            assertEquals(formalName, app.characterRepository.getById(a.id)?.name)
+            val reopenedA = editor(a.id)
+            withContext(Dispatchers.Main) { assertNull(reopenedA.restoreDraft); assertEquals(formalName, reopenedA.name) }
+        } finally { observer.cancel() }
+    }
+
+    private fun coldDrafts() = EditorDraftRepository(JsonFileStorage(app))
+
+    private suspend fun card(document: DocumentInfo? = null): CharacterCard = CharacterCard.create(
+        "synthetic-${UUID.randomUUID()}", greeting = "synthetic main greeting"
+    ).copy(momentsEnabled = false, customDocuments = listOfNotNull(document)).also {
+        cardIds += it.id
+        app.characterRepository.save(it)
+    }
+
+    private suspend fun editor(id: String): CharacterEditViewModel {
+        val store = ViewModelStore().also(stores::add)
+        val vm = withContext(Dispatchers.Main) {
+            ViewModelProvider(store, CharacterEditViewModelFactory(id, UUID.randomUUID().toString()))[CharacterEditViewModel::class.java]
+        }
+        withTimeout(15_000) { while (!withContext(Dispatchers.Main) { vm.draftReady }) delay(20) }
+        return vm
+    }
+
+    private suspend fun editAndSaveDraft(vm: CharacterEditViewModel, text: String) {
+        withContext(Dispatchers.Main) { vm.name = text; vm.scheduleDraftSave() }
+        action { vm.saveDraftAndExit(it) }
+    }
+
+    private suspend fun action(start: (() -> Unit) -> Unit) {
+        val complete = CompletableDeferred<Unit>()
+        withContext(Dispatchers.Main) { start { complete.complete(Unit) } }
+        withTimeout(30_000) { complete.await() }
+    }
+}

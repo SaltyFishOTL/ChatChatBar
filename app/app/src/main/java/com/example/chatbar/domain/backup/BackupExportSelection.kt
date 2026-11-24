@@ -207,6 +207,7 @@ class BackupExportCatalog internal constructor(
             (if (chats.isNotEmpty() || selection.studioSettings || selection.moments) sourceSettings?.strings("defaultModelId").orEmpty() +
                 sourceSettings?.strings("defaultImageModelId").orEmpty() else emptySet())
         val documentIds = cards.flatMap { it.strings("customDocuments.id") }.toSet()
+        val messageOwners = records.filter { it.type == "chat_messages" }.groupBy { it.id }
         val selectedRecords = records.filter { record ->
             when (record.type) {
                 "app_settings" -> settingsFields.isNotEmpty() || selection.sessions.isNotEmpty() || selection.moments
@@ -219,7 +220,7 @@ class BackupExportCatalog internal constructor(
                 "format_cards" -> "resources" in selection.globalOptions || record.id in formatIds
                 "world_books" -> "resources" in selection.globalOptions || record.id in worldIds
                 "generated_voice_messages", "voice_anchor_states" -> selection.sessions[record.string("sessionId")?.takeIf { it.isNotBlank() }
-                    ?: records.firstOrNull { it.type == "chat_messages" && it.id == record.string("messageId") }?.string("sessionId")]?.voice == true
+                    ?: messageOwners[record.string("messageId")]?.singleOrNull()?.string("sessionId")]?.voice == true
                 "save_slots" -> selection.sessions[record.string("sessionId")]?.archives == true
                 "vector_chunks" -> record.string("sourceId") in selection.sessions || record.string("sourceId") in selection.characterIds ||
                     record.string("sourceId") in documentIds
@@ -246,7 +247,7 @@ class BackupExportCatalog internal constructor(
                 record.type == "chat_messages" && selection.sessions[record.string("sessionId")]?.images == false &&
                     fields.size == 1 && fields.single() in setOf("images", "generatedImageMetadata") -> "[]"
                 record.type == "moment_posts" && !selection.momentsImages &&
-                    fields.size == 1 && fields.single() in setOf("imagePath", "generatedImageMetadata") -> "null"
+                    fields.size == 1 && fields.single() in setOf("imagePath", "generatedImageMetadata", "imageVersions") -> if (fields.single() == "imageVersions") "[]" else "null"
                 record.type.startsWith("novelai_studio_") && fields.lastOrNull() == "importedCharacterCardId" &&
                     record.strings(fields.joinToString(".")).any { it !in selection.characterIds } -> "null"
                 record.type.startsWith("novelai_studio_") && fields.lastOrNull() == "followDefaultNovelAiImageModel" &&
@@ -302,7 +303,7 @@ class BackupExportCatalog internal constructor(
                         "\"chatbar-save-slot-omitted-image:metadata\"".takeIf { path == listOf("images", "path") }
                     } else file.length()
                     val withoutMomentImages = if (type == "moment_posts") sizeWithout { path ->
-                        "null".takeIf { path.size == 1 && path.single() in setOf("imagePath", "generatedImageMetadata") }
+                        if (path.size == 1 && path.single() == "imageVersions") "[]" else "null".takeIf { path.size == 1 && path.single() in setOf("imagePath", "generatedImageMetadata") }
                     } else file.length()
                     BackupExportRecord(file, relative, type, values, resources, withoutChatImages, withoutStudioImages, withoutMomentImages)
                 } catch (error: Exception) {

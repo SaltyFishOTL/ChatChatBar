@@ -83,6 +83,67 @@ class MomentRepositoryTest {
         assertTrue(runCatching { repository.updatePostContent("post", "文案", MomentSender(null, " ", null)) }.isFailure)
     }
 
+    @Test fun `retained images and metadata survive cold storage and selected switch preserves latest text and likes`() = runTest {
+        val repository = repository()
+        val original = post()
+        repository.savePost(original)
+        repository.appendImageVersion(original.id, original.imagePath, "second.png", "second prompt", null)
+        repository.toggleLike(original.id)
+        repository.updatePostText(original.id, "edited after generation")
+        val latest = requireNotNull(repository.getPost(original.id))
+        assertEquals(2, latest.imageVersions.size)
+        repository.selectImageVersion(original.id, latest.imageVersions.first().id)
+        val stored = requireNotNull(repository.getPost(original.id))
+        assertEquals(original.imagePath, stored.imagePath)
+        assertEquals(original.imagePrompt, stored.imagePrompt)
+        assertEquals("edited after generation", stored.text)
+        assertEquals(!original.userLiked, stored.userLiked)
+        val decoded = kotlinx.serialization.json.Json.decodeFromString(MomentPost.serializer(),
+            kotlinx.serialization.json.Json.encodeToString(MomentPost.serializer(), stored))
+        assertEquals(stored, decoded)
+    }
+
+    @Test fun `deleted or reselected post rejects late image append without resurrection`() = runTest {
+        val repository = repository()
+        val original = post()
+        repository.savePost(original)
+        repository.appendImageVersion(original.id, original.imagePath, "second.png", "p2", null)
+        assertTrue(runCatching { repository.appendImageVersion(original.id, original.imagePath, "stale.png", "p3", null) }.isFailure)
+        repository.deletePost(original.id)
+        assertTrue(runCatching { repository.appendImageVersion(original.id, "second.png", "late.png", "p4", null) }.isFailure)
+        assertNull(repository.getPost(original.id))
+    }
+
+    @Test fun legacyNullImagePathAcceptsOnDemandCommit() = checkInitialImageCommit(null)
+    @Test fun legacyEmptyImagePathAcceptsOnDemandCommit() = checkInitialImageCommit("")
+    @Test fun legacyWhitespaceImagePathAcceptsOnDemandCommit() = checkInitialImageCommit("  ")
+
+    private fun checkInitialImageCommit(path: String?) = runTest {
+        val repository = repository()
+        val original = post().copy(imagePath = path, imagePrompt = "draft", generatedImageMetadata = null)
+        repository.savePost(original)
+        repository.appendImageVersion(original.id, null, "generated.png", "generated prompt", null)
+        val saved = requireNotNull(repository.getPost(original.id))
+        assertEquals("generated.png", saved.imagePath)
+        assertEquals("generated prompt", saved.imagePrompt)
+        assertEquals(1, saved.imageVersions.size)
+        assertEquals(original.text, saved.text)
+        assertEquals(original.userLiked, saved.userLiked)
+    }
+
+    @Test fun realImagePathsRemainExactAndConcurrentFirstImageWins() = runTest {
+        val repository = repository()
+        val original = post().copy(imagePath = "  real.png", generatedImageMetadata = null)
+        repository.savePost(original)
+        assertTrue(runCatching { repository.appendImageVersion(original.id, "real.png", "late.png", "late", null) }.isFailure)
+        assertTrue(runCatching { repository.appendImageVersion(original.id, null, "late.png", "late", null) }.isFailure)
+        assertEquals(original, repository.getPost(original.id))
+        repository.savePost(original.copy(imagePath = " "))
+        repository.appendImageVersion(original.id, null, "first.png", "first", null)
+        assertTrue(runCatching { repository.appendImageVersion(original.id, null, "late.png", "late", null) }.isFailure)
+        assertEquals("first.png", repository.getPost(original.id)?.imagePath)
+    }
+
     private fun repository(): MomentRepository =
         MomentRepository(JsonFileStorage(TestContext(temp.newFolder("files"))))
 

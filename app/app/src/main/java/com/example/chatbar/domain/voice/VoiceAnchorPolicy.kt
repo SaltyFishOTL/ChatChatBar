@@ -95,21 +95,26 @@ object VoiceAnchorPolicy {
             anchors = eligibleSegments(content, includeNarration).map(::newAnchor)
         )
 
+    internal fun hasExactLayout(state: VoiceAnchorState, content: String): Boolean =
+        state.displayContentSnapshot == content &&
+            sameLayout(state.anchors, eligibleSegments(content, includeNarration = true))
+
+    private fun sameLayout(anchors: List<VoiceAnchor>, segments: List<CurrentVoiceSegment>): Boolean =
+        anchors.size == segments.size && anchors.indices.all { index ->
+            val anchor = anchors[index]
+            val segment = segments[index]
+            anchor.segmentKind == segment.kind.name && anchor.speakerName == segment.speakerName &&
+                anchor.sourceText == segment.spokenText && anchor.start == segment.start &&
+                anchor.endExclusive == segment.endExclusive
+        }
+
     fun reconcile(
         old: VoiceAnchorState,
         newContent: String,
         includeNarration: Boolean = false
     ): VoiceAnchorReconciliation {
         val nextSegments = eligibleSegments(newContent, includeNarration)
-        val anchorsAlreadyCurrent = old.displayContentSnapshot == newContent &&
-            old.anchors.size == nextSegments.size &&
-            old.anchors.zip(nextSegments).all { (anchor, segment) ->
-                anchor.segmentKind == segment.kind.name &&
-                    anchor.speakerName == segment.speakerName &&
-                    anchor.sourceText == segment.spokenText &&
-                    anchor.start == segment.start &&
-                    anchor.endExclusive == segment.endExclusive
-            }
+        val anchorsAlreadyCurrent = old.displayContentSnapshot == newContent && sameLayout(old.anchors, nextSegments)
         if (anchorsAlreadyCurrent) {
             return VoiceAnchorReconciliation(
                 old,

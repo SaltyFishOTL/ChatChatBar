@@ -219,15 +219,17 @@ class FishAudioStorage(private val context: Context) {
         }
     }
 
-    fun cleanupOrphanFiles(referencedPaths: Set<String>) {
+    suspend fun cleanupOrphanFiles(referencedPaths: Set<String>, storage: com.example.chatbar.data.local.JsonFileStorage) {
         com.example.chatbar.domain.backup.LocalDataMaintenance.access {
             val referenced = referencedPaths.mapNotNullTo(mutableSetOf()) { path ->
                 runCatching { File(path).canonicalPath }.getOrNull()
             }
-            root.walkTopDown()
+            val candidates = root.walkTopDown()
                 .filter { it.isFile && it.extension.equals("mp3", ignoreCase = true) }
-                .filterNot { runCatching { it.canonicalPath in referenced }.getOrDefault(false) }
-                .forEach(File::delete)
+                .map { it.canonicalPath }
+                .filterNot(referenced::contains)
+                .toMutableSet()
+            storage.deleteUnreferencedRegisteredMedia(candidates, setOf("save_slots")) { File(it).delete() }
         }
     }
 

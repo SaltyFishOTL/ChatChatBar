@@ -1,5 +1,8 @@
 package com.example.chatbar.ui.moments
 
+import com.example.chatbar.domain.moment.MomentImageVersions
+import com.example.chatbar.domain.moment.MomentMediaRetention
+
 import android.graphics.BitmapFactory
 import android.util.Log
 import androidx.lifecycle.ViewModel
@@ -140,12 +143,35 @@ class MomentsViewModel : ViewModel() {
         }
     }
 
+    private suspend fun cleanupUncommittedMomentImage(postId: String, path: String) {
+        withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
+            val latest = try { repository.getPost(postId) }
+            catch (error: Exception) {
+                Log.w(TAG, "Cannot verify image ownership after save; retaining file", error)
+                return@withContext
+            }
+            if (latest != null && MomentImageVersions.retained(latest).any { it.imagePath == path }) return@withContext
+            runCatching { imageStorage.deleteIfOwned(path) }
+                .onFailure { Log.w(TAG, "Failed to remove uncommitted image", it) }
+        }
+    }
+
+    fun selectImageVersion(postId: String, versionId: String, onResult: (String?) -> Unit) {
+        viewModelScope.launch {
+            try { repository.selectImageVersion(postId, versionId); onResult(null) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { onResult(error.message ?: "切换图片失败") }
+        }
+    }
+
     fun deletePost(id: String) {
         viewModelScope.launch {
             val deleted = repository.deletePost(id) ?: return@launch
-            val imagePath = deleted.imagePath?.takeIf(String::isNotBlank) ?: return@launch
-            runCatching { imageStorage.deleteIfOwned(imagePath) }
-                .onFailure { error -> Log.w(TAG, "Failed to delete moment image: $imagePath", error) }
+            val paths = MomentImageVersions.retained(deleted).map { it.imagePath }
+            MomentMediaRetention.unreferencedPaths(paths, repository.getAllPosts()).forEach { imagePath ->
+                runCatching { imageStorage.deleteIfOwned(imagePath) }
+                    .onFailure { error -> Log.w(TAG, "Failed to delete moment image: $imagePath", error) }
+            }
         }
     }
 
@@ -222,32 +248,13 @@ class MomentsViewModel : ViewModel() {
                     imageStorage.save("moments_${source.characterCardId}", imageBytes)
                 }
                 try {
-                    val current = repository.getPost(postId) ?: error("原朋友圈不存在")
-                    require(!current.isPlaceholder && current.imagePath == imagePath) {
-                        "原朋友圈图片已发生变化"
-                    }
-                    repository.updatePost(
-                        current.copy(
-                            imagePath = newImagePath,
-                            imagePrompt = draft.baseCaption,
-                            generatedImageMetadata = prompt.toGeneratedImageMetadata(newImagePath, imageSize)
-                        )
-                    )
+                    repository.appendImageVersion(postId, imagePath, newImagePath, draft.baseCaption,
+                        prompt.toGeneratedImageMetadata(newImagePath, imageSize))
                 } catch (error: Throwable) {
-                    withContext(Dispatchers.IO) {
-                        runCatching { imageStorage.deleteIfOwned(newImagePath) }
-                            .onFailure { cleanupError ->
-                                Log.w(TAG, "Failed to delete unused regenerated image: $newImagePath", cleanupError)
-                            }
-                    }
+                    cleanupUncommittedMomentImage(postId, newImagePath)
                     throw error
                 }
-                withContext(Dispatchers.IO) {
-                    runCatching { imageStorage.deleteIfOwned(imagePath) }
-                        .onFailure { error ->
-                            Log.w(TAG, "Failed to delete replaced moment image: $imagePath", error)
-                        }
-                }
+
             }
             val error = outcome.exceptionOrNull()
             if (error is CancellationException) throw error
@@ -271,6 +278,7 @@ class MomentsViewModel : ViewModel() {
                 settingsRepository.initialize()
                 val post = repository.getPost(postId) ?: error("朋友圈不存在")
                 require(!post.isPlaceholder) { "占位朋友圈无法按需生成" }
+                require(MomentImageVersions.currentImagePath(post) == null) { "原朋友圈已包含图片，请使用重新生成" }
                 val card = characterRepository.getById(post.characterCardId) ?: error("角色卡不存在")
                 val settings = settingsRepository.getAppSettings()
                 val session = chatRepository.getSession(post.sessionId)
@@ -356,21 +364,10 @@ class MomentsViewModel : ViewModel() {
                 try {
                     val current = repository.getPost(postId) ?: error("朋友圈不存在")
                     require(!current.isPlaceholder) { "占位朋友圈无法按需生成" }
-                    repository.updatePost(
-                        current.copy(
-                            imagePath = newImagePath,
-                            imagePrompt = plan.baseCaption,
-                            generatedImageMetadata = plan.toGeneratedImageMetadata(newImagePath, imageSize),
-                            imageBrief = imageBrief
-                        )
-                    )
+                    repository.appendImageVersion(postId, null, newImagePath, plan.baseCaption,
+                        plan.toGeneratedImageMetadata(newImagePath, imageSize), imageBrief)
                 } catch (error: Throwable) {
-                    withContext(Dispatchers.IO) {
-                        runCatching { imageStorage.deleteIfOwned(newImagePath) }
-                            .onFailure { cleanupError ->
-                                Log.w(TAG, "Failed to delete unused on-demand image: $newImagePath", cleanupError)
-                            }
-                    }
+                    cleanupUncommittedMomentImage(postId, newImagePath)
                     throw error
                 }
             }

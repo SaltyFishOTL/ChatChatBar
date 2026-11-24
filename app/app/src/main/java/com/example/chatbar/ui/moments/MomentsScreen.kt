@@ -1,5 +1,7 @@
 package com.example.chatbar.ui.moments
 
+import com.example.chatbar.domain.moment.MomentImageVersions
+
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -79,6 +81,11 @@ fun MomentsScreen(
     viewModel: MomentsViewModel = viewModel()
 ) {
     val posts by viewModel.posts.collectAsState()
+    var imageVersionError by remember { mutableStateOf<String?>(null) }
+    imageVersionError?.let { error ->
+        CbDialog(onDismissRequest = { imageVersionError = null }, title = "切换图片未完成",
+            confirm = { CbButton("知道了", { imageVersionError = null }) }) { CbText(error) }
+    }
     val retryStates by viewModel.retryStates.collectAsState()
     val onDemandImage by viewModel.onDemandImage.collectAsState()
     val album by viewModel.album.collectAsState()
@@ -174,6 +181,9 @@ fun MomentsScreen(
                             highlighted = highlightedPostId == post.id,
                             retryState = retryStates[post.id],
                             onDemandImage = onDemandImage,
+                            onSelectImageVersion = { target, versionId ->
+                                viewModel.selectImageVersion(target.id, versionId) { imageVersionError = it }
+                            },
                             onToggleLike = { viewModel.toggleLike(post.id) },
                             onLongPressText = { textActionTarget = post },
                             onEdit = { textEditTarget = post },
@@ -305,7 +315,7 @@ fun MomentsScreen(
 }
 
 @Composable
-private fun MomentPostRow(
+internal fun MomentPostRow(
     post: MomentPost,
     highlighted: Boolean,
     retryState: MomentRetryUiState?,
@@ -317,7 +327,8 @@ private fun MomentPostRow(
     onRetry: () -> Unit,
     onOpenImage: (MomentPost, String) -> Unit,
     onRegenerateImage: (MomentPost, String) -> Unit,
-    onGenerateImage: () -> Unit
+    onGenerateImage: () -> Unit,
+    onSelectImageVersion: (MomentPost, String) -> Unit = { _, _ -> }
 ) {
     val colors = ChatBarTheme.colors
     val textColor = colors.foreground
@@ -385,7 +396,7 @@ private fun MomentPostRow(
                             )
                     )
                 }
-                post.imagePath?.takeIf(String::isNotBlank)?.let { path ->
+                MomentImageVersions.currentImagePath(post)?.let { path ->
                     AsyncImage(
                         model = File(path),
                         contentDescription = post.imageBrief.ifBlank { post.text },
@@ -398,6 +409,7 @@ private fun MomentPostRow(
                         contentScale = ContentScale.Crop
                     )
                 } ?: MomentOnDemandImageBlock(post, onDemandImage, onGenerateImage)
+                MomentImageVersionControls(post) { versionId -> onSelectImageVersion(post, versionId) }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
@@ -418,8 +430,13 @@ private fun MomentPostRow(
                             CbText("仅你可见", color = muted, style = ChatBarTheme.typography.caption)
                         }
                     }
-                    Spacer(Modifier.weight(1f))
-                    post.imagePath?.takeIf(String::isNotBlank)?.let { path ->
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    MomentImageVersions.currentImagePath(post)?.let { path ->
                         CbIconButton(
                             imageVector = AppIcons.Refresh,
                             contentDescription = "重新生成图片",
@@ -636,3 +653,15 @@ private fun formatMomentTime(timeMs: Long): String {
 
 private fun compactRetryStream(text: String): String =
     text.replace(Regex("\\s+"), " ").trim().takeLast(260)
+
+@Composable
+internal fun MomentImageVersionControls(post: MomentPost, onSelect: (String) -> Unit) {
+    val versions = MomentImageVersions.retained(post)
+    if (versions.size <= 1) return
+    val selected = versions.indexOfFirst { it.imagePath == post.imagePath }.coerceAtLeast(0)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        CbButton("‹", { onSelect(versions[selected - 1].id) }, enabled = selected > 0, variant = ButtonVariant.Ghost)
+        CbText("${selected + 1}/${versions.size}")
+        CbButton("›", { onSelect(versions[selected + 1].id) }, enabled = selected < versions.lastIndex, variant = ButtonVariant.Ghost)
+    }
+}
