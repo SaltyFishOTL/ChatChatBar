@@ -6773,6 +6773,50 @@ class ExperimentalToolTransportTest {
         )
     }
 
+    @Test
+    fun `whole issued repair suffix accepts physical CRLF without changing the preceding text`() = runBlocking {
+        val original = "The lamp was out."
+        val card = "Preserve the prose and its spacing."
+        val repaired = "The lamp flickered.  \r\nShe reached for the key."
+        val issued = MessageFormatRepairService.PreparedRequest(original, card, null).systemPrompt.replace("\n", "\r\n")
+        val echoed = "$repaired\r\n\r\n$issued"
+        for (experimental in listOf(false, true)) {
+            assertRepairBoundaryReply(original, card, null, listOf(echoed), repaired, experimental, tool = false)
+            assertRepairBoundaryReply("$original\n\n$issued", card, null, listOf(echoed), echoed, experimental, tool = false)
+            val literal = "$repaired\r\n\r\n~~~text\r\n$issued\r\n~~~"
+            assertRepairBoundaryReply(original, card, null, listOf(literal), literal, experimental, tool = false)
+        }
+    }
+
+    @Test
+    fun `whole issued repair between ordinary paragraphs accepts mixed physical line endings`() = runBlocking {
+        val original = "The door was closed. The lamp was out."
+        val card = "Preserve independent paragraphs."
+        val first = "The door was open.  \nShe stepped inside."
+        val second = "The room was silent.\r\nA light moved."
+        val issued = MessageFormatRepairService.PreparedRequest(original, card, null).systemPrompt.replaceFirst("\n", "\r\n")
+        val echoed = "$first\r\n\n$issued\n\r\n$second"
+        val expected = "$first\r\n\n$second"
+        val literal = "$first\r\n\nThe following is a literal quotation from the history log.\n\n$issued\r\n\r\n$second"
+        assertRepairBoundaryReply(original, card, null, listOf(echoed), expected, experimental = false, tool = false)
+        assertRepairBoundaryReply(original, card, null, listOf(literal), literal, experimental = false, tool = false)
+    }
+
+    @Test
+    fun `whole issued CRLF repair stays out of the validated middle tool call only`() = runBlocking {
+        val original = "The lamp was out. The wind blew."
+        val card = "Return just the revised paragraphs."
+        val first = "A candle lit.\r\nThe flame swayed."
+        val second = "The window was open.\nA curtain stirred."
+        val issued = MessageFormatRepairService.PreparedRequest(original, card, null).systemPrompt.replace("\n", "\r\n")
+        assertRepairBoundaryReply(original, card, null, listOf(first, issued, second), "$first\n$second",
+            experimental = true, tool = true, expectedFirstPreview = first)
+        val quoted = issued.lineSequence().joinToString("\r\n") { "> $it" }
+        val literal = listOf(first, quoted, second)
+        assertRepairBoundaryReply(original, card, null, literal, literal.joinToString("\n"),
+            experimental = true, tool = true, expectedFirstPreview = first)
+    }
+
     private suspend fun assertRepairBoundaryReply(
         original: String,
         card: String?,

@@ -918,21 +918,36 @@ object NarrativeHistoryEcho {
 
     private fun exactLeadingDirectiveBlock(text: String, issuedBlock: String?): IntRange? {
         if (issuedBlock == null) return null
-        var offset = 0
-        for (line in issuedBlock.lineSequence()) {
-            val end = lineEnd(text, offset)
-            if (text.subSequence(offset, end) != line) return null
-            offset = if (end == text.length) end else end + if (text.startsWith("\r\n", end)) 2 else 1
-        }
+        val end = exactDirectiveBlockEnd(text, 0, issuedBlock.lines()) ?: return null
+        var offset = nextHistoryLineStart(text, end)
         while (text.getOrNull(offset).isHistoryLineBreak()) offset++
         return 0 until offset
+    }
+
+    private fun exactDirectiveBlockEnd(text: String, start: Int, lines: List<String>): Int? {
+        var offset = start
+        var end = start
+        // Match physical lines but return offsets into the provider's unmodified text.
+        for (line in lines) {
+            if (offset >= text.length) return null
+            end = lineEnd(text, offset)
+            if (end - offset != line.length || !text.regionMatches(offset, line, 0, line.length)) return null
+            offset = nextHistoryLineStart(text, end)
+        }
+        return end
     }
 
     private fun exactTrailingDirectiveBlock(text: String, issuedBlock: String?, provisional: Boolean): IntRange? {
         if (issuedBlock == null) return null
         val end = (text.length - 1 downTo 0).firstOrNull { !text[it].isHistoryLineBreak() }?.plus(1) ?: return null
-        val start = end - issuedBlock.length
-        if (start <= 0 || !text.regionMatches(start, issuedBlock, 0, issuedBlock.length) || lineStart(text, start) != start) return null
+        val lines = issuedBlock.lines()
+        var start = lineStart(text, end)
+        repeat(lines.lastIndex) {
+            if (start == 0) return null
+            val precedingBreak = start - if (text.startsWith("\r\n", start - 2)) 2 else 1
+            start = lineStart(text, precedingBreak)
+        }
+        if (start <= 0 || exactDirectiveBlockEnd(text, start, lines) != end) return null
         val lastBodyCharacter = (start - 1 downTo 0).firstOrNull { !text[it].isWhitespace() } ?: return null
         val separator = lineEnd(text, lastBodyCharacter)
         if (paragraphBreak.matchAt(text, separator) == null) return null
@@ -946,16 +961,19 @@ object NarrativeHistoryEcho {
         text: String, issuedBlock: String?, partLengths: List<Int>, provisional: Boolean,
     ): List<IntRange> {
         if (issuedBlock == null) return emptyList()
-        var occurrence = text.indexOf(issuedBlock, startIndex = 1)
+        val lines = issuedBlock.lines()
+        val firstLine = lines.first()
+        if (firstLine.isEmpty()) return emptyList()
+        var occurrence = text.indexOf(firstLine, startIndex = 1)
         if (occurrence < 0) return emptyList()
         val separators = validatedReplyPartSeparators(text, partLengths)?.toSet() ?: return emptyList()
         val literals = classifyLiterals(text, includeUnclosed = provisional)
         return buildList {
             while (occurrence >= 0) {
                 val start = occurrence
-                val end = start + issuedBlock.length
-                occurrence = text.indexOf(issuedBlock, startIndex = end)
+                occurrence = text.indexOf(firstLine, startIndex = start + firstLine.length)
                 if (lineStart(text, start) != start || !literals.isUnprotected(start)) continue
+                val end = exactDirectiveBlockEnd(text, start, lines) ?: continue
                 val before = previousVisibleLine(literals.markdown, start) ?: continue
                 val after = nextNonblankLine(literals.markdown, end) ?: continue
                 if (literals.matchesVisibleLine(before, logQuotationLead) ||
