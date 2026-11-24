@@ -880,12 +880,24 @@ object NarrativeHistoryEcho {
                     ) removals += start until fragment
                     continue
                 }
-                if (end == text.length) continue
+                val quotedLead = hasOrphanClosingCaption(text, start) || literals.followsLiteralHeadingLead(start) ||
+                    literals.matchesVisibleLine(before, logQuotationLead) || literals.matchesVisibleLine(before, metadataExampleBridge)
+                if (text.subSequence(end, text.length).isBlank()) {
+                    if (isAuthoredHeading(heading) && before != null) {
+                        if (quotedLead) {
+                            quotedBlocks += start until text.length
+                        } else {
+                            val suffixStart = (start - 1 downTo 0)
+                                .firstOrNull { !text[it].isHistoryLineBreak() }?.plus(1) ?: start
+                            removals += suffixStart until text.length
+                        }
+                    }
+                    continue
+                }
                 val after = nextNonblankLine(literals.markdown, end) ?: continue
                 val afterBlock = end + if (text.startsWith("\r\n", end)) 2 else 1
-                if (hasOrphanClosingCaption(text, start) || literals.followsLiteralHeadingLead(start) ||
-                    literals.matchesVisibleLine(before, logQuotationLead) || literals.matchesVisibleLine(before, metadataExampleBridge) ||
-                    literals.matchesVisibleLine(after, logQuotationTail) || literals.matchesVisibleLine(after, historyExampleExplanation)
+                if (quotedLead || literals.matchesVisibleLine(after, logQuotationTail) ||
+                    literals.matchesVisibleLine(after, historyExampleExplanation)
                 ) {
                     // A quoted switch block may contain the complete core block inside itself.
                     quotedBlocks += start until afterBlock

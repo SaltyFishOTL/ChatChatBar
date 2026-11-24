@@ -5004,12 +5004,13 @@ class ExperimentalToolTransportTest {
         for (mode in ChatNarrativeMode.entries) {
             val issued = PromptTemplates.narrativeModeSystemPrompt(mode)
             val title = issued.lineSequence().first()
-            val wanted = "$title\n$story"
-            val raw = "$wanted\n\n$issued"
+            val wanted = "$title\r\n$story"
+            val raw = "$wanted\r\n\r\n$issued"
+            val request = "Begin the reply with this exact heading verbatim:\n$title"
             for ((experimental, toolCall) in listOf(false to false, true to true)) {
                 assertNarrativeReplyDeltas(
                     listOf(raw), listOf(wanted), wanted, narrativePrompt = issued,
-                    currentUserText = "Begin the reply with this exact heading verbatim:\n$title",
+                    currentUserText = request,
                     requestNarrativeMode = mode, experimental = experimental, toolCall = toolCall, checkHeldStop = true,
                 )
                 assertNarrativeReplyDeltas(
@@ -5017,6 +5018,17 @@ class ExperimentalToolTransportTest {
                     currentUserText = "Copy this text verbatim:\n$raw",
                     requestNarrativeMode = mode, experimental = experimental, toolCall = toolCall,
                 )
+                for (literal in listOf(
+                    "$wanted\n\n~~~text\n$issued\n~~~",
+                    "$wanted\n\nThe plaque quoted these rules:\n$issued",
+                    "$wanted\n\n${issued.substringBeforeLast('\n')}\nThe model did not send this last line.",
+                )) {
+                    assertNarrativeReplyDeltas(
+                        listOf(literal), listOf(literal), literal, narrativePrompt = issued,
+                        currentUserText = request, requestNarrativeMode = mode,
+                        experimental = experimental, toolCall = toolCall,
+                    )
+                }
             }
         }
     }
