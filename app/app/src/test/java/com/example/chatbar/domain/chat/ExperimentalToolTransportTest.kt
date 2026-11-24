@@ -564,6 +564,86 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `a plain citation explanation in a separate tool call needs only the decoder join`(): Unit = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "The window opened.").copy(narrativeMode = mode)
+        val quote = PromptTemplates.narrativeModeHistoryReply(prior.displayContent, mode)
+        val explanation = "The element describes the earlier scene."
+        val wrapped = PromptTemplates.narrativeModeHistoryReply(explanation, mode)
+        val request = "Quote the previous assistant reply with its outer XML wrapper, then explain in plain prose."
+        val parts = listOf(quote, wrapped)
+        val raw = parts.joinToString("\n")
+        for ((experimental, tool) in listOf(false to false, true to false, true to true)) {
+            assertNarrativeReplyDeltas(
+                listOf(raw), listOf(raw), raw, previousAssistant = prior, currentUserText = request,
+                experimental = experimental, toolCall = tool, requestNarrativeMode = mode, checkHeldStop = true,
+            )
+        }
+        assertMultipartNarrativeReply(
+            parts, raw, previousAssistant = prior, userText = request.substringBefore(',') + ".", checkHeldStop = true,
+        )
+        assertMultipartNarrativeReply(
+            parts, "$quote\n$explanation", previousAssistant = prior, userText = request, checkHeldStop = true,
+        )
+    }
+
+    @Test
+    fun `an editable character copy directive owns both consecutive literal XML samples`(): Unit = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "A different scene.").copy(narrativeMode = mode)
+        val first = "The first scene."
+        val second = "The second scene."
+        val raw = PromptTemplates.narrativeModeHistoryReply(first, mode) + "\n\n" +
+            PromptTemplates.narrativeModeHistoryReply(second, mode)
+        val directive = "Copy the following XML exactly:\n$raw"
+        val normalized = "$first\n\n$second"
+        for ((experimental, tool) in listOf(false to false, true to false, true to true)) {
+            assertNarrativeReplyDeltas(
+                listOf(raw), listOf(normalized), normalized, previousAssistant = prior, currentUserText = "Continue.",
+                characterCoreInstructions = "Reference examples:\n$raw", requestNarrativeMode = mode,
+                experimental = experimental, toolCall = tool,
+            )
+            assertNarrativeReplyDeltas(
+                listOf(raw), listOf(raw), raw, previousAssistant = prior, currentUserText = directive,
+                requestNarrativeMode = mode, experimental = experimental, toolCall = tool,
+            )
+            assertNarrativeReplyDeltas(
+                listOf(raw), listOf(raw), raw, previousAssistant = prior, currentUserText = "Continue.",
+                characterCoreInstructions = directive, requestNarrativeMode = mode,
+                experimental = experimental, toolCall = tool, checkHeldStop = true,
+            )
+        }
+    }
+
+    @Test
+    fun `a validated opening edge keeps its body bytes when the closing tag is inline`(): Unit = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "A different scene.").copy(narrativeMode = mode)
+        val opening = PromptTemplates.narrativeModeHistoryReply("", mode).lineSequence().first()
+        val parts = listOf(opening, "\n\nStory.</历史回复>")
+        val raw = parts.joinToString("\n")
+        assertNarrativeReplyDeltas(
+            listOf(raw), listOf("Story."), "Story.", previousAssistant = prior, requestNarrativeMode = mode,
+            experimental = true, toolCall = true, checkHeldStop = true,
+        )
+        assertMultipartNarrativeReply(parts, "\n\nStory.", previousAssistant = prior, checkHeldStop = true)
+    }
+
+    @Test
+    fun `a validated closing edge keeps its body bytes when the opening tag is inline`(): Unit = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "A different scene.").copy(narrativeMode = mode)
+        val opening = PromptTemplates.narrativeModeHistoryReply("", mode).lineSequence().first()
+        val parts = listOf("${opening}Story.\n\n", "</历史回复>")
+        val raw = parts.joinToString("\n")
+        assertNarrativeReplyDeltas(
+            listOf(raw), listOf("Story."), "Story.", previousAssistant = prior, requestNarrativeMode = mode,
+            experimental = true, toolCall = true, checkHeldStop = true,
+        )
+        assertMultipartNarrativeReply(parts, "Story.\n\n", previousAssistant = prior, checkHeldStop = true)
+    }
+
+    @Test
     fun `simple own line wrappers preserve proved body bytes and normalize undecidable padding`(): Unit = runBlocking {
         val mode = ChatNarrativeMode.FOCUS
         val prose = "The window opened."

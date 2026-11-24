@@ -820,9 +820,12 @@ object NarrativeHistoryEcho {
                     prepared, narrativeHeadingContinuations, provisional, ::isAuthoredHeading, ::hasDirectedHeading, ::isAuthoredModeText,
                 )
             }
-            fun cleanNewSuffix(separatorAndBody: String, explanationFormat: FormatOutput? = null): String {
-                val separator = paragraphBreak.matchAt(separatorAndBody, 0) ?: return separatorAndBody
-                val firstLine = separator.range.last + 1
+            fun cleanNewSuffix(
+                separatorAndBody: String, explanationFormat: FormatOutput? = null, separatedByToolJoin: Boolean = false,
+            ): String {
+                val firstLine = if (separatedByToolJoin) 1 else {
+                    paragraphBreak.matchAt(separatorAndBody, 0)?.range?.last?.plus(1) ?: return separatorAndBody
+                }
                 val body = removeCompleteModeEchoes(separatorAndBody.substring(firstLine), emptyList())
                 val exposed = removeDispatchEchoBeforeTrailer(removeDispatchEcho(body.text, body::isQuoted).content(body.text))
                 val commentary = if (explanationFormat != null && exposed.trimEnd() !in projectedBodies) cleanReply(
@@ -846,6 +849,8 @@ object NarrativeHistoryEcho {
                     if (citation.startsWith(text)) return text
                     if (text.startsWith(citation)) return citation + cleanNewSuffix(
                         text.substring(citation.length), replyFormat.takeIf { explainCitationInPlainProse },
+                        separatedByToolJoin = explainCitationInPlainProse &&
+                            validatedReplyPartSeparators(text, partLengths)?.contains(citation.length) == true,
                     )
                 }
             }
@@ -1352,6 +1357,7 @@ object NarrativeHistoryEcho {
         val pairs = buildSet {
             for (family in wrapperFamilyTokens.values) {
                 val tags = family.findAll(text).toList()
+                var lastCopiedSampleLineEnd: Int? = null
                 for ((index, tag) in tags.withIndex()) {
                     val start = tag.range.first
                     val line = lineStart(text, start)
@@ -1388,9 +1394,14 @@ object NarrativeHistoryEcho {
                         ) standaloneOpenings += wrapper.opening
                     }
                     val visibleLead = literals.visibleLine(lead)
-                    val requestedMultilineCopy = atLineStart && lead != null &&
+                    val directCopyLead = lead != null &&
                         visibleLead?.let(inlineExactCopyInstruction::matches) == true &&
-                        literals.markdown.substring(lead.last + 1, line) in setOf("\n", "\r\n") &&
+                        literals.markdown.substring(lead.last + 1, line) in setOf("\n", "\r\n")
+                    val followsCopiedSample = lastCopiedSampleLineEnd?.takeIf { it < line }?.let { previousEnd ->
+                        val gap = text.subSequence(previousEnd, line)
+                        gap.isBlank() && paragraphBreak.containsMatchIn(gap)
+                    } == true
+                    val requestedMultilineCopy = atLineStart && (directCopyLead || followsCopiedSample) &&
                         text.getOrNull(tag.range.last + 1).isHistoryLineBreak() && literals.isUnprotected(start)
                     val followingTags = tags.asSequence().drop(index + 1)
                     val closing = wrapperBoundary(wrapper, if (requestedMultilineCopy ||
@@ -1419,7 +1430,7 @@ object NarrativeHistoryEcho {
                     val template = atLineStart && visiblePair && (standalonePair || singleLine) &&
                         literals.declaresSlotTemplate(lead, text.substring(tag.range.last + 1, closing.range.first).trim())
                     val labeled = visibleLead?.let(formatTemplateLabel::matches) == true
-                    val prohibitionLead = if ((labeled || template || requestedMultilineCopy) && lead != null) {
+                    val prohibitionLead = if ((labeled || template || requestedMultilineCopy && directCopyLead) && lead != null) {
                         previousVisibleLine(literals.markdown, lead.first)
                     } else lead
                     val explicitCopy = visiblePair && (requestedInlineCopy || requestedMultilineCopy)
@@ -1432,7 +1443,12 @@ object NarrativeHistoryEcho {
                     val pair = text.substring(start, end)
                     // A slot establishes a format for new text. Only a literal copy reserves these exact bytes.
                     if (template) templateOpenings += wrapper.opening
-                    else if (explicitCopy || !requireExplicitCopy && (singleLine || standalonePair)) add(pair)
+                    else if (explicitCopy || !requireExplicitCopy && (singleLine || standalonePair)) {
+                        add(pair)
+                        if (requireExplicitCopy && requestedMultilineCopy && standalonePair) {
+                            lastCopiedSampleLineEnd = closingLineEnd
+                        }
+                    }
                 }
             }
         }
@@ -2634,16 +2650,19 @@ object NarrativeHistoryEcho {
                 while (endOfContent < limit && !body[endOfContent].isHistoryLineBreak()) endOfContent++
                 return bodyStart + endOfContent
             }
-            val openingBreak = openingLineBreak
-            if (completeClose != null && openingBreak != null && literals.isStandaloneTagLine(position, completeClose)) {
-                val breakAfterOpening = if (afterOpening.startsWith("\r\n", openingBreak)) 2 else 1
-                val contentStart = openingStart + wrapper.opening.length + openingBreak + breakAfterOpening
-                val closingLine = bodyStart + lineStart(body, position)
-                val openingToolJoin = isToolJoin(contentStart - 1)
-                val closingToolJoin = isToolJoin(closingLine - 1)
-                val breakBeforeClosing = if (!closingToolJoin && text.startsWith("\r\n", closingLine - 2)) 2 else 1
-                val contentEnd = closingLine - breakBeforeClosing
-                if (isProjectedOwnLineFrame(position, completeClose)) {
+            if (completeClose != null) {
+                val contentStart = openingLineBreak?.let { openingBreak ->
+                    val breakAfterOpening = if (afterOpening.startsWith("\r\n", openingBreak)) 2 else 1
+                    openingStart + wrapper.opening.length + openingBreak + breakAfterOpening
+                }
+                val closingLine = if (literals.isStandaloneTagLine(position, completeClose)) {
+                    bodyStart + lineStart(body, position)
+                } else null
+                val ownedStart = contentStart?.takeIf { isToolJoin(it - 1) }
+                val ownedEnd = closingLine?.let { it - 1 }?.takeIf(isToolJoin)
+                if (contentStart != null && closingLine != null && isProjectedOwnLineFrame(position, completeClose)) {
+                    val breakBeforeClosing = if (ownedEnd == null && text.startsWith("\r\n", closingLine - 2)) 2 else 1
+                    val contentEnd = closingLine - breakBeforeClosing
                     val payload = text.substring(contentStart, maxOf(contentStart, contentEnd))
                     val hasCrLfInsideBody = "\r\n" in payload.trim('\r', '\n')
                     val hasPaddedTerminalCodeLine = payload.endsWith('\n') &&
@@ -2652,10 +2671,10 @@ object NarrativeHistoryEcho {
                         hasPaddedTerminalCodeLine || endsWithLiteralFence(position)
                     ) return payload
                 }
-                if (openingToolJoin || closingToolJoin) {
-                    // Each proved join assigns its own edge only. Use ordinary handling for the other edge.
-                    val retainedStart = if (openingToolJoin) contentStart else bodyStart
-                    val retainedEnd = if (closingToolJoin) contentEnd else ordinaryBodyEnd()
+                if (ownedStart != null || ownedEnd != null) {
+                    // Use ordinary handling at an unproved edge, including an inline delimiter.
+                    val retainedStart = ownedStart ?: bodyStart
+                    val retainedEnd = ownedEnd ?: ordinaryBodyEnd()
                     return text.substring(retainedStart, maxOf(retainedStart, retainedEnd))
                 }
             }
