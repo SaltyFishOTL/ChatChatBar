@@ -328,10 +328,12 @@ private fun String.isActionListDelimiter(): Boolean =
 
 private fun actionBullet(line: String): String? = bulletedActionOption.matchEntire(line)?.groupValues?.get(1)
 
-private fun isNumberedActionList(lines: List<String>, minimumOptions: Int, allowsContinuation: Boolean): Boolean {
+private data class ActionListPrefix(val choices: Int, val consumed: Int)
+
+private fun numberedActionPrefix(lines: List<String>, allowsContinuation: Boolean): ActionListPrefix {
     var count = 0
     var contentIndent = Int.MAX_VALUE
-    for (line in lines) {
+    for ((index, line) in lines.withIndex()) {
         if (matchesNumberedActionOption(line, count + 1)) {
             count++
             val afterPeriod = line.indexOf('.') + 1
@@ -339,9 +341,9 @@ private fun isNumberedActionList(lines: List<String>, minimumOptions: Int, allow
             contentIndent = if (padding.isEmpty()) Int.MAX_VALUE else afterPeriod + padding.length
         } else if (!allowsContinuation || line.takeWhile { it == ' ' }.length < contentIndent ||
             numberedActionOption.matches(line.trimStart())
-        ) return false
+        ) return ActionListPrefix(count, index)
     }
-    return count >= minimumOptions
+    return ActionListPrefix(count, lines.size)
 }
 
 /** Paired dashes need an actual choice list. Legacy long delimiters require ordered choices. */
@@ -359,7 +361,8 @@ internal fun roleplayListedActionRanges(text: String): Sequence<IntRange> =
             val minimumOptions = if (hasHeading) 1 else 2
             val bullet = options.firstOrNull()?.takeIf { delimiter == "---" }?.let(::actionBullet)
             val listed = if (bullet == null) {
-                isNumberedActionList(options, minimumOptions, allowsContinuation = hasHeading && delimiter == "---")
+                val prefix = numberedActionPrefix(options, allowsContinuation = hasHeading && delimiter == "---")
+                prefix.consumed == options.size && prefix.choices >= minimumOptions
             } else {
                 options.size >= minimumOptions && options.all { actionBullet(it) == bullet }
             }
@@ -519,26 +522,30 @@ internal fun isPendingRoleplayActionSuffix(text: String): Boolean {
     }
     val options = lines.drop(if (hasHeading) 2 else 1)
     val bullet = options.firstOrNull()?.takeIf { delimiter == "---" }?.let(::actionBullet)
-    for ((index, line) in options.withIndex()) {
-        val ordinal = index + 1
-        val choice = if (bullet == null) matchesNumberedActionOption(line, ordinal) else actionBullet(line) == bullet
-        if (choice) continue
-        if (index != options.lastIndex || index < minimumOptions) return false
-        val lastCharacter = text.trimEnd(' ', '\t').lastOrNull()
-        if (lastCharacter == '\n' || lastCharacter == '\r') return false
-
-        val content = line.trimStart(' ')
-        if (line.length - content.length > 3) return false
-        val closing = if (annotated) annotatedActionLabel + "—".repeat(annotatedActionDashCount) else requireNotNull(delimiter)
-        if (closing.startsWith(content)) return true
-        if (bullet != null) return content.trimEnd(' ', '\t') == bullet
-        val marker = "$ordinal."
-        if (marker.startsWith(content)) return true
-        if (!content.startsWith(marker)) return false
-        val partialBody = content.substring(marker.length).trim(' ', '\t')
-        return partialBody.length <= 2 && partialBody.all { it == '*' }
+    val prefix = if (bullet == null) {
+        numberedActionPrefix(options, allowsContinuation = hasHeading && delimiter == "---")
+    } else {
+        val count = options.takeWhile { actionBullet(it) == bullet }.size
+        ActionListPrefix(count, count)
     }
-    return options.size >= minimumOptions
+    if (prefix.choices < minimumOptions) return false
+    if (prefix.consumed == options.size) return true
+    if (prefix.consumed != options.lastIndex) return false
+    val lastCharacter = text.trimEnd(' ', '\t').lastOrNull()
+    if (lastCharacter == '\n' || lastCharacter == '\r') return false
+
+    val line = options.last()
+    val content = line.trimStart(' ')
+    if (line.length - content.length > 3) return false
+    val closing = if (annotated) annotatedActionLabel + "—".repeat(annotatedActionDashCount) else requireNotNull(delimiter)
+    if (closing.startsWith(content)) return true
+    if (bullet != null) return content.trimEnd(' ', '\t') == bullet
+    val ordinal = prefix.choices + 1
+    val marker = "$ordinal."
+    if (marker.startsWith(content)) return true
+    if (!content.startsWith(marker)) return false
+    val partialBody = content.substring(marker.length).trim(' ', '\t')
+    return partialBody.length <= 2 && partialBody.all { it == '*' }
 }
 
 /** The labeled option block in the bundled roleplay preset has mirrored, exact delimiters. */

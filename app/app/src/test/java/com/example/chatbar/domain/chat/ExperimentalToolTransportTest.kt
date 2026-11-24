@@ -1286,6 +1286,40 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `partial headed choices with continuation stay visible while the real history wrapper is withheld`() = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val story = "The lamp lit up."
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "The previous scene.").copy(narrativeMode = mode)
+        val wrapper = PromptTemplates.narrativeModeHistoryReply(story, mode)
+        val basic = "\n\n---\n**【行动选项】**\n\n1. **[Open the door]()**"
+        val continuation = "$basic\n   Wait for the latch to click.\n2. **[Stay here]()**"
+        val close = "\n---"
+        for ((experimental, tool) in listOf(false to false, true to true)) {
+            val example = "---\n1. An ordinarily authored item.\n   It continues here."
+            for (literal in listOf(example, example.prependIndent("> "))) {
+                val raw = "$wrapper\n\n$literal"
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(raw), raw, previousAssistant = prior,
+                    experimental = experimental, toolCall = tool, requestNarrativeMode = mode, checkHeldStop = true,
+                )
+            }
+            assertNarrativeReplyDeltas(
+                listOf(wrapper + basic), listOf(story + basic), wrapper + basic, previousAssistant = prior,
+                experimental = experimental, toolCall = tool, requestNarrativeMode = mode, checkHeldStop = true,
+            )
+            assertNarrativeReplyDeltas(
+                listOf(wrapper, continuation, close), listOf(story, story + continuation, story + continuation + close),
+                story + continuation + close, previousAssistant = prior, experimental = experimental, toolCall = tool,
+                requestNarrativeMode = mode, checkHeldStop = true, releaseTailAfter = 1,
+            )
+            assertNarrativeReplyDeltas(
+                listOf(wrapper + continuation), listOf(story + continuation), wrapper + continuation,
+                previousAssistant = prior, experimental = experimental, toolCall = tool, requestNarrativeMode = mode, checkHeldStop = true,
+            )
+        }
+    }
+
+    @Test
     fun `ordinary SSE keeps a declared bare status without treating bare code as status evidence`() = runBlocking {
         val story = "灯亮了。"
         val wrapped = PromptTemplates.narrativeModeHistoryReply(story, ChatNarrativeMode.FOCUS)
@@ -4079,6 +4113,39 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `a true history envelope on independent commentary does not become part of an exact citation`() = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "The lamp was lit.").copy(narrativeMode = mode)
+        val quote = PromptTemplates.narrativeModeHistoryReply(prior.displayContent, mode)
+        val commentary = "The scene shows that they can still see."
+        val separatelyWrapped = PromptTemplates.narrativeModeHistoryReply(commentary, mode)
+        val request = "Quote the previous answer with its XML history tags verbatim, then explain in plain prose."
+        for ((experimental, tool) in listOf(false to false, true to false, true to true)) {
+            for (literal in listOf(
+                commentary, "~~~xml\n$separatelyWrapped\n~~~", separatelyWrapped.prependIndent("> "),
+                PromptTemplates.narrativeModeHistoryReply(commentary, ChatNarrativeMode.ADVANCE), quote, "$quote\n\n",
+            )) {
+                val answer = "$quote\n\n$literal"
+                assertNarrativeReplyDeltas(
+                    listOf(answer), listOf(answer), answer, previousAssistant = prior, currentUserText = request,
+                    experimental = experimental, toolCall = tool, requestNarrativeMode = mode,
+                )
+            }
+            val quoteOnly = "$quote\n\n$separatelyWrapped"
+            assertNarrativeReplyDeltas(
+                listOf(quoteOnly), listOf(quoteOnly), quoteOnly, previousAssistant = prior,
+                currentUserText = request.substringBefore(',') + ".", experimental = experimental,
+                toolCall = tool, requestNarrativeMode = mode,
+            )
+            val expected = "$quote\n\n$commentary"
+            assertNarrativeReplyDeltas(
+                listOf(quote, "\n\n$separatelyWrapped"), listOf(quote, expected), expected, previousAssistant = prior,
+                currentUserText = request, experimental = experimental, toolCall = tool, requestNarrativeMode = mode, checkHeldStop = true,
+            )
+        }
+    }
+
+    @Test
     fun `sent format can declare paired exact boundary lines in inline code`() = runBlocking {
         val body = "The door closed."
         for (mode in ChatNarrativeMode.entries) {
@@ -4562,6 +4629,37 @@ class ExperimentalToolTransportTest {
                     )
                 }
             }
+        }
+    }
+
+    @Test
+    fun `a single reply exact boundary instruction expires in past user history`() = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "An earlier scene.").copy(narrativeMode = mode)
+        val story = "The new lamp still worked."
+        val wrapped = PromptTemplates.narrativeModeHistoryReply(story, mode)
+        val opener = wrapped.substringBefore('\n')
+        val close = wrapped.substringAfterLast('\n')
+        val boundary = "Begin the reply with the exact line `$opener` and end it with the exact line `$close`."
+        val scoped = "For this reply only.\n$boundary"
+        for ((experimental, tool) in listOf(false to false, true to false, true to true)) {
+            for ((current, past) in listOf(scoped to "Light the lamp.", "Check the sigil." to scoped)) {
+                assertNarrativeReplyDeltas(
+                    listOf(wrapped), listOf(wrapped), wrapped, previousAssistant = prior, previousUserText = past,
+                    currentUserText = current, worldBookEntry = boundary.takeIf { current == "Check the sigil." },
+                    experimental = experimental, toolCall = tool, requestNarrativeMode = mode,
+                )
+            }
+            assertNarrativeReplyDeltas(
+                listOf(wrapped), listOf(wrapped), wrapped, previousAssistant = prior, previousUserText = scoped,
+                currentUserText = "Continue.", characterBasicSetting = boundary,
+                experimental = experimental, toolCall = tool, requestNarrativeMode = mode,
+            )
+            assertNarrativeReplyDeltas(
+                listOf(wrapped), listOf(story), story, previousAssistant = prior, previousUserText = scoped,
+                currentUserText = "Continue.", experimental = experimental, toolCall = tool,
+                requestNarrativeMode = mode, checkHeldStop = true,
+            )
         }
     }
 
@@ -5583,6 +5681,7 @@ class ExperimentalToolTransportTest {
         dispatchActualModeTail: Boolean = false,
         regenerationTarget: ChatMessage? = null,
         checkHeldStop: Boolean = false,
+        releaseTailAfter: Int = deltaTexts.lastIndex,
     ) {
         val cleanup = NarrativeHistoryEcho.forRequest(requestNarrativeMode.takeIf { narrativeModesEnabled }, formatCard)
         val histories = if (previousAssistant != null) listOfNotNull(earlierAssistant, previousAssistant)
@@ -5700,8 +5799,8 @@ class ExperimentalToolTransportTest {
             }.toString()
         }
         GatedExperimentalResponse(
-            sse(deltas),
-            sse(listOf(chunk(reason = finishReason), "[DONE]")),
+            sse(deltas.take(releaseTailAfter + 1)),
+            sse(deltas.drop(releaseTailAfter + 1) + listOf(chunk(reason = finishReason), "[DONE]")),
         ).use { server ->
             val previews = mutableListOf<String>()
             var completion: ChatReplyCompletion? = null
@@ -5719,10 +5818,10 @@ class ExperimentalToolTransportTest {
                     }
                     if (preview != null) {
                         previews += preview
-                        if (preview == rawPreviews.last()) {
+                        if (previews.lastIndex == releaseTailAfter) {
                             assertFalse(server.tailSent)
                             if (checkHeldStop) assertEquals(
-                                "Held Stop", expectedCompleted, cleanup.completedBody(preview, interrupted = true),
+                                "Held Stop", expectedPreviews[releaseTailAfter], cleanup.completedBody(preview, interrupted = true),
                             )
                             server.releaseTail()
                         }

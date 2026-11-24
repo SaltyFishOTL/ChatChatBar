@@ -37,7 +37,9 @@ object NarrativeHistoryEcho {
         val templateOpenings: Set<String> = emptySet(),
         val counterexampleClosingStarts: Set<Int> = emptySet(),
         val counterexampleOpenings: Set<String> = emptySet(),
+        val currentReplyTemplateOpenings: Set<String> = emptySet(),
     )
+    private data class BoundaryOpenings(val persistent: Set<String>, val currentReply: Set<String>)
     private enum class ClosingEvidence { NONE, ONE_LITERAL, PROTECTED }
     private enum class TemplateIntent { KEEP, OMIT }
     private data class ReplyLiterals(
@@ -101,6 +103,10 @@ object NarrativeHistoryEcho {
             "`([^`\\r\\n]+)`[.!]?[ \\t]*(?=\\r?$)",
         setOf(RegexOption.IGNORE_CASE, RegexOption.MULTILINE),
     )
+    private val singleReplyBoundaryScope = Regex(
+        " {0,3}for[ \\t]+(?:this|the[ \\t]+current)[ \\t]+(?:reply|answer|response|turn)[ \\t]+only\\.?[ \\t]*",
+        RegexOption.IGNORE_CASE,
+    )
     private val formatTemplateAffirmation = Regex(
         "[ \\t]*(?:（[ \\t]*标签是固定输出的一部分[ \\t]*）|\\([ \\t]*标签是固定输出的一部分[ \\t]*\\))[ \\t]*[。.]?[ \\t]*",
     )
@@ -155,7 +161,7 @@ object NarrativeHistoryEcho {
             "(?:literally|verbatim)[ \\t]+with[ \\t]+(?:its|the)[ \\t]+XML[ \\t]+history[ \\t]+tags|" +
             "verbatim,[ \\t]+including[ \\t]+both[ \\t]+XML[ \\t]+history[ \\t]+tags|" +
             "(?:literally|verbatim),[ \\t]+with[ \\t]+the[ \\t]+surrounding[ \\t]+XML[ \\t]+included)" +
-            "(?:,[ \\t]+then[ \\t]+(?:explain[ \\t]+[^\\r\\n.!?]+|" +
+            "(?:,[ \\t]+then[ \\t]+(?:explain[ \\t]+(?:(?<plainProse>in[ \\t]+plain[ \\t]+prose)|[^\\r\\n.!?]+)|" +
             "tell[ \\t]+me[ \\t]+what[ \\t]+(?:the|that)[ \\t]+(?:quote|quotation)[ \\t]+(?:demonstrates|shows|illustrates)))?" +
             "[.!?]?[ \\t]*(?:\\r?\\n {0,3}then[ \\t]+explain[ \\t]+what[ \\t]+(?:the|that)[ \\t]+" +
             "(?:quote|quotation)[ \\t]+(?:demonstrates|shows|illustrates)[.!?]?[ \\t]*)?",
@@ -373,6 +379,7 @@ object NarrativeHistoryEcho {
         private val projectedBodies = mutableMapOf<String, String>()
         private var latestHistoryProjection: String? = null
         private var citeLatestProjectionVerbatim = false
+        private var explainCitationInPlainProse = false
         private val narrativeHeadings = mutableSetOf<String>()
         private val narrativeHeadingContinuations = mutableMapOf<String, MutableSet<List<String>>>()
         private val issuedSwitchLines = mutableSetOf<String>()
@@ -482,8 +489,10 @@ object NarrativeHistoryEcho {
             }
             recordCurrentOutput(authoredSources[source] ?: declaredUserOutput(source))
             omitInheritedXmlTemplates = currentUserOmitsXml(source)
-            citeLatestProjectionVerbatim = exactPreviousReplyCitation.matches(source) ||
+            val citation = exactPreviousReplyCitation.matchEntire(source)
+            citeLatestProjectionVerbatim = citation != null ||
                 exactPreviousReplyCitationInChinese.matches(source)
+            explainCitationInPlainProse = citation?.groups?.get("plainProse") != null
         }
 
         private fun recordCurrentOutput(output: UserOutput) {
@@ -493,10 +502,11 @@ object NarrativeHistoryEcho {
                 closings = currentLiteralOutput.closings + literal.closings,
             )
             authoredPairs += literal.pairs
-            authoredTemplateOpenings += output.templateOpenings
+            val activeTemplates = output.templateOpenings + output.currentReplyTemplateOpenings
+            authoredTemplateOpenings += activeTemplates
             // Only explicit declarations in sent layers participate, in their dispatch order.
             for (opening in output.counterexampleOpenings) currentTemplateIntents[opening] = TemplateIntent.OMIT
-            for (opening in output.templateOpenings) currentTemplateIntents[opening] = TemplateIntent.KEEP
+            for (opening in activeTemplates) currentTemplateIntents[opening] = TemplateIntent.KEEP
         }
 
         private fun isAuthoredHeading(token: String): Boolean =
@@ -723,18 +733,18 @@ object NarrativeHistoryEcho {
                     prepared, narrativeHeadingContinuations, provisional, ::isAuthoredHeading, ::hasDirectedHeading, ::isAuthoredModeText,
                 )
             }
-            fun cleanNewSuffix(separatorAndBody: String): String {
+            fun cleanNewSuffix(separatorAndBody: String, explanationFormat: FormatOutput? = null): String {
                 val separator = paragraphBreak.matchAt(separatorAndBody, 0) ?: return separatorAndBody
                 val firstLine = separator.range.last + 1
                 val body = removeCompleteModeEchoes(separatorAndBody.substring(firstLine), emptyList())
-                return separatorAndBody.substring(0, firstLine) +
-                    removeDispatchEchoBeforeTrailer(removeDispatchEcho(body.text, body::isQuoted).content(body.text))
-            }
-            if (citeLatestProjectionVerbatim) {
-                latestHistoryProjection?.let { citation ->
-                    if (citation.startsWith(text)) return text
-                    if (text.startsWith(citation)) return citation + cleanNewSuffix(text.substring(citation.length))
-                }
+                val exposed = removeDispatchEchoBeforeTrailer(removeDispatchEcho(body.text, body::isQuoted).content(body.text))
+                val commentary = if (explanationFormat != null && exposed.trimEnd() !in projectedBodies) cleanReply(
+                    exposed, streaming, interrupted, requirePair = true, formatOutput = explanationFormat,
+                    allowedOpenings = projectedOpenings - legacyWrapper.opening,
+                    projectedBodies = projectedBodies,
+                    literalOutput = currentLiteralOutput.copy(pairs = authoredPairs),
+                ).body else exposed
+                return separatorAndBody.substring(0, firstLine) + commentary
             }
             val supersededOpenings = authoredTemplateOpenings.filter { opening ->
                 val current = currentTemplateIntents[opening]
@@ -743,6 +753,14 @@ object NarrativeHistoryEcho {
             val activeTemplates = authoredTemplateOpenings - supersededOpenings
             val replyFormat = if (activeTemplates.isEmpty()) formatOutput else {
                 formatOutput.copy(declaredOpenings = formatOutput.declaredOpenings + activeTemplates)
+            }
+            if (citeLatestProjectionVerbatim) {
+                latestHistoryProjection?.let { citation ->
+                    if (citation.startsWith(text)) return text
+                    if (text.startsWith(citation)) return citation + cleanNewSuffix(
+                        text.substring(citation.length), replyFormat.takeIf { explainCitationInPlainProse },
+                    )
+                }
             }
             if (text !in authoredPairs && replyFormat.declaredOpenings.none(text::startsWith)) {
                 projectedBodies[text]?.let { return it }
@@ -1076,7 +1094,8 @@ object NarrativeHistoryEcho {
         val standaloneOpenings = mutableSetOf<String>()
         val standaloneClosings = mutableSetOf<String>()
         val literals by lazy(LazyThreadSafetyMode.NONE) { classifyLiterals(text) }
-        templateOpenings += literals.declaredBoundaryOpenings(text, wrappers)
+        val exactBoundaries = literals.declaredBoundaryOpenings(text, wrappers)
+        templateOpenings += exactBoundaries.persistent
         fun startsLine(offset: Int): Boolean {
             val start = lineStart(text, offset)
             return offset - start <= 3 && (start until offset).all { text[it] == ' ' }
@@ -1207,8 +1226,10 @@ object NarrativeHistoryEcho {
                 counterexampleClosingStarts += closing.range.first
             } else templateOpenings += wrapper.opening
         }
-        return UserOutput(LiteralOutput(pairs, standaloneOpenings, standaloneClosings), templateOpenings,
-            counterexampleClosingStarts, counterexampleOpenings)
+        return UserOutput(
+            LiteralOutput(pairs, standaloneOpenings, standaloneClosings), templateOpenings,
+            counterexampleClosingStarts, counterexampleOpenings, exactBoundaries.currentReply,
+        )
     }
 
     /** An explicit copy directive applies to a whole quoted pair with explicit line prefixes. */
@@ -1647,15 +1668,21 @@ object NarrativeHistoryEcho {
         return previous < before && (character == ':' || character == '：')
     }
 
-    private fun ReplyLiterals.declaredBoundaryOpenings(source: String, candidates: List<Wrapper>): Set<String> = buildSet {
+    private fun ReplyLiterals.declaredBoundaryOpenings(source: String, candidates: List<Wrapper>): BoundaryOpenings {
+        val persistent = mutableSetOf<String>()
+        val currentReply = mutableSetOf<String>()
         for (directive in exactBoundaryLines.findAll(source)) {
             val (opening, closing) = directive.destructured
             val wrapper = candidates.firstOrNull { it.opening == opening && closing in it.closings } ?: continue
             val start = directive.range.first
             if (!isUnprotected(start)) continue
             val before = previousVisibleLine(markdown, start)
-            if (!prohibitsWrapper(before, directive.range.last + 1) && !isDocumentaryHistoryLead(before)) add(wrapper.opening)
+            if (prohibitsWrapper(before, directive.range.last + 1) || isDocumentaryHistoryLead(before)) continue
+            val scoped = before != null && matchesVisibleLine(before, singleReplyBoundaryScope) &&
+                source.substring(before.last + 1, start) in setOf("\n", "\r\n")
+            (if (scoped) currentReply else persistent).add(wrapper.opening)
         }
+        return BoundaryOpenings(persistent, currentReply)
     }
 
     private fun declaredOutput(formatCard: String): FormatOutput {
@@ -1676,7 +1703,9 @@ object NarrativeHistoryEcho {
         val counterexampleOpenings = mutableSetOf<String>()
         val counterexampleClosingStarts = mutableSetOf<Int>()
         val declaredOpenings = buildSet {
-            addAll(literals.declaredBoundaryOpenings(formatCard, candidates))
+            val boundaries = literals.declaredBoundaryOpenings(formatCard, candidates)
+            addAll(boundaries.persistent)
+            addAll(boundaries.currentReply)
             var matchedEnd = -1
             for ((index, opening) in markup.withIndex()) {
                 val start = opening.range.first

@@ -498,6 +498,43 @@ class NarrativeHistoryWireTest {
         }
     }
 
+    @Test fun interruptedOptionsAndScopedHistoryDeclarationsUseTheirOwnReply() = runBlocking {
+        val story = "The lamp lit up."
+        val options = "\n\n---\n**【行动选项】**\n\n1. **[Open the door]()**\n   Wait for the latch to click.\n2. **[Stay here]()**"
+        for (transport in listOf(Transport.ORDINARY, Transport.EXPERIMENTAL_TOOL)) {
+            val base = buildReplyFixture(transport, stop = true)
+            val wrapper = PromptTemplates.narrativeModeHistoryReply(story, base.mode)
+            for (stop in listOf(true, false)) {
+                val suffix = options + if (stop) "" else "\n---"
+                runReplyFixture(base.copy(stop = stop, parts = listOf(wrapper + suffix), preview = story + suffix, expected = story + suffix))
+            }
+            val open = wrapper.substringBefore('\n')
+            val close = wrapper.substringAfterLast('\n')
+            val scope = "For this reply only.\nBegin the reply with the exact line `$open` and end it with the exact line `$close`."
+            runReplyFixture(base.copy(
+                historicalUser = scope, input = "Continue.", parts = listOf(wrapper), preview = story, expected = story,
+            ))
+            runReplyFixture(base.copy(
+                stop = false, historicalUser = "Light the lamp.", input = scope, parts = listOf(wrapper), preview = wrapper, expected = wrapper,
+            ))
+        }
+    }
+
+    @Test fun exactCitationAndPlainCommentaryKeepOnlyTheRequestedFrameOnDisk() = runBlocking {
+        for (stop in listOf(true, false)) {
+            val transport = if (stop) Transport.ORDINARY else Transport.EXPERIMENTAL_TOOL
+            val base = buildReplyFixture(transport, stop = true).copy(stop = stop, prior = "The lamp was lit.")
+            val quote = PromptTemplates.narrativeModeHistoryReply(base.prior, base.mode)
+            val prose = "The scene shows that they can still see."
+            val raw = "$quote\n\n" + PromptTemplates.narrativeModeHistoryReply(prose, base.mode)
+            val expected = "$quote\n\n$prose"
+            runReplyFixture(base.copy(
+                input = "Quote the previous answer with its XML history tags verbatim, then explain in plain prose.",
+                parts = listOf(raw), preview = expected, expected = expected,
+            ))
+        }
+    }
+
     @Test fun explainedXmlAndExplicitPreviousProjectionSurvivePreviewStopAndReload() = runBlocking {
         val prior = "The rain stopped."
         val focus = ChatNarrativeMode.FOCUS
