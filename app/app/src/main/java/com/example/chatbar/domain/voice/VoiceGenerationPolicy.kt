@@ -3,11 +3,18 @@ package com.example.chatbar.domain.voice
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.CharacterInfo
+import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatSession
+import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
 import com.example.chatbar.domain.chat.RoleplaySegmentKind
 
 object VoiceGenerationPolicy {
     const val WHOLE_MESSAGE_SOURCE_KIND = "WHOLE_MESSAGE"
+
+    internal fun matchesDisplayedReply(expected: ChatMessage, current: ChatMessage): Boolean =
+        expected.sessionId == current.sessionId && expected.id == current.id &&
+            MessageAlternativeVersionPolicy.activeVersionId(expected) == MessageAlternativeVersionPolicy.activeVersionId(current) &&
+            expected.displayContent == current.displayContent
 
     fun audiobookEnabled(session: ChatSession, settings: AppSettings): Boolean =
         session.audiobookModeEnabled ?: settings.audiobookModeEnabled

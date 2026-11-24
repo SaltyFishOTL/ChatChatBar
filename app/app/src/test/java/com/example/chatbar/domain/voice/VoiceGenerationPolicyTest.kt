@@ -3,8 +3,11 @@ package com.example.chatbar.domain.voice
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.CharacterInfo
+import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.FishAudioVoiceBinding
+import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
 import com.example.chatbar.domain.chat.RoleplaySegmentKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -14,6 +17,19 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class VoiceGenerationPolicyTest {
+    @Test
+    fun `delayed generation accepts only the captured session reply version and content`() {
+        val captured = ChatMessage.create("session", MessageRole.ASSISTANT, "Same spoken text")
+        val other = MessageAlternativeVersionPolicy.append(captured, captured.content, "other-version")
+        val originalSelected = MessageAlternativeVersionPolicy.select(other, 0)
+        val edited = MessageAlternativeVersionPolicy.editCurrentContent(originalSelected, "Edited spoken text")
+
+        assertTrue(VoiceGenerationPolicy.matchesDisplayedReply(captured, originalSelected))
+        assertFalse(VoiceGenerationPolicy.matchesDisplayedReply(captured, other))
+        assertFalse(VoiceGenerationPolicy.matchesDisplayedReply(captured, edited))
+        assertFalse(VoiceGenerationPolicy.matchesDisplayedReply(captured, originalSelected.copy(sessionId = "imported")))
+    }
+
     @Test
     fun `audiobook mode skips AI tag generation`() {
         assertFalse(VoiceGenerationPolicy.shouldGenerateAiTags(audiobookEnabled = true))

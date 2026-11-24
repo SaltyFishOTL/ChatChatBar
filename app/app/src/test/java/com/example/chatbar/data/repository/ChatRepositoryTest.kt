@@ -9,6 +9,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import com.example.chatbar.data.local.entity.MESSAGE_ORDER_STEP
 import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
 import java.io.File
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -22,6 +23,112 @@ import org.junit.rules.TemporaryFolder
 class ChatRepositoryTest {
     @get:Rule
     val temp = TemporaryFolder()
+
+    @Test fun `last candidate deletion preserves final user message and persists no assistant`() = runTest {
+        val chats = repository("last-candidate")
+        val session = ChatSession.create("card", "synthetic")
+        chats.createSession(session)
+        chats.addMessage(ChatMessage("user", session.id, MessageRole.USER, "synthetic question", createdAt = 1, updatedAt = 1))
+        chats.addMessage(ChatMessage("reply", session.id, MessageRole.ASSISTANT, "only reply", createdAt = 2, updatedAt = 2))
+        val snapshot = requireNotNull(chats.getMessage("reply", session.id))
+        assertTrue(chats.deleteMessageIfUnchanged(snapshot))
+        assertNull(chats.getMessage("reply", session.id))
+        assertEquals("user", chats.getRecentMessages(session.id, 1).single().id)
+        assertEquals(MessageRole.USER, chats.getSession(session.id)?.lastMessageRole)
+        assertFalse(chats.deleteMessageIfUnchanged(snapshot))
+    }
+
+    @Test fun `last candidate deletion rejects snapshot after new alternative arrives`() = runTest {
+        val chats = repository("last-candidate-stale")
+        val session = ChatSession.create("card", "synthetic")
+        chats.createSession(session)
+        chats.addMessage(ChatMessage("reply", session.id, MessageRole.ASSISTANT, "only reply", createdAt = 1, updatedAt = 1))
+        val snapshot = requireNotNull(chats.getMessage("reply", session.id))
+        val changed = com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy.append(snapshot, "new reply", "new-version")
+        chats.updateMessage(changed)
+        assertFalse(chats.deleteMessageIfUnchanged(snapshot))
+        val retained = requireNotNull(chats.getMessage("reply", session.id))
+        assertEquals(2, com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy.versions(retained).size)
+        assertEquals("new reply", retained.content)
+    }
+
+    @Test fun `clearing chat invalidates an in-flight update even when an identical row is re-added`() = runTest {
+        val chats = repository("timeline-clear")
+        val session = chats.createSession(ChatSession.create("card", "synthetic"))
+        val message = ChatMessage("row", session.id, MessageRole.SYSTEM, "greeting", createdAt = 1, updatedAt = 1)
+        val original = chats.addMessage(message)
+        val revision = chats.messageTimelineRevision(session.id)
+
+        assertEquals(1, chats.deleteMessagesForSession(session.id))
+        assertEquals(original, chats.addMessage(message))
+        assertEquals(original, chats.getMessage(original.id, session.id))
+
+        val replacement = original.copy(content = "late result")
+        assertNull(chats.updateMessageIfUnchanged(original, replacement, revision))
+        assertEquals(original, chats.getMessage(original.id, session.id))
+        val currentRevision = chats.messageTimelineRevision(session.id)
+        assertEquals(replacement.content, chats.updateMessageIfUnchanged(original, replacement, currentRevision)?.content)
+    }
+
+    @Test fun `restore invalidates an in-flight message update even when the restored row is identical`() = runTest {
+        for (streaming in listOf(false, true)) {
+            val chats = repository("timeline-restore-$streaming")
+            val session = chats.createSession(ChatSession.create("card", "synthetic"))
+            val original = chats.addMessage(ChatMessage("reply", session.id, MessageRole.ASSISTANT,
+                "saved reply", createdAt = 1, updatedAt = 1))
+            val revision = chats.messageTimelineRevision(session.id)
+            if (streaming) {
+                chats.replaceMessagesForSessionStreaming(session.id) { emit -> emit(original) }
+            } else {
+                chats.replaceMessagesForSession(session.id, listOf(original))
+            }
+            assertEquals(original, chats.getMessage(original.id, session.id))
+            val replacement = original.copy(
+                content = "late result", updatedAt = -1, orderKey = original.orderKey + MESSAGE_ORDER_STEP
+            )
+            assertFalse(chats.isCurrentMessageSnapshot(original, revision))
+            assertNull(chats.updateMessageIfUnchanged(original, replacement, revision))
+            assertEquals(original, chats.getRecentMessages(session.id, 1).single())
+            val currentRevision = chats.messageTimelineRevision(session.id)
+            assertTrue(chats.isCurrentMessageSnapshot(original, currentRevision))
+            val committed = requireNotNull(
+                chats.updateMessageIfUnchanged(original, replacement, currentRevision)
+            )
+            assertEquals(replacement.content, committed.displayContent)
+            assertEquals(original.orderKey, committed.orderKey)
+            assertTrue(committed.updatedAt > replacement.updatedAt)
+            assertEquals(committed, chats.getMessage(original.id, session.id))
+        }
+    }
+
+    @Test fun `RAG publication compares stable turn version after unrelated writes and same text switches`() = runTest {
+        val chats = repository("rag-turn")
+        val session = chats.createSession(ChatSession.create("card", "synthetic"))
+        val user = chats.addMessage(ChatMessage.create(session.id, MessageRole.USER, "old prompt"))
+        val initial = ChatMessage.create(session.id, MessageRole.ASSISTANT, "identical reply text")
+        val reply = chats.addMessage(MessageAlternativeVersionPolicy.append(
+            initial, initial.content, "different-version"
+        ))
+        val sourceTurnId = requireNotNull(reply.sourceTurnId)
+        val snapshot = listOf(user, reply)
+        val revision = chats.ragSourceRevision(session.id)
+        chats.addMessage(ChatMessage.create(session.id, MessageRole.USER, "unrelated next turn"))
+        assertTrue(chats.withCurrentRagSources(session.id, revision, sourceTurnId, snapshot) { })
+        assertFalse(chats.withCurrentRagSources(session.id, revision) { error("must reject full sweep") })
+
+        val switched = MessageAlternativeVersionPolicy.select(reply, 0)
+        chats.updateMessage(switched)
+        assertEquals(reply.displayContent, switched.displayContent)
+        assertFalse(chats.withCurrentRagSources(session.id, revision, sourceTurnId, snapshot) {
+            error("equal text from a different version must not authorize publication")
+        })
+
+        chats.updateMessage(reply)
+        chats.replaceMessagesForSession(session.id, chats.getMessages(session.id))
+        assertFalse(chats.withCurrentRagSources(session.id, revision, sourceTurnId, snapshot) {
+            error("restoring the same snapshot must not reactivate an older request")
+        })
+    }
 
     @Test
     fun `stale asynchronous session update and settings draft preserve mode while restore replaces it`() = runTest {

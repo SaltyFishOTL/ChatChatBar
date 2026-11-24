@@ -4,6 +4,7 @@ import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.FishAudioVoiceBinding
 import com.example.chatbar.data.local.entity.GeneratedVoiceMessage
 import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -40,11 +41,14 @@ class VoiceMessageVersionPolicyTest {
     fun `anchor reconciliation changes only matching message version`() {
         val voices = listOf(
             voice(id = "voice-1", versionId = "v1", sourceText = "第一句", anchorId = "a1"),
-            voice(id = "voice-2", versionId = "v2", sourceText = "第二句", anchorId = "a2")
+            voice(id = "voice-2", versionId = "v2", sourceText = "第二句", anchorId = "a2"),
+            voice(id = "other-voice", versionId = "v2", sourceText = "第二句", anchorId = "a2")
+                .copy(sessionId = "other-session")
         )
 
         val updated = VoiceMessageVersionPolicy.applyAnchorReplacements(
             voices = voices,
+            sessionId = "session-1",
             messageId = "message-1",
             messageVersionId = "v2",
             replacements = mapOf("a2" to null),
@@ -55,6 +59,7 @@ class VoiceMessageVersionPolicyTest {
         assertNull(updated[1].anchorId)
         assertEquals(1, updated[0].updatedAt)
         assertEquals(20, updated[1].updatedAt)
+        assertEquals(voices[2], updated[2])
     }
 
     @Test
@@ -111,6 +116,49 @@ class VoiceMessageVersionPolicyTest {
                 legacyState
             )
         )
+    }
+
+    @Test
+    fun `compatible fallback requires matching dialogue speaker and exactly one version`() {
+        val a = "<n=\"甲\"/>[相同]()"
+        val b = "<n=\"乙\"/>[相同]()"
+        val recorded = voice("legacy", "removed", "相同", null)
+        assertEquals("v1", VoiceMessageVersionPolicy.compatibleVersionId(message(1, listOf(a, b)), recorded))
+        assertNull(VoiceMessageVersionPolicy.compatibleVersionId(message(1, listOf(a, a)), recorded))
+        assertNull(VoiceMessageVersionPolicy.compatibleVersionId(message(1, listOf(b, b)), recorded))
+    }
+
+    @Test
+    fun `previously placed legacy segment requires the complete prior reply to recover to a different version`() {
+        val a = "<n=\"甲\"/>[相同]()\n[仅版本A]()"
+        val b = "<n=\"甲\"/>[相同]()\n[仅版本B]()"
+        val original = message(0, listOf(a, b))
+        val unassigned = voice("legacy", null, "相同", null)
+        val originalVersion = MessageAlternativeVersionPolicy.activeVersion(original)
+        val attached = unassigned.copy(messageVersionId = originalVersion.id)
+        val retired = attached.copy(requiresCompatibleVersion = true,
+            legacyVersionContentHash = VoiceMessageVersionPolicy.legacyVersionContentHash(unassigned, originalVersion))
+        val survivor = requireNotNull(MessageAlternativeVersionPolicy.remove(original, originalVersion.id))
+        assertNull(VoiceMessageVersionPolicy.recoverCompatibleVersionId(survivor, retired))
+        assertNull(VoiceMessageVersionPolicy.recoverCompatibleVersionId(survivor, retired.copy(messageVersionId = null)))
+        assertNull(VoiceMessageVersionPolicy.recoverCompatibleVersionId(survivor, attached))
+        assertEquals("v2", VoiceMessageVersionPolicy.recoverCompatibleVersionId(survivor, unassigned))
+
+        val sameFullReply = MessageAlternativeVersionPolicy.editCurrentContent(survivor, a)
+        assertEquals("v2", VoiceMessageVersionPolicy.recoverCompatibleVersionId(sameFullReply, retired))
+        assertNull(VoiceMessageVersionPolicy.recoverCompatibleVersionId(sameFullReply, retired.copy(sourceSpeakerName = "乙")))
+    }
+
+    @Test
+    fun `whole reply recordings with a retired ID can still recover on identical full text`() {
+        val reply = message(0, listOf("Entire spoken reply", "Entire spoken reply"))
+        val retired = voice("legacy", "v1", "Entire spoken reply", null).copy(
+            sourceSegmentKind = VoiceGenerationPolicy.WHOLE_MESSAGE_SOURCE_KIND, requiresCompatibleVersion = true
+        )
+        val survivor = requireNotNull(MessageAlternativeVersionPolicy.remove(reply, "v1"))
+        assertEquals("v2", VoiceMessageVersionPolicy.recoverCompatibleVersionId(survivor, retired))
+        val changed = MessageAlternativeVersionPolicy.editCurrentContent(survivor, "Entire spoken reply with an extension")
+        assertNull(VoiceMessageVersionPolicy.recoverCompatibleVersionId(changed, retired))
     }
 
     private fun message(

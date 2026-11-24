@@ -120,6 +120,61 @@ class BackupExportSelectionTest {
         assertNotNull(restoredFull.imagePath)
     }
 
+    @Test fun retainedImageVersionsAndReplyRedoSurviveBackupAndOptionalBodyOmission() {
+        val root = temporary.newFolder()
+        val cardId = "version-review-card"
+        val sessionId = "version-review-session"
+        write(root, "entities/app_settings.json", backupJson.encodeToString(AppSettings(momentsEnabled = true)))
+        write(root, "entities/character_cards/$cardId.json", backupJson.encodeToString(CharacterCard(
+            id = cardId, name = "备选保留合成测试卡", createdAt = 1, updatedAt = 1)))
+        write(root, "entities/chat_sessions/$sessionId.json", backupJson.encodeToString(ChatSession(
+            id = sessionId, characterCardId = cardId, title = "备选保留离线验收", createdAt = 1, updatedAt = 1)))
+        var reply = ChatMessage("version-review-reply", sessionId, MessageRole.ASSISTANT, "合成备选第1条", createdAt = 2, updatedAt = 2)
+        repeat(25) { i -> reply = com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy.append(reply,
+            "合成备选第${i + 2}条：删除此版本不应影响其他版本。", "review-version-$i") }
+        write(root, "entities/chat_messages/${sessionId}_${reply.id}.json", backupJson.encodeToString(reply))
+        val original = ChatMessage("version-review-repair", sessionId, MessageRole.ASSISTANT, "修复前的合成文本", createdAt = 3, updatedAt = 3)
+        val repaired = com.example.chatbar.domain.chat.MessageFormatRepairPolicy.replaceCurrentDisplayContent(original,
+            "修复后的合成文本（已保存，不需要AI重做）", com.example.chatbar.domain.chat.MessageFormatRepairPolicy.completedRepairNotice(
+                original.content, "修复后的合成文本（已保存，不需要AI重做）"))
+        write(root, "entities/chat_messages/${sessionId}_${repaired.id}.json", backupJson.encodeToString(repaired))
+        val oldImage = File(root, "images/review-red.png").also { it.parentFile.mkdirs() }
+        val newImage = File(root, "images/review-green.png")
+        fun png(file: File, color: Int) {
+            val image = java.awt.image.BufferedImage(32, 32, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+            for (x in 0..31) for (y in 0..31) image.setRGB(x, y, color)
+            check(javax.imageio.ImageIO.write(image, "png", file))
+        }
+        png(oldImage, 0xffff0000.toInt()); png(newImage, 0xff00ff00.toInt())
+        val post = MomentPost("version-review-moment", cardId, sessionId, senderName = "合成测试角色",
+            text = "两张合成备选图：红色第一张、绿色第二张。切换不调用AI。", imagePath = oldImage.path,
+            imagePrompt = "red fixture", scheduledAt = 1, generatedAt = 2)
+        val retained = com.example.chatbar.domain.moment.MomentImageVersions.append(post, newImage.path, "green fixture", null)
+        write(root, "entities/moment_posts/${post.id}.json", backupJson.encodeToString(retained))
+        val catalog = BackupExportCatalog.read(root) {}
+        val (full, _) = roundTrip(root, catalog.allSelection())
+        val restored = backupJson.decodeFromString<MomentPost>(File(full, "entities/moment_posts/${post.id}.json").readText())
+        assertEquals(2, restored.imageVersions.size)
+        assertArrayEquals(oldImage.readBytes(), File(full, "images/review-red.png").readBytes())
+        assertArrayEquals(newImage.readBytes(), File(full, "images/review-green.png").readBytes())
+        val reopenedReply = backupJson.decodeFromString<ChatMessage>(File(full, "entities/chat_messages/${sessionId}_${reply.id}.json").readText())
+        assertEquals(26, reopenedReply.alternatives.size)
+        val reopenedRepair = backupJson.decodeFromString<ChatMessage>(File(full, "entities/chat_messages/${sessionId}_${repaired.id}.json").readText())
+        assertNotNull(com.example.chatbar.domain.chat.MessageFormatRepairPolicy.redoRepair(
+            requireNotNull(com.example.chatbar.domain.chat.MessageFormatRepairPolicy.restoreOriginal(reopenedRepair))))
+        val (without, _) = roundTrip(root, catalog.allSelection().copy(momentsImages = false))
+        val omitted = backupJson.decodeFromString<MomentPost>(File(without, "entities/moment_posts/${post.id}.json").readText())
+        assertNull(omitted.imagePath); assertTrue(omitted.imageVersions.isEmpty())
+        assertFalse(File(without, "images/review-red.png").exists()); assertFalse(File(without, "images/review-green.png").exists())
+        // CI may retain this entirely synthetic fixture for human acceptance; ordinary test runs stay temporary.
+        System.getenv("VERSION_REVIEW_FIXTURE_DIR")?.let { destination ->
+            val out = File(destination).also { it.mkdirs() }
+            File(out, "reply-media-synthetic.cbbackup").outputStream().use {
+                engine().create(root, temporary.newFolder(), it, null, 10, "synthetic-version-review", BackupPreferences(), catalog.plan(catalog.allSelection()))
+            }
+        }
+    }
+
     @Test fun earlierScopeWithoutMomentImageFlagDefaultsToIncluded() {
         val oldScope = "{\"globalOptions\":[],\"characters\":0,\"sessions\":0,\"sessionsWithImages\":0,\"sessionsWithVoice\":0,\"sessionsWithArchives\":0,\"studioSettings\":false,\"studioHistory\":false,\"studioHistoryImages\":true,\"moments\":true}"
         assertTrue(backupJson.decodeFromString<AppBackupExportScope>(oldScope).momentsImages)

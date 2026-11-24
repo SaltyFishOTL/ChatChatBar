@@ -98,6 +98,7 @@ class ChatMemoryIdentityTest {
             sourceId = "session-1",
             content = "用户手动维护的记忆",
             embedding = listOf(1f),
+            messageId = "removed-historical-anchor",
             metadata = mapOf("indexMode" to "manual"),
             createdAt = 10
         )
@@ -105,6 +106,23 @@ class ChatMemoryIdentityTest {
         assertTrue(chatMemoryChunkIdsToPrune(listOf(manual), emptySet()).isEmpty())
         assertTrue(manual.isChatMemoryForSession("session-1"))
         assertFalse(manual.isChatMemoryForSession("session-2"))
+    }
+
+    @Test
+    fun legacyExplicitEditSurvivesAutomaticReplacementAndPruning() {
+        val generated = chunk("generated", "message-1", 10).copy(
+            metadata = mapOf("indexMode" to ChatMemoryIndexPolicy.INDEX_MODE, "contentVersion" to "2")
+        )
+        val edited = generated.copy(content = "手动编辑的内容", metadata = generated.metadata + ("editedAt" to "100"))
+
+        assertTrue(ChatMemoryIndexPolicy.needsAutomaticRebuild(generated))
+        assertTrue(ChatMemoryIndexPolicy.isManualChunk(edited))
+        assertFalse(ChatMemoryIndexPolicy.isAutomaticChunk(edited))
+        assertFalse(ChatMemoryIndexPolicy.needsAutomaticRebuild(edited))
+        assertTrue(chatMemoryChunkIdsToPrune(listOf(edited), emptySet()).isEmpty())
+        assertTrue(automaticChatMemoryChunkIdsToReplace(
+            listOf(edited), sourceTurnId = null, messageIds = setOf("message-1"), keepChunkIds = emptySet()
+        ).isEmpty())
     }
 
     @Test

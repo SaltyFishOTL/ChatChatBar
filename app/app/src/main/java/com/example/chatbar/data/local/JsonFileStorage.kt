@@ -22,6 +22,7 @@ import java.io.IOException
 import java.io.OutputStream
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.NoSuchFileException
 import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
@@ -34,6 +35,30 @@ import java.util.UUID
  * 单例文件: filesDir/entities/<entityType>.json
  */
 class JsonFileStorage(private val context: Context) {
+    internal fun canonicalMediaPath(path: String): String? =
+        com.example.chatbar.domain.backup.BackupDataRegistry.canonicalLocalMediaPath(context.filesDir, path)
+
+    internal suspend fun deleteUnreferencedRegisteredMedia(
+        candidates: MutableSet<String>,
+        types: Set<String>,
+        delete: (String) -> Unit
+    ) {
+        if (candidates.isEmpty()) return
+        // Hold the same per-store locks as writers until the files have been checked and removed.
+        val locks = types.sorted().map(::mutexFor)
+        suspend fun withLocks(index: Int) {
+            if (index < locks.size) {
+                locks[index].withStorageAccess { withLocks(index + 1) }
+            } else {
+                withContext(Dispatchers.IO) {
+                    com.example.chatbar.domain.backup.BackupDataRegistry.retainReferencedMedia(context.filesDir, candidates, types)
+                    candidates.forEach(delete)
+                }
+            }
+        }
+        withLocks(0)
+    }
+
 
     data class FileSetSignature(
         val count: Int,
@@ -183,7 +208,14 @@ class JsonFileStorage(private val context: Context) {
         entityType: String,
         serializer: KSerializer<T>,
         requireComplete: Boolean = false
-    ): List<T> = mutexFor(entityType).withStorageAccess {
+    ): List<T> = loadAllById(entityType, serializer, requireComplete).values.toList()
+
+    @OptIn(ExperimentalSerializationApi::class)
+    internal suspend fun <T : Any> loadAllById(
+        entityType: String,
+        serializer: KSerializer<T>,
+        requireComplete: Boolean = false
+    ): Map<String, T> = mutexFor(entityType).withStorageAccess {
         withContext(Dispatchers.IO) {
             val dir = entityDir(entityType)
             val entities = mutableMapOf<String, T>()
@@ -204,7 +236,7 @@ class JsonFileStorage(private val context: Context) {
             val flow = getCacheFlow<T>(entityType)
             flow.value = entities
 
-            entities.values.toList()
+            entities
         }
     }
 
@@ -293,21 +325,26 @@ class JsonFileStorage(private val context: Context) {
         entityType: String,
         serializer: KSerializer<T>,
         predicate: (T) -> Boolean = { true },
+        requireCompleteRead: Boolean = false,
+        skipMalformedRecords: Boolean = false,
         action: suspend (T) -> Unit
     ) = mutexFor(entityType).withStorageAccess {
         withContext(Dispatchers.IO) {
-            entityDir(entityType)
-                .listFiles { file -> file.extension == "json" }
-                .orEmpty()
-                .forEach { file ->
-                    val entity = runCatching {
-                        file.inputStream().buffered().use { input ->
-                            @OptIn(ExperimentalSerializationApi::class)
-                            json.decodeFromStream(serializer, input)
-                        }
-                    }.getOrNull() ?: return@forEach
-                    if (predicate(entity)) action(entity)
+            val files = entityDir(entityType).listFiles { file -> file.extension == "json" }
+            check(!requireCompleteRead || files != null) { "无法读取 $entityType 文件目录" }
+            for (file in files.orEmpty()) {
+                val entity = try {
+                    openSerializedInput(file).use { input ->
+                        @OptIn(ExperimentalSerializationApi::class)
+                        json.decodeFromStream(serializer, input)
+                    }
+                } catch (error: Exception) {
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    if (requireCompleteRead && !(skipMalformedRecords && error is SerializationException)) throw error
+                    continue
                 }
+                if (predicate(entity)) action(entity)
+            }
         }
     }
 
@@ -536,11 +573,20 @@ class JsonFileStorage(private val context: Context) {
         }
     }
 
-    /** 删除未进入通用缓存的大型实体。 */
-    suspend fun deleteEntityUncached(entityType: String, id: String) =
+    /** Only return true when the path is known to be absent. */
+    suspend fun isEntityFileMissing(entityType: String, id: String): Boolean =
         mutexFor(entityType).withStorageAccess {
             withContext(Dispatchers.IO) {
-                entityFile(entityType, id).delete()
+                Files.notExists(entityFile(entityType, id).toPath(), LinkOption.NOFOLLOW_LINKS)
+            }
+        }
+
+    /** 删除未进入通用缓存的大型实体。 */
+    suspend fun deleteEntityUncached(entityType: String, id: String, requireSuccessfulDelete: Boolean = false) =
+        mutexFor(entityType).withStorageAccess {
+            withContext(Dispatchers.IO) {
+                val file = entityFile(entityType, id)
+                if (requireSuccessfulDelete) Files.deleteIfExists(file.toPath()) else file.delete()
             }
         }
 
@@ -548,20 +594,25 @@ class JsonFileStorage(private val context: Context) {
     suspend fun <T : Any> deleteWhereUncached(
         entityType: String,
         serializer: KSerializer<T>,
+        requireSuccessfulDelete: Boolean = false,
         predicate: (T) -> Boolean
     ): Int = mutexFor(entityType).withStorageAccess {
         withContext(Dispatchers.IO) {
-            entityDir(entityType)
-                .listFiles { file -> file.extension == "json" }
+            val files = entityDir(entityType).listFiles { file -> file.extension == "json" }
+            check(!requireSuccessfulDelete || files != null) { "无法读取 $entityType 文件目录" }
+            files
                 .orEmpty()
                 .count { file ->
-                    val matches = runCatching {
-                        file.inputStream().buffered().use { input ->
+                    val matches = try {
+                        openSerializedInput(file).use { input ->
                             @OptIn(ExperimentalSerializationApi::class)
                             predicate(json.decodeFromStream(serializer, input))
                         }
-                    }.getOrDefault(false)
-                    matches && file.delete()
+                    } catch (error: Exception) {
+                        if (requireSuccessfulDelete || error is kotlinx.coroutines.CancellationException) throw error
+                        false
+                    }
+                    matches && if (requireSuccessfulDelete) Files.deleteIfExists(file.toPath()) else file.delete()
                 }
         }
     }

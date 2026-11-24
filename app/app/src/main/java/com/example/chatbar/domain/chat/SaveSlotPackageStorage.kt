@@ -5,11 +5,17 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.GeneratedVoiceMessage
+import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.SaveSlot
 import com.example.chatbar.data.local.entity.SaveSlotImagePolicy
 import com.example.chatbar.data.local.entity.SaveSlotPackageRef
 import com.example.chatbar.data.local.entity.VectorChunk
+import com.example.chatbar.data.local.entity.VoiceAnchorState
 import com.example.chatbar.domain.voice.FishAudioStorage
+import com.example.chatbar.domain.voice.FishAudioStoredAudio
+import com.example.chatbar.domain.voice.VoiceAnchorPolicy
+import com.example.chatbar.domain.voice.VoiceAnchorStateKey
+import com.example.chatbar.domain.voice.VoiceGenerationPolicy
 import java.io.Closeable
 import java.io.File
 import java.io.InputStream
@@ -18,6 +24,7 @@ import java.io.PushbackInputStream
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.security.MessageDigest
 import java.util.Locale
 import java.util.UUID
 import java.util.zip.Deflater
@@ -46,6 +53,7 @@ class SaveSlotPackageStorage(private val context: Context) {
         private const val MESSAGES_ENTRY = "messages.jsonl"
         private const val RAG_ENTRY = "rag.jsonl"
         private const val VOICES_ENTRY = "voices.jsonl"
+        private const val VOICE_ANCHORS_ENTRY = "voice_anchors.jsonl"
         private const val IMAGE_DIR = "media/images/"
         private const val AUDIO_DIR = "media/audio/"
     }
@@ -78,12 +86,24 @@ class SaveSlotPackageStorage(private val context: Context) {
             val packageRef = requireNotNull(slot.packageRef) { "v8 存档缺少 packageRef" }
             require(slot.schemaVersion == SCHEMA_VERSION) { "不支持的存档包版本：${slot.schemaVersion}" }
             require(slot.name.isNotBlank()) { "存档名称不能为空" }
+            val anchorFingerprints = validateVoices(packageRef.audioCount)
             var messageCount = 0
             var imageCount = 0
             val messageIds = mutableSetOf<String>()
             forEachJsonLine(MESSAGES_ENTRY, ChatMessage.serializer()) { message ->
                 require(message.id.isNotBlank()) { "存档包含空消息 ID" }
                 require(messageIds.add(message.id)) { "存档包含重复消息 ID：${message.id}" }
+                if (anchorFingerprints.isNotEmpty()) {
+                    MessageAlternativeVersionPolicy.versions(message).forEach { version ->
+                        val key = VoiceAnchorStateKey(message.sessionId, message.id, version.id)
+                        anchorFingerprints.remove(key)?.let { fingerprint ->
+                            require(message.role == MessageRole.ASSISTANT &&
+                                fingerprint.contentEquals(voiceAnchorFingerprint(version.content))) {
+                                "存档语音锚点与回复内容不一致：${message.id}"
+                            }
+                        }
+                    }
+                }
                 message.images.forEach { reference ->
                     validateImageRef(reference)
                     imageCount++
@@ -93,6 +113,7 @@ class SaveSlotPackageStorage(private val context: Context) {
             require(messageCount == packageRef.messageCount) {
                 "存档消息数量不完整：$messageCount/${packageRef.messageCount}"
             }
+            require(anchorFingerprints.isEmpty()) { "存档语音锚点引用了不存在的会话、消息或回复版本" }
 
             var ragCount = 0
             forEachJsonLine(RAG_ENTRY, VectorChunk.serializer()) { ragCount++ }
@@ -100,19 +121,6 @@ class SaveSlotPackageStorage(private val context: Context) {
                 "存档 RAG 数量不完整：$ragCount/${packageRef.ragChunkCount}"
             }
 
-            var audioCount = 0
-            val voiceIds = mutableSetOf<String>()
-            forEachJsonLine(VOICES_ENTRY, GeneratedVoiceMessage.serializer(), required = false) { voice ->
-                require(voice.id.isNotBlank() && voiceIds.add(voice.id)) { "存档包含重复或空语音 ID" }
-                val resourceId = voice.audioPath.removePrefix(SAVE_SLOT_AUDIO_PREFIX)
-                require(voice.audioPath.startsWith(SAVE_SLOT_AUDIO_PREFIX) && resourceId in audioEntries) {
-                    "存档缺少语音资源：${voice.id}"
-                }
-                audioCount++
-            }
-            require(audioCount == packageRef.audioCount) {
-                "存档语音数量不完整：$audioCount/${packageRef.audioCount}"
-            }
             slot.chatBackground?.let { reference ->
                 validateImageRef(reference)
                 imageCount++
@@ -120,6 +128,37 @@ class SaveSlotPackageStorage(private val context: Context) {
             require(imageCount == packageRef.imageCount) {
                 "存档图片数量不完整：$imageCount/${packageRef.imageCount}"
             }
+        }
+
+        private suspend fun validateVoices(expectedCount: Int): MutableMap<VoiceAnchorStateKey, ByteArray> {
+            val anchorEntryCount = zip.entries().asSequence().count { it.name == VOICE_ANCHORS_ENTRY }
+            require(anchorEntryCount <= 1) { "存档包含重复语音锚点条目" }
+            val voiceIds = mutableSetOf<String>()
+            val referencedAnchors = mutableMapOf<VoiceAnchorStateKey, MutableSet<String>>()
+            forEachJsonLine(VOICES_ENTRY, GeneratedVoiceMessage.serializer(), required = false) { voice ->
+                require(voice.id.isNotBlank() && voiceIds.add(voice.id)) { "存档包含重复或空语音 ID" }
+                val resourceId = voice.audioPath.removePrefix(SAVE_SLOT_AUDIO_PREFIX)
+                require(voice.audioPath.startsWith(SAVE_SLOT_AUDIO_PREFIX) && resourceId in audioEntries) {
+                    "存档缺少语音资源：${voice.id}"
+                }
+                if (anchorEntryCount == 1) voice.archiveAnchorReference()?.let { (key, anchorId) ->
+                    referencedAnchors.getOrPut(key, ::mutableSetOf).add(anchorId)
+                }
+            }
+            require(voiceIds.size == expectedCount) { "存档语音数量不完整：${voiceIds.size}/$expectedCount" }
+
+            val fingerprints = mutableMapOf<VoiceAnchorStateKey, ByteArray>()
+            forEachJsonLine(VOICE_ANCHORS_ENTRY, VoiceAnchorState.serializer(), required = false) { state ->
+                val key = VoiceAnchorStateKey(state)
+                val referenced = referencedAnchors[key].orEmpty()
+                require(state.anchors.any { it.id in referenced } && state.hasValidArchiveAnchors()) {
+                    "存档语音锚点无效或缺少对应录音：${state.messageId}"
+                }
+                require(fingerprints.put(key, voiceAnchorFingerprint(state.displayContentSnapshot)) == null) {
+                    "存档包含重复语音锚点：${state.messageId}"
+                }
+            }
+            return fingerprints
         }
 
         suspend fun streamMessages(
@@ -158,13 +197,18 @@ class SaveSlotPackageStorage(private val context: Context) {
         suspend fun restoreVoices(
             targetSessionId: String,
             fishAudioStorage: FishAudioStorage
+        ): List<GeneratedVoiceMessage> = restoreVoices(targetSessionId, fishAudioStorage::restoreArchivedAudioStream)
+
+        internal suspend fun restoreVoices(
+            targetSessionId: String,
+            restoreAudio: suspend (String, String, InputStream) -> FishAudioStoredAudio
         ): List<GeneratedVoiceMessage> {
             val voices = mutableListOf<GeneratedVoiceMessage>()
             forEachJsonLine(VOICES_ENTRY, GeneratedVoiceMessage.serializer(), required = false) { voice ->
                 val resourceId = voice.audioPath.removePrefix(SAVE_SLOT_AUDIO_PREFIX)
                 val entry = audioEntries[resourceId] ?: error("存档缺少语音资源：${voice.id}")
                 val restored = zip.getInputStream(entry).use { input ->
-                    fishAudioStorage.restoreArchivedAudioStream(targetSessionId, resourceId, input)
+                    restoreAudio(targetSessionId, resourceId, input)
                 }
                 createdAudio += restored.path
                 voices += voice.copy(
@@ -177,6 +221,12 @@ class SaveSlotPackageStorage(private val context: Context) {
                 )
             }
             return voices
+        }
+
+        internal suspend fun streamVoiceAnchors(targetSessionId: String, emit: suspend (VoiceAnchorState) -> Unit) {
+            forEachJsonLine(VOICE_ANCHORS_ENTRY, VoiceAnchorState.serializer(), required = false) { state ->
+                emit(state.copy(sessionId = targetSessionId))
+            }
         }
 
         suspend fun materializeBackground(): String? {
@@ -269,11 +319,8 @@ class SaveSlotPackageStorage(private val context: Context) {
         messageSource: suspend (emit: suspend (ChatMessage) -> Unit) -> Unit,
         ragSource: suspend (emit: suspend (VectorChunk) -> Unit) -> Unit,
         voices: List<GeneratedVoiceMessage>,
-        onProgress: (String) -> Unit = {
-
-
-
-    }
+        voiceAnchors: List<VoiceAnchorState> = emptyList(),
+        onProgress: (String) -> Unit = {}
     ): SaveSlot = withContext(Dispatchers.IO) {
         com.example.chatbar.domain.backup.LocalDataMaintenance.access {
             root.mkdirs()
@@ -282,6 +329,14 @@ class SaveSlotPackageStorage(private val context: Context) {
             val imagePlans = mutableListOf<MediaPlan>()
             val audioPlans = mutableListOf<MediaPlan>()
             val imageResourceByPath = linkedMapOf<String, String>()
+            val pendingAnchors = if (includeAudio && voiceAnchors.isNotEmpty()) {
+                val referenced = voices.mapNotNull { it.archiveAnchorReference() }.groupBy({ it.first }, { it.second })
+                voiceAnchors.filter { state ->
+                    val ids = referenced[VoiceAnchorStateKey(state)].orEmpty().toHashSet()
+                    state.sessionId == baseSlot.sessionId && state.anchors.any { it.id in ids }
+                }.associateBy { VoiceAnchorStateKey(it) }.toMutableMap()
+            } else mutableMapOf()
+            val packagedAnchors = mutableListOf<VoiceAnchorState>()
             var messageCount = 0
             var imageCount = 0
             var ragCount = 0
@@ -331,6 +386,15 @@ class SaveSlotPackageStorage(private val context: Context) {
                     zip.putNextEntry(ZipEntry(MESSAGES_ENTRY))
                     messageSource { message ->
                         currentCoroutineContext().ensureActive()
+                        if (pendingAnchors.isNotEmpty() && message.role == MessageRole.ASSISTANT) {
+                            MessageAlternativeVersionPolicy.versions(message).forEach { version ->
+                                val key = VoiceAnchorStateKey(message.sessionId, message.id, version.id)
+                                pendingAnchors.remove(key)?.takeIf {
+                                    it.hasValidArchiveAnchors() && VoiceAnchorPolicy.hasExactLayout(it, version.content)
+                                }
+                                    ?.let(packagedAnchors::add)
+                            }
+                        }
                         val images = message.images.map(::packageImage)
                         val packagedByPath = message.images.zip(images).toMap()
                         val packaged = message.copy(
@@ -347,6 +411,16 @@ class SaveSlotPackageStorage(private val context: Context) {
                         if (messageCount % 25 == 0) onProgress("正在写入消息：$messageCount 条")
                     }
                     zip.closeEntry()
+
+                    if (packagedAnchors.isNotEmpty()) {
+                        zip.putNextEntry(ZipEntry(VOICE_ANCHORS_ENTRY))
+                        for (state in packagedAnchors) {
+                            currentCoroutineContext().ensureActive()
+                            zip.write(json.encodeToString(VoiceAnchorState.serializer(), state).toByteArray(Charsets.UTF_8))
+                            zip.write('\n'.code)
+                        }
+                        zip.closeEntry()
+                    }
 
                     zip.putNextEntry(ZipEntry(RAG_ENTRY))
                     ragSource { chunk ->
@@ -537,6 +611,23 @@ class SaveSlotPackageStorage(private val context: Context) {
         val compressImage: Boolean
     )
 }
+
+private fun GeneratedVoiceMessage.archiveAnchorReference(): Pair<VoiceAnchorStateKey, String>? {
+    val anchor = anchorId?.takeIf(String::isNotBlank) ?: return null
+    if (sessionId.isBlank() || messageId.isBlank() || messageVersionId.isNullOrBlank() ||
+        sourceSegmentKind == VoiceGenerationPolicy.WHOLE_MESSAGE_SOURCE_KIND) return null
+    return VoiceAnchorStateKey(sessionId, messageId, messageVersionId) to anchor
+}
+
+private fun VoiceAnchorState.hasValidArchiveAnchors(): Boolean =
+    anchors.all {
+        it.id.isNotBlank() && it.sourceOrder >= 0L && it.sourceText.isNotBlank() &&
+            it.start >= 0 && it.start < it.endExclusive && it.endExclusive <= displayContentSnapshot.length
+    } && anchors.zipWithNext().all { (previous, next) -> previous.endExclusive <= next.start } &&
+        anchors.map { it.id }.toSet().size == anchors.size
+
+private fun voiceAnchorFingerprint(content: String): ByteArray =
+    MessageDigest.getInstance("SHA-256").digest(content.toByteArray(Charsets.UTF_8))
 
 private suspend fun copyFile(file: File, output: OutputStream) {
     file.inputStream().buffered().use { input -> copyCancellable(input, output) }
