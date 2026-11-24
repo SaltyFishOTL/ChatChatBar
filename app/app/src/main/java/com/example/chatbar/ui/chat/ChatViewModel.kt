@@ -1210,19 +1210,13 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     error("目标 RAG 块不存在或不属于当前会话")
                 }
                 val now = System.currentTimeMillis()
-                val updatedIndexMode = if (existing?.let(ChatMemoryIndexPolicy::needsAutomaticRebuild) == true) {
-                    "manual"
-                } else {
-                    existing?.metadata?.get("indexMode") ?: "manual"
-                }
                 val chunk = existing?.copy(
                     content = normalizedContent,
                     embedding = embedding,
                     metadata = existing.metadata + mapOf(
                         "embeddingKey" to ragManager.embeddingKey(embeddingConfig),
                         "editedAt" to now.toString(),
-                        "indexMode" to updatedIndexMode,
-                        "contentVersion" to "2"
+                        "indexMode" to ChatMemoryIndexPolicy.MANUAL_MODE
                     )
                 ) ?: VectorChunk.create(
                     sourceType = ChunkSourceType.CHAT_MEMORY,
@@ -1231,7 +1225,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     embedding = embedding,
                     metadata = mapOf(
                         "sessionId" to sessionId,
-                        "indexMode" to "manual",
+                        "indexMode" to ChatMemoryIndexPolicy.MANUAL_MODE,
                         "role" to "MANUAL",
                         "embeddingKey" to ragManager.embeddingKey(embeddingConfig)
                     )
@@ -2861,8 +2855,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             val allMemChunks = retrievalChunks.filter { it.sourceType == ChunkSourceType.CHAT_MEMORY }
                             val staleAutomaticChunks = allMemChunks.filter(ChatMemoryIndexPolicy::needsAutomaticRebuild)
                             val memChunks = allMemChunks.filter { chunk ->
-                                !ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk) &&
-                                    chunk.metadata["indexMode"] != "memory_node" &&
+                                ChatMemoryIndexPolicy.isManualChunk(chunk) ||
+                                    !ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk) &&
                                     chunk.messageIds().none { it in activeContextMessageIds }
                             }
                             val searchableMemChunks = memChunks
@@ -3992,10 +3986,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         val activeMessages = contextWindowManager.getRecentMessages(allMessages, contextWindowSize)
         val activeIds = activeMessages.map { it.id }.toSet()
         val embeddingKey = ragManager.embeddingKey(embeddingConfig)
-        val currentAutomaticChunks = ChatBarApp.instance.ragRepository
+        val storedChunks = ChatBarApp.instance.ragRepository
             .getAllChunksForSession(sessionId)
+        val manualChunkIds = storedChunks.filter(ChatMemoryIndexPolicy::isManualChunk).mapTo(mutableSetOf()) { it.id }
+        val currentAutomaticChunks = storedChunks
+            .filter(ChatMemoryIndexPolicy::isAutomaticChunk)
             .filterNot(ChatMemoryIndexPolicy::needsAutomaticRebuild)
-            .filter { it.metadata["indexMode"] == ChatMemoryIndexPolicy.INDEX_MODE }
             .associateBy { it.id }
         val renderContext = placeholderRenderContext()
         val sourceMessages = allMessages.groupBy(ChatMessage::sourceTurnId)
@@ -4009,6 +4005,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         chatMemoryChunkId(sessionId, turn.identityKey, chunkIndex) to content
                     }
                     .toMap()
+                    .minus(manualChunkIds)
                 val currentTurnChunkIds = currentAutomaticChunks.values
                     .filter { chunk ->
                         val sameTurn = turn.sourceTurnId != null &&

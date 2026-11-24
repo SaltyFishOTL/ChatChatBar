@@ -109,6 +109,23 @@ class ChatMemoryIdentityTest {
     }
 
     @Test
+    fun legacyExplicitEditSurvivesAutomaticReplacementAndPruning() {
+        val generated = chunk("generated", "message-1", 10).copy(
+            metadata = mapOf("indexMode" to ChatMemoryIndexPolicy.INDEX_MODE, "contentVersion" to "2")
+        )
+        val edited = generated.copy(content = "手动编辑的内容", metadata = generated.metadata + ("editedAt" to "100"))
+
+        assertTrue(ChatMemoryIndexPolicy.needsAutomaticRebuild(generated))
+        assertTrue(ChatMemoryIndexPolicy.isManualChunk(edited))
+        assertFalse(ChatMemoryIndexPolicy.isAutomaticChunk(edited))
+        assertFalse(ChatMemoryIndexPolicy.needsAutomaticRebuild(edited))
+        assertTrue(chatMemoryChunkIdsToPrune(listOf(edited), emptySet()).isEmpty())
+        assertTrue(automaticChatMemoryChunkIdsToReplace(
+            listOf(edited), sourceTurnId = null, messageIds = setOf("message-1"), keepChunkIds = emptySet()
+        ).isEmpty())
+    }
+
+    @Test
     fun pairChunk_isPrunedWhenEitherMessageIsMissing() {
         val pair = VectorChunk(
             id = "pair",

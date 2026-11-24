@@ -209,13 +209,17 @@ internal class ReplyRemovalCoordinator(
         keepCurrent: ChatMemoryProjection? = null
     ): Boolean = mutex.withLock {
         chat.withCurrentRagSources(sessionId, revision, sourceTurnId, sourceMessages) {
-            if (chunks.isNotEmpty()) {
+            // A user edit can still own a generated chunk's stable ID.
+            val automaticChunks = chunks.filterNot { chunk ->
+                rag.getChunkById(chunk.id)?.let(ChatMemoryIndexPolicy::isManualChunk) == true
+            }
+            if (automaticChunks.isNotEmpty()) {
                 val invalidations = pendingMemoryInvalidations(sessionId)
                 val proof = ReplyMemorySources(sessionId)
-                rag.saveChunks(chunks.map { proof.authorize(it, invalidations) })
+                rag.saveChunks(automaticChunks.map { proof.authorize(it, invalidations) })
             }
             rag.deleteSupersededAutomaticChatMemory(
-                sessionId, sourceTurnId, messageIds, chunks.mapTo(mutableSetOf()) { it.id }, keepCurrent
+                sessionId, sourceTurnId, messageIds, automaticChunks.mapTo(mutableSetOf()) { it.id }, keepCurrent
             )
         }
     }

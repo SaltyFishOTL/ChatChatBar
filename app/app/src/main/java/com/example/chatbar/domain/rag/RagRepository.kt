@@ -220,13 +220,13 @@ internal fun chatMemoryChunkIdsToPrune(
     val idsToDelete = mutableSetOf<String>()
     val liveChunks = chunks.filter { chunk ->
         val messageIds = chunk.metadataMessageIds() + listOfNotNull(chunk.messageId)
-        val isOrphan = chunk.metadata["indexMode"] != "manual" && messageIds.any { it !in liveMessageIds }
+        val isOrphan = !ChatMemoryIndexPolicy.isManualChunk(chunk) && messageIds.any { it !in liveMessageIds }
         if (isOrphan) idsToDelete.add(chunk.id)
         !isOrphan
     }
 
     liveChunks
-        .filter { it.metadata["indexMode"] == "single_message_contextual" }
+        .filter { it.metadata["indexMode"] == "single_message_contextual" && !ChatMemoryIndexPolicy.isManualChunk(it) }
         .groupBy { chunk ->
             (chunk.metadataMessageIds() + listOfNotNull(chunk.messageId))
                 .sorted()

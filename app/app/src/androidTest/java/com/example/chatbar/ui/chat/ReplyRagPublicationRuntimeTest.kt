@@ -28,6 +28,21 @@ import org.junit.Test
 
 /** Exercise real edit, deletion, RAG rebuild and reopen using a synthetic embedding endpoint. */
 class ReplyRagPublicationRuntimeTest {
+    @Test fun editedAutomaticChunkRemainsRecallableAfterRebuild() = withFixture {
+        assertTrue(rebuild())
+        val repository = RagRepository(JsonFileStorage(app))
+        val generated = repository.getAllChunksForSession(session.id).single { it.messageId == reply.id }
+        val edited = "User-maintained memory survives automatic indexing."
+
+        assertTrue(withContext(Dispatchers.Main) { vm.saveRagMemoryChunk(generated.id, edited) })
+        assertTrue(rebuild())
+        val recalled = app.replyRemovalCoordinator.getChunksForRetrieval(null, session.id).single { it.id == generated.id }
+        assertEquals(edited, recalled.content)
+        assertEquals(setOf(recalled.id), app.replyRemovalCoordinator.selectCurrentRecallIds(
+            session.id, listOf(recalled), 1
+        ) { it })
+    }
+
     @Test fun lateUndoEmbeddingCannotOverwriteSurvivorRebuiltByDeletion() = withFixture {
         assertTrue(rebuild())
         assertTrue(recalledText().contains(REPAIRED))
