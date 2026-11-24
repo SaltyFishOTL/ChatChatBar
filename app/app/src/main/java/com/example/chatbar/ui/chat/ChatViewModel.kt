@@ -19,11 +19,13 @@ import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.ChatContextGroupPolicy
 import com.example.chatbar.domain.chat.ChatHistoryPromptPolicy
+import com.example.chatbar.domain.chat.NarrativeHistoryEcho
 import com.example.chatbar.domain.chat.ChatHistoryPromptZone
 import com.example.chatbar.domain.chat.ChatMessageOrderSnapshot
 import com.example.chatbar.domain.chat.ChatRequestMemoryPolicy
 import com.example.chatbar.domain.chat.InterruptedReplyPolicy
 import com.example.chatbar.domain.chat.MessageFormatRepairPolicy
+import com.example.chatbar.domain.chat.MessageFormatRepairService
 import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.domain.chat.PromptCacheKeyFactory
@@ -2494,9 +2496,16 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         }
 
         val originalContent = message.displayContent
+        val repairRequest = MessageFormatRepairService.PreparedRequest(originalContent, formatCard, segmentedFormat)
+        val repairEcho = repairRequest.historyCleanup()
+        val repairDeltaPreview = repairEcho.streamingPreview()
+        val repairOrdinaryPreview = repairEcho.streamingPreview()
         var result: ChatMessage? = null
         var unchanged = false
         var repairedPrefix = ""
+        var ordinaryPreview: String? = null
+        val interruptedRepairToolReader = AtomicReference<(() -> List<String>)?>()
+        var repairPartLengths = emptyList<Int>()
         var sawDone = false
         formatRepairStopRequested = false
         val initialPreview = MessageFormatRepairState(
@@ -2507,54 +2516,76 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         )
         _messageFormatRepairState.value = initialPreview
 
+        fun updateRepairPreview(cleanedPrefix: String) {
+            _messageFormatRepairState.value = initialPreview.copy(
+                previewContent = MessageFormatRepairPolicy.progressiveOverlay(originalContent, cleanedPrefix)
+            )
+        }
+
         try {
             coroutineScope {
                 val repairJob = launch {
                     try {
-                        messageFormatRepairService.streamRepair(
-                            originalContent = originalContent,
-                            formatCard = formatCard,
-                            segmentedBubbleFormat = segmentedFormat,
-                            modelConfig = model
-                        ).collect { event ->
-                            when (event) {
-                                is StreamEvent.Delta -> {
-                                    repairedPrefix += event.text
-                                    _messageFormatRepairState.value = initialPreview.copy(
-                                        previewContent = MessageFormatRepairPolicy.progressiveOverlay(
-                                            original = originalContent,
-                                            repairedPrefix = repairedPrefix
-                                        )
-                                    )
+                        val stoppedBeforeDone = try {
+                            messageFormatRepairService.streamRepair(
+                                request = repairRequest,
+                                modelConfig = model,
+                                onToolReplyPrefixReader = interruptedRepairToolReader::set,
+                            ).collect { event ->
+                                when (event) {
+                                    is StreamEvent.Delta -> {
+                                        ordinaryPreview = null
+                                        val previousLength = repairedPrefix.length
+                                        repairedPrefix += event.text
+                                        repairPartLengths = event.toolReplyPartLengths
+                                        updateRepairPreview(repairDeltaPreview.appendedBody(repairedPrefix, previousLength, repairPartLengths))
+                                    }
+                                    is StreamEvent.ContentPreview -> {
+                                        val previousLength = ordinaryPreview.orEmpty().length
+                                        ordinaryPreview = event.text.takeIf(String::isNotEmpty)
+                                        val cleaned = ordinaryPreview?.let {
+                                            repairOrdinaryPreview.appendedBody(it, previousLength, repairPartLengths)
+                                        } ?: repairEcho.completedBody(repairedPrefix, partLengths = repairPartLengths, streaming = true)
+                                        updateRepairPreview(cleaned)
+                                    }
+                                    is StreamEvent.Error -> throw IllegalStateException(event.message)
+                                    StreamEvent.Done -> sawDone = true
+                                    is StreamEvent.ReasoningDelta, is StreamEvent.Usage -> Unit
                                 }
-                                is StreamEvent.Error -> throw IllegalStateException(event.message)
-                                StreamEvent.Done -> sawDone = true
-                                is StreamEvent.ReasoningDelta,
-                                is StreamEvent.ContentPreview,
-                                is StreamEvent.Usage -> Unit
+                            }
+                            false
+                        } catch (cancelled: CancellationException) {
+                            if (!formatRepairStopRequested) throw cancelled
+                            !sawDone
+                        }
+
+                        if (stoppedBeforeDone) {
+                            val bufferedParts = if (repairPartLengths.isEmpty()) {
+                                interruptedRepairToolReader.get()?.invoke().orEmpty()
+                            } else emptyList()
+                            val bufferedBody = bufferedParts.takeIf { it.isNotEmpty() }?.joinToString("\n")
+                            val partLengths = if (bufferedBody == null) repairPartLengths else bufferedParts.map(String::length)
+                            val cleaned = repairEcho.completedBody(
+                                bufferedBody ?: ordinaryPreview ?: repairedPrefix, interrupted = true, partLengths = partLengths,
+                            )
+                            val mixedContent = MessageFormatRepairPolicy.progressiveOverlay(originalContent, cleaned)
+                            result = MessageFormatRepairPolicy.afterStoppedRepair(message, mixedContent)
+                        } else {
+                            val repaired = repairEcho.completedBody(repairedPrefix, partLengths = repairPartLengths)
+                            check(sawDone && repaired.isNotBlank()) { "格式修复模型返回空结果" }
+                            unchanged = MessageFormatRepairPolicy.isUnchangedResult(repaired) || repaired == originalContent
+                            result = if (unchanged) {
+                                MessageFormatRepairPolicy.afterUnchangedRepair(message)
+                            } else {
+                                MessageFormatRepairPolicy.replaceCurrentDisplayContent(
+                                    message = message,
+                                    replacement = repaired,
+                                    notice = MessageFormatRepairPolicy.completedRepairNotice(originalContent, repaired)
+                                )
                             }
                         }
-                        if (!sawDone || repairedPrefix.isBlank()) {
-                            throw IllegalStateException("格式修复模型返回空结果")
-                        }
-                        unchanged = MessageFormatRepairPolicy.isUnchangedResult(repairedPrefix) ||
-                            repairedPrefix == originalContent
-                        result = if (unchanged) {
-                            MessageFormatRepairPolicy.afterUnchangedRepair(message)
-                        } else {
-                            MessageFormatRepairPolicy.replaceCurrentDisplayContent(
-                                message = message,
-                                replacement = repairedPrefix,
-                                notice = MessageFormatRepairPolicy.completedRepairNotice(originalContent, repairedPrefix)
-                            )
-                        }
                     } catch (cancelled: CancellationException) {
-                        if (!formatRepairStopRequested) throw cancelled
-                        val mixedContent = MessageFormatRepairPolicy.progressiveOverlay(
-                            original = originalContent,
-                            repairedPrefix = repairedPrefix
-                        )
-                        result = MessageFormatRepairPolicy.afterStoppedRepair(message, mixedContent)
+                        throw cancelled
                     } catch (error: Exception) {
                         result = failure(error.message ?: "格式修复失败")
                     }
@@ -2699,7 +2730,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 startStreamingForegroundWork()
                 val generationJob = coroutineContext[Job]
                 var interruptedReplyDraft: ChatMessage? = null
+                val interruptedToolReplyReader = AtomicReference<(() -> List<String>)?>()
+                var receivedToolReplyPartLengths = emptyList<Int>()
                 var assistantReplyPersisted = false
+                var narrativeEcho = NarrativeHistoryEcho.forRequest(null, null)
                 val protectionLossHandle = AiBackgroundWorkManager.observeProtectionLoss { reason ->
                     generationJob?.cancel(BackgroundGenerationProtectionCancellationException(reason))
                 }
@@ -3064,6 +3098,41 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     val regenTargetUserMsg = resumedUserMessage ?: if (alternativeTargetMessageId != null) {
                         contextMsgs.lastOrNull { it.role == MessageRole.USER }
                     } else null
+                    val currentUserContent = when {
+                        persistUserMessage -> renderSessionText(finalUserContent)
+                        regenTargetUserMsg != null -> renderSessionText(regenTargetUserMsg.displayContent)
+                        content.isNotBlank() -> renderSessionText(content)
+                        else -> null
+                    }
+                    val currentUserImages = when {
+                        persistUserMessage -> userMsgImages
+                        regenTargetUserMsg != null -> regenTargetUserMsg.images
+                        else -> emptyList()
+                    }
+                    val requestUserContent = currentUserContent?.let { text ->
+                        FormatCardUserToolPolicy.appendRequestSuffix(
+                            userContent = text,
+                            tools = activeFormatCard?.userTools.orEmpty(),
+                        )
+                    }
+                    val currentUserApiMessage = requestUserContent?.let { text ->
+                        if (currentUserImages.isNotEmpty() && modelConfig.isMultimodal) {
+                            try {
+                                val base64 = encodeImageToBase64(currentUserImages.first())
+                                ChatApiMessage.withImage(role = "user", text = text, imageBase64 = base64)
+                            } catch (e: Exception) {
+                                text.takeIf(String::isNotBlank)?.let { ChatApiMessage.text("user", it) }
+                            }
+                        } else {
+                            text.takeIf(String::isNotBlank)?.let { ChatApiMessage.text("user", it) }
+                        }
+                    }
+                    narrativeEcho = NarrativeHistoryEcho.forDispatchedRequest(
+                        requestNarrativeMode,
+                        renderedFormatCardContent,
+                        modelConfig.formatPromptPosition,
+                        hasCurrentUser = currentUserApiMessage != null,
+                    )
                     val latestMessageId = when {
                         persistUserMessage -> userMsg.id
                         regenTargetUserMsg != null -> regenTargetUserMsg.id
@@ -3137,6 +3206,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         ?.let(PromptCacheKeyFactory::cacheKey)
 
                     val apiMessages = stablePrefixMessages.toMutableList()
+                    narrativeEcho.recordDispatchedCharacterCore(
+                        promptLayers.coreSystemPrompt,
+                        hasCustomInstructions = charCard.systemPrompt.isNotBlank(),
+                    )
+                    narrativeEcho.recordDispatchedCharacterSettingsHeadings(promptLayers.stableContextSystemPrompt)
+                    promptLayers.recordDispatchedWorldBookHeadings(narrativeEcho)
+                    narrativeEcho.recordDispatchedSupplementarySettings(promptLayers.supplementarySystemPrompt)
+                    narrativeEcho.recordDispatchedPlayerSettings(promptLayers.playerSystemPrompt)
 
                     suspend fun addContextMessage(
                         msg: ChatMessage,
@@ -3157,9 +3234,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             renderedBody = renderedBody,
                             hasSupportedImage = hasSupportedImage
                         ) ?: return
-                        val text = ChatHistoryPromptPolicy.renderedHistoryText(
-                            msg, payloadText, narrativeModesEnabled = requestNarrativeMode != null
+                        val history = ChatHistoryPromptPolicy.renderedHistory(
+                            msg, payloadText,
+                            narrativeModesEnabled = requestNarrativeMode != null,
+                            legacyHistoryWrapperDeclaredAsOutput = narrativeEcho.declaresLegacyHistoryWrapper,
                         )
+                        val text = history.text
                         if (hasSupportedImage) {
                             try {
                                 val base64 = encodeImageToBase64(msg.images.first())
@@ -3171,21 +3251,31 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                     )
                                 )
                             } catch (e: Exception) {
-                                if (renderedBody.isNotBlank()) {
-                                    apiMessages.add(ChatApiMessage.text(role, text))
-                                }
+                                if (renderedBody.isBlank()) return
+                                apiMessages.add(ChatApiMessage.text(role, text))
                             }
                         } else {
                             apiMessages.add(ChatApiMessage.text(role, text))
                         }
+                        when (msg.role) {
+                            MessageRole.ASSISTANT -> narrativeEcho.recordHistoryProjection(
+                                payloadText, text, history.retainsLegacyFraming,
+                            )
+                            MessageRole.USER -> narrativeEcho.recordNarrativePrompt("", text)
+                            else -> Unit
+                        }
+                    }
+
+                    fun addHistorySectionHeading(section: String) {
+                        val heading = PromptTemplates.sectionHeading(section)
+                        apiMessages.add(ChatApiMessage.text("system", heading))
+                        narrativeEcho.recordDispatchedHistoryHeading(heading)
                     }
 
                     // Archive 位于设定确认之后、原始聊天历史之前。
                     ChatRequestMemoryPolicy.archiveMessage(renderedMemoryArchive)?.let(apiMessages::add)
                     if (promptMessageGroups.historyMessages.isNotEmpty()) {
-                        apiMessages.add(ChatApiMessage.text(
-                            "system", PromptTemplates.sectionHeading(PromptTemplates.SECTION_CHAT_HISTORY)
-                        ))
+                        addHistorySectionHeading(PromptTemplates.SECTION_CHAT_HISTORY)
                     }
                     for (msg in promptMessageGroups.historyMessages) {
                         addContextMessage(
@@ -3203,12 +3293,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         botName = charCard.effectiveBotName
                     ).forEach(apiMessages::add)
                     if (promptMessageGroups.previousTurnMessages.isNotEmpty()) {
-                        apiMessages.add(
-                            ChatApiMessage.text(
-                                role = "system",
-                                content = PromptTemplates.sectionHeading(PromptTemplates.SECTION_PREVIOUS_TURN)
-                            )
-                        )
+                        addHistorySectionHeading(PromptTemplates.SECTION_PREVIOUS_TURN)
                     }
                     for (msg in promptMessageGroups.previousTurnMessages) {
                         addContextMessage(
@@ -3227,76 +3312,30 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     )
 
                     // 3. 本次用户输入；随后加入可选强提示 System 和 CCB assistant 开写尾缀。
-                    val currentUserContent: String?
-                    val currentUserImages: List<String>
-                    val shouldAddUserPrompt: Boolean = when {
-                        persistUserMessage -> {
-                            currentUserContent = renderSessionText(finalUserContent)
-                            currentUserImages = userMsgImages
-                            true
-                        }
-                        regenTargetUserMsg != null -> {
-                            currentUserContent = renderSessionText(regenTargetUserMsg.displayContent)
-                            currentUserImages = regenTargetUserMsg.images
-                            true
-                        }
-                        content.isNotBlank() -> {
-                            currentUserContent = renderSessionText(content)
-                            currentUserImages = emptyList()
-                            true
-                        }
-                        else -> {
-                            currentUserContent = null
-                            currentUserImages = emptyList()
-                            false
-                        }
-                    }
-                    if (shouldAddUserPrompt && currentUserContent != null) {
-                        val requestUserContent = FormatCardUserToolPolicy.appendRequestSuffix(
-                            userContent = currentUserContent,
-                            tools = activeFormatCard?.userTools.orEmpty()
-                        )
+                    narrativeEcho.recordNarrativePrompt(promptLayers.narrativeModeSystemPrompt, null)
+                    if (currentUserApiMessage != null) {
                         val strongPromptSystemSuffix = FormatCardUserToolPolicy.strongPromptSystemSuffix(
                             activeFormatCard?.userTools.orEmpty()
                         )
-                        val currentUserApiMessage = if (
-                            currentUserImages.isNotEmpty() &&
-                            modelConfig.isMultimodal
-                        ) {
-                            try {
-                                val base64 = encodeImageToBase64(currentUserImages.first())
-                                ChatApiMessage.withImage(
-                                    role = "user",
-                                    text = requestUserContent,
-                                    imageBase64 = base64
-                                )
-                            } catch (e: Exception) {
-                                requestUserContent
-                                    .takeIf(String::isNotBlank)
-                                    ?.let { ChatApiMessage.text("user", it) }
-                            }
-                        } else if (requestUserContent.isNotBlank()) {
-                            ChatApiMessage.text("user", requestUserContent)
-                        } else {
-                            null
-                        }
-                        currentUserApiMessage?.let { userMessage ->
-                            appendCurrentUserAndCcbTailMessages(
-                                messages = apiMessages,
-                                userMessage = userMessage,
-                                strongPromptSystemSuffix = strongPromptSystemSuffix,
-                                postUserSystemPrompt = postUserSystemPrompt,
-                                narrativeModeSystemPrompt = PromptTemplates.narrativeModeTailSystemPrompt(
-                                    requestNarrativeMode,
-                                    ChatHistoryPromptPolicy.previousNarrativeMode(
-                                        contextMsgs,
-                                        alternativeTargetMessageId?.let {
-                                            chatRepository.getMessage(it, sessionId)
-                                        }
-                                    )
-                                )
-                            )
-                        }
+                        val narrativeModeTail = ChatHistoryPromptPolicy.narrativeTailDispatch(
+                            requestNarrativeMode,
+                            contextMsgs,
+                            alternativeTargetMessageId?.let { chatRepository.getMessage(it, sessionId) },
+                        )
+                        appendCurrentUserAndCcbTailMessages(
+                            messages = apiMessages,
+                            userMessage = currentUserApiMessage,
+                            strongPromptSystemSuffix = strongPromptSystemSuffix,
+                            postUserSystemPrompt = postUserSystemPrompt,
+                            narrativeModeSystemPrompt = narrativeModeTail.text
+                        )
+                        narrativeModeTail.record(narrativeEcho, requestUserContent)
+                        narrativeEcho.recordCurrentLiteralTags(currentUserContent)
+                        narrativeEcho.recordDispatchedPostHistory(
+                            promptLayers.tailSystemPrompt,
+                            hasCustomInstructions = charCard.postHistoryInstructions.isNotBlank(),
+                        )
+                        narrativeEcho.recordAuthoredOutput(strongPromptSystemSuffix)
                     }
 
                     ChatRequestMemoryPolicy.requireArchiveIncluded(apiMessages, renderedMemoryArchive)
@@ -3317,12 +3356,26 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     val streamOrderKey = regenerationTarget?.message?.orderKey ?: streamCreatedAt.toMessageOrderKey()
 
                     val ctx = ChatBarApp.instance
-                    fun updateStreamingDraft(body: String) {
+                    var previewedToolPartLengths = emptyList<Int>()
+                    val deltaPreview = narrativeEcho.streamingPreview()
+                    val ordinaryTextPreview = narrativeEcho.streamingPreview()
+                    fun updateStreamingDraft(rawBody: String, cleanedBody: String? = null): String {
+                        val displayed = _streamingMessage.value
+                        val renderedBody = if (
+                            displayed != null && interruptedReplyDraft?.content == rawBody &&
+                            previewedToolPartLengths == receivedToolReplyPartLengths
+                        ) displayed.content else renderSessionText(
+                            cleanedBody ?: narrativeEcho.completedBody(
+                                rawBody, partLengths = receivedToolReplyPartLengths,
+                                streaming = true,
+                            )
+                        )
+                        previewedToolPartLengths = receivedToolReplyPartLengths
                         val draft = ChatMessage(
                             id = assistantMsgId,
                             sessionId = sessionId,
                             role = MessageRole.ASSISTANT,
-                            content = body,
+                            content = rawBody,
                             narrativeMode = requestNarrativeMode,
                             reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
                             createdAt = streamCreatedAt,
@@ -3331,9 +3384,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         )
                         interruptedReplyDraft = draft
                         _streamingMessage.value = draft.copy(
-                            content = renderSessionText(body),
+                            content = renderedBody,
                             reasoningContent = draft.reasoningContent?.let(renderSessionText)
                         )
+                        return renderedBody
                     }
                     _streamingMessage.value = ChatMessage(
                         id = assistantMsgId,
@@ -3356,6 +3410,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         systemPrompt = promptSystemDebug,
                         ragChunks = ragDebugLogs,
                         promptCacheKey = promptCacheKey,
+                        onToolReplyPrefixReader = interruptedToolReplyReader::set,
                         onReplyCompletion = { replyCompletion.set(it) }
                     ).collect { event ->
                         if (ChatBarApp.instance.streamingStopRequested.value) {
@@ -3368,16 +3423,20 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 updateStreamingDraft(ordinaryPreview ?: accumulatedText)
                             }
                             is StreamEvent.ContentPreview -> {
+                                val previousLength = ordinaryPreview.orEmpty().length
                                 ordinaryPreview = event.text.takeIf(String::isNotEmpty)
-                                updateStreamingDraft(ordinaryPreview ?: accumulatedText)
-                                StreamingNotificationManager.update(ctx, renderSessionText(event.text), sessionId)
+                                val cleaned = ordinaryPreview?.let { body -> ordinaryTextPreview.appendedBody(body, previousLength) }
+                                val body = updateStreamingDraft(ordinaryPreview ?: accumulatedText, cleaned)
+                                StreamingNotificationManager.update(ctx, body, sessionId)
                             }
                             is StreamEvent.Delta -> {
                                 ordinaryPreview = null
+                                val previousLength = accumulatedText.length
                                 accumulatedText += event.text
-                                val renderedAccumulatedText = renderSessionText(accumulatedText)
-                                updateStreamingDraft(accumulatedText)
-                                StreamingNotificationManager.update(ctx, renderedAccumulatedText, sessionId)
+                                receivedToolReplyPartLengths = event.toolReplyPartLengths
+                                val cleaned = deltaPreview.appendedBody(accumulatedText, previousLength, receivedToolReplyPartLengths)
+                                val body = updateStreamingDraft(accumulatedText, cleaned)
+                                StreamingNotificationManager.update(ctx, body, sessionId)
                             }
                             is StreamEvent.Error -> {
                                 throw Exception(event.message)
@@ -3385,12 +3444,19 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             is StreamEvent.Done -> {
                                 ChatBarApp.instance.streamingStopRequested.value = false
                                 // 流生成完毕，保存到数据库
-                                ChatHistoryPromptPolicy.requirePersistableAssistantBody(accumulatedText)
+                                val completion = replyCompletion.get()
+                                val replyBody = ChatHistoryPromptPolicy.requirePersistableAssistantBody(
+                                    narrativeEcho.completedBody(
+                                        accumulatedText,
+                                        interrupted = completion?.finishReason == "length",
+                                        partLengths = completion?.toolReplyPartLengths.orEmpty(),
+                                    )
+                                )
                                 val assistantMsg = ChatMessage(
                                     id = assistantMsgId,
                                     sessionId = sessionId,
                                     role = MessageRole.ASSISTANT,
-                                    content = accumulatedText,
+                                    content = replyBody,
                                     narrativeMode = requestNarrativeMode,
                                     reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
                                     createdAt = streamCreatedAt,
@@ -3430,7 +3496,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 ) {
                                     automaticImageHandled = true
                                     var skipReason = AutomaticChatImagePolicy.skipReason(
-                                        replyCompletion.get(), accumulatedText
+                                        replyCompletion.get(), replyBody
                                     ) ?: AutomaticChatImagePolicy.skipReason(
                                         replyCompletion.get(), persistedAssistantMessage.displayContent
                                     )
@@ -3488,7 +3554,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     if (e is BackgroundGenerationProtectionCancellationException) {
                         addSystemMessage("后台生成已中止：${e.reason}")
                     } else if (e is UserStoppedResponseGenerationException) {
-                        val draft = InterruptedReplyPolicy.persistableDraft(interruptedReplyDraft)
+                        val bufferedParts = if (!assistantReplyPersisted && receivedToolReplyPartLengths.isEmpty()) {
+                            interruptedToolReplyReader.get()?.invoke().orEmpty()
+                        } else emptyList()
+                        val bufferedBody = bufferedParts.takeIf { it.isNotEmpty() }?.joinToString("\n")
+                        val rawDraft = interruptedReplyDraft ?: bufferedBody?.let { _streamingMessage.value }
+                        val finalDraft = rawDraft?.let { partial ->
+                            partial.copy(content = narrativeEcho.completedBody(
+                                bufferedBody ?: partial.content, interrupted = true,
+                                partLengths = if (bufferedBody == null) receivedToolReplyPartLengths else bufferedParts.map(String::length),
+                            ))
+                        }
+                        val draft = InterruptedReplyPolicy.persistableDraft(finalDraft)
                         if (draft != null || assistantReplyPersisted) {
                             withContext(NonCancellable) {
                                 try {
