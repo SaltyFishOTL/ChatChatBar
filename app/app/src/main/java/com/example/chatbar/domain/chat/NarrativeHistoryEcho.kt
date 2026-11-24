@@ -398,7 +398,6 @@ object NarrativeHistoryEcho {
         private var citeLatestProjectionVerbatim = false
         private var explainCitationInPlainProse = false
         private val narrativeHeadings = mutableSetOf<String>()
-        private val dispatchedHistoryHeadings = mutableSetOf<String>()
         private val narrativeHeadingContinuations = mutableMapOf<String, MutableSet<List<String>>>()
         private val issuedSwitchLines = mutableSetOf<String>()
         private val independentlyWitnessedSwitchLines = mutableSetOf<String>()
@@ -449,7 +448,6 @@ object NarrativeHistoryEcho {
 
         fun recordDispatchedHistoryHeading(heading: String) {
             narrativeHeadings += heading
-            dispatchedHistoryHeadings += heading
         }
 
         /** Effective strong suffix sent this turn, after the current user's text. */
@@ -751,6 +749,7 @@ object NarrativeHistoryEcho {
                     interiorRepairEchoRanges(input.text, repairDispatch, provisional)
                 } else emptyList()
                 val prepared = input.withoutRanges(issuedRepairRanges(input.text, input.partLengths) + interior)
+                    .withoutExactToolEchoes(provisional, repairDispatch.boundaries, repairDispatch.continuations.keys)
                 val reply = removeRepairBoundary(prepared.text, prepared::isQuoted)
                 val body = prepared.text.substring(reply.body)
                 val lengths = if (reply.body == prepared.text.indices) prepared.partLengths
@@ -776,13 +775,11 @@ object NarrativeHistoryEcho {
             }
 
             val headings = narrativeHeadings.filterNot(::isAuthoredHeading)
-            val eligibleHistoryHeadings = dispatchedHistoryHeadings.intersect(headings.toSet())
             fun removeToolDirectives(body: String, lengths: List<Int>, switches: Set<String> = emptySet()): DispatchReply {
                 val reply = DispatchReply(body, lengths)
-                if (eligibleHistoryHeadings.isEmpty() && switches.isEmpty()) return reply
-                return reply.withoutExactToolEchoes(provisional) { start, end, atEdge ->
-                    val part = body.substring(start, end)
-                    part.trimEnd('\r', '\n') in switches || atEdge && part in eligibleHistoryHeadings
+                if (headings.isEmpty() && switches.isEmpty()) return reply
+                return reply.withoutExactToolEchoes(provisional, headings, narrativeHeadingContinuations.keys) { start, end, _ ->
+                    switches.isNotEmpty() && body.substring(start, end).trimEnd('\r', '\n') in switches
                 }
             }
             fun removeDispatchEcho(body: String, isJoinedLiteral: (Int) -> Boolean = { false }) =
@@ -1050,9 +1047,10 @@ object NarrativeHistoryEcho {
     private fun exactLeadingRepairUserPayload(text: String, issuedBlock: String?, provisional: Boolean): IntRange? {
         if (issuedBlock == null) return null
         val end = exactDirectiveBlockEnd(text, 0, issuedBlock.lines()) ?: return null
+        // An exact multi-section echo alone contains no replacement prose.
+        if (text.subSequence(end, text.length).isBlank()) return text.indices
         val separator = paragraphBreak.matchAt(text, end) ?: return null
         val storyStart = separator.range.last + 1
-        if (text.subSequence(storyStart, text.length).isBlank()) return null
         val literals = classifyLiterals(text, includeUnclosed = provisional)
         val story = nextNonblankLine(literals.markdown, end)
         if (literals.matchesVisibleLine(story, logQuotationTail) ||
@@ -1184,7 +1182,9 @@ object NarrativeHistoryEcho {
 
     private fun DispatchReply.withoutExactToolEchoes(
         provisional: Boolean,
-        matches: (start: Int, end: Int, atEdge: Boolean) -> Boolean,
+        edgeHeadings: Collection<String> = emptyList(),
+        continuationHeadings: Set<String> = emptySet(),
+        matches: (start: Int, end: Int, atEdge: Boolean) -> Boolean = { _, _, _ -> false },
     ): DispatchReply {
         if (partLengths.size <= 1) return this
         val separators = validatedReplyPartSeparators(text, partLengths) ?: return this
@@ -1195,7 +1195,11 @@ object NarrativeHistoryEcho {
             val start = if (index == 0) 0 else separators[index - 1] + 1
             val end = separators.getOrNull(index) ?: text.length
             val atEdge = index == 0 || index == partLengths.lastIndex
-            val removable = start < end && matches(start, end, atEdge) && !isQuoted(start) &&
+            val edgeHeading = if (atEdge && edgeHeadings.isNotEmpty()) text.substring(start, end).trimEnd('\r', '\n') else null
+            // A leading heading may anchor continued app instructions in the next call.
+            val independentHeading = edgeHeading != null && edgeHeading in edgeHeadings &&
+                (end == text.length || edgeHeading !in continuationHeadings)
+            val removable = start < end && (independentHeading || matches(start, end, atEdge)) && !isQuoted(start) &&
                 literals.isUnprotected(start) && !hasOrphanClosingCaption(text, start) &&
                 !literals.followsLiteralHeadingLead(start) &&
                 previousVisibleLine(literals.markdown, start).let { lead ->

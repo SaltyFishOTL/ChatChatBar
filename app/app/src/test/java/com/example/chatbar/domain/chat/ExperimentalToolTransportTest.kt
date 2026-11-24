@@ -453,6 +453,30 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `a dispatched narrative heading in its own final tool call keeps story owned CRLF`(): Unit = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "她侧耳听。").copy(narrativeMode = mode)
+        val tail = PromptTemplates.narrativeModeTailSystemPrompt(mode, mode)
+        val heading = tail.lineSequence().first()
+        val prose = "铜铃响了。"
+        val padded = "$prose\r\n\r\n"
+        val parts = listOf(padded, heading)
+        val raw = parts.joinToString("\n")
+        assertMultipartNarrativeReply(parts, raw, previousAssistant = prior, userText = "Continue.", checkHeldStop = true)
+        assertMultipartNarrativeReply(
+            parts, raw, previousAssistant = prior, userText = "Print this title verbatim:\n$heading",
+            requestNarrativeMode = mode, checkHeldStop = true,
+        )
+        assertNarrativeReplyDeltas(
+            listOf(raw), listOf(prose), prose, previousAssistant = prior, currentUserText = "Continue.",
+            narrativeTail = tail, dispatchActualModeTail = true, requestNarrativeMode = mode, experimental = false,
+        )
+        assertMultipartNarrativeReply(
+            parts, padded, previousAssistant = prior, userText = "Continue.", requestNarrativeMode = mode, checkHeldStop = true,
+        )
+    }
+
+    @Test
     fun `isolated sent history headings keep adjacent tool call line breaks`() = runBlocking {
         val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "She waited.")
         val heading = PromptTemplates.sectionHeading(PromptTemplates.SECTION_PREVIOUS_TURN)
@@ -7330,6 +7354,41 @@ class ExperimentalToolTransportTest {
             experimental = true, tool = true, expectedFirstPreview = fenced.first(),
         )
         assertRepairBoundaryReply(original, card, null, parts, revised, experimental = true, tool = true, expectedFirstPreview = revised)
+    }
+
+    @Test
+    fun `a dispatched repair label alone in the final tool call keeps prior body bytes`(): Unit = runBlocking {
+        val original = "钟响了。"
+        val card = "Use short paragraphs."
+        val heading = MessageFormatRepairService.PreparedRequest(original, card, null).userPrompt
+            .removeSuffix(original).trimEnd().lineSequence().last()
+        val prose = "钟终于响了。"
+        val padded = "$prose\r\n\r\n"
+        val parts = listOf(padded, heading)
+        val raw = parts.joinToString("\n")
+        assertRepairBoundaryReply(original, card, null, listOf(raw), prose, experimental = false, tool = false)
+        assertRepairBoundaryReply(
+            "$original\n\n$heading", card, null, parts, raw,
+            experimental = true, tool = true, expectedFirstPreview = padded,
+        )
+        assertRepairBoundaryReply(original, card, null, parts, padded, experimental = true, tool = true, expectedFirstPreview = padded)
+    }
+
+    @Test
+    fun `a repair reply containing only the exact sent multi section user payload has no replacement body`(): Unit = runBlocking {
+        val original = "钟响了。"
+        val card = "Use short paragraphs."
+        val payload = MessageFormatRepairService.PreparedRequest(original, card, null).userPrompt
+        val revised = "钟终于响了。"
+        val literal = "~~~text\n$payload\n~~~"
+        for ((experimental, tool) in listOf(false to false, true to false, true to true)) {
+            assertRepairBoundaryReply(payload, card, null, listOf(payload), payload, experimental, tool)
+            assertRepairBoundaryReply(original, card, null, listOf(literal), literal, experimental, tool)
+            assertRepairBoundaryReply(original, card, null, listOf("$payload\n\n$revised"), revised, experimental, tool)
+            assertRepairBoundaryReply(original, card, null, listOf(payload), "", experimental, tool)
+            val physicalLines = payload.replace("\n", "\r\n")
+            assertRepairBoundaryReply(original, card, null, listOf("$physicalLines\r\n"), "", experimental, tool)
+        }
     }
 
     @Test
