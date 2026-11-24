@@ -239,6 +239,7 @@ object NarrativeHistoryEcho {
             "(?:title|heading)[ \\t]+verbatim[ \\t]*[：:][ \\t]*",
         RegexOption.IGNORE_CASE,
     )
+    private val bracketedHeading = Regex("【[^【】\\r\\n]+】")
     private val trailingStatusLabel = Regex(
         " {0,3}(?:(?:required[ \\t]+)?trailing[ \\t]+status[ \\t]+(?:panel[ \\t]+)?template[：:]|" +
             "(?:write the story first\\.[ \\t]+)?end every reply with (?:exactly )?one status panel after the story\\." +
@@ -506,7 +507,7 @@ object NarrativeHistoryEcho {
             heading in explicitlyAuthoredHeadings ||
                 formatCard?.let { hasAuthoredHeading(it, heading, narrativeHeadings) } == true ||
                 currentHeadingSources.any { hasAuthoredHeading(it, heading, narrativeHeadings) } ||
-                authoredSources.keys.any { source -> hasExplicitHeadingDeclaration(source, heading) }
+                authoredSources.keys.any { source -> heading in source && heading in declaredReplyHeadings(source) }
 
         private fun isAuthoredModeText(block: String): Boolean =
             sequenceOf(formatCard).filterNotNull().plus(authoredSources.keys.asSequence())
@@ -643,14 +644,17 @@ object NarrativeHistoryEcho {
                 fun unlabelledRepairRange(part: String): IntRange? =
                     exactLeadingDirectiveBlock(part, repairDispatch.unlabelledSystemBlock)
                         ?: exactLeadingDirective(part, setOfNotNull(repairDispatch.unlabelledIntroduction))
+                fun issuedRepairRanges(part: String): List<IntRange> = listOfNotNull(
+                    unlabelledRepairRange(part),
+                    exactTrailingDirectiveBlock(part, repairDispatch.unlabelledSystemBlock, provisional),
+                )
                 fun loggedRepairQuotes(part: String): List<IntRange> {
                     val continuations = repairDispatch.continuations
                     if (continuations.keys.none { it in part }) return emptyList()
                     return loggedDispatchQuoteRanges(part, classifyLiterals(part, includeUnclosed = provisional), continuations)
                 }
-                val intro = unlabelledRepairRange(text)
                 val interior = if (partLengths.size > 1) interiorRepairEchoRanges(text, repairDispatch, provisional) else emptyList()
-                val prepared = DispatchReply(text, partLengths, loggedRepairQuotes(text)).withoutRanges(listOfNotNull(intro) + interior)
+                val prepared = DispatchReply(text, partLengths, loggedRepairQuotes(text)).withoutRanges(issuedRepairRanges(text) + interior)
                 val reply = removeRepairBoundary(prepared.text, prepared::isQuoted)
                 val body = prepared.text.substring(reply.body)
                 val lengths = if (reply.body == prepared.text.indices) prepared.partLengths
@@ -662,8 +666,7 @@ object NarrativeHistoryEcho {
                     cleanExposedBody = { part ->
                         val quoted = loggedRepairQuotes(part)
                         val exposed = removeRepairBoundary(part) { offset -> quoted.any { offset in it } }.content(part)
-                        val issued = unlabelledRepairRange(exposed)
-                        DispatchReply(exposed, emptyList()).withoutRanges(listOfNotNull(issued)).text
+                        DispatchReply(exposed, emptyList()).withoutRanges(issuedRepairRanges(exposed)).text
                     },
                     cleanPartHeading = ::removeRepairBoundary.takeIf { repairDispatch.boundaries.isNotEmpty() },
                     protectCaptionedPartHeading = true,
@@ -864,6 +867,20 @@ object NarrativeHistoryEcho {
         }
         while (text.getOrNull(offset).isHistoryLineBreak()) offset++
         return (0 until offset).takeIf { text.subSequence(offset, text.length).isNotBlank() }
+    }
+
+    private fun exactTrailingDirectiveBlock(text: String, issuedBlock: String?, provisional: Boolean): IntRange? {
+        if (issuedBlock == null) return null
+        val end = (text.length - 1 downTo 0).firstOrNull { !text[it].isHistoryLineBreak() }?.plus(1) ?: return null
+        val start = end - issuedBlock.length
+        if (start <= 0 || !text.regionMatches(start, issuedBlock, 0, issuedBlock.length) || lineStart(text, start) != start) return null
+        val lastBodyCharacter = (start - 1 downTo 0).firstOrNull { !text[it].isWhitespace() } ?: return null
+        val separator = lineEnd(text, lastBodyCharacter)
+        if (paragraphBreak.matchAt(text, separator) == null) return null
+        val literals = classifyLiterals(text, includeUnclosed = provisional)
+        val lead = previousVisibleLine(literals.markdown, start)
+        if (!literals.isUnprotected(start) || literals.matchesVisibleLine(lead, logQuotationLead)) return null
+        return separator until text.length
     }
 
     private fun loggedDispatchQuoteRanges(
@@ -1243,6 +1260,15 @@ object NarrativeHistoryEcho {
         if ("【" !in source) return emptySet()
         val literals by lazy(LazyThreadSafetyMode.NONE) { classifyLiterals(source) }
         return buildSet {
+            for (heading in bracketedHeading.findAll(source)) {
+                val titleStart = heading.range.first
+                val start = lineStart(source, titleStart)
+                val end = heading.range.last + 1
+                if (inlineVerbatimHeadingLead.matches(source.substring(start, titleStart)) &&
+                    headingSentenceEnd.matches(source.substring(end, lineEnd(source, end))) &&
+                    literals.isUnprotected(start) && literals.isUnprotected(titleStart)
+                ) add(heading.value)
+            }
             for (match in explicitReplyHeading.findAll(source)) {
                 val directiveStart = match.range.first
                 val directiveEnd = match.range.last + 1
@@ -1379,23 +1405,6 @@ object NarrativeHistoryEcho {
                 return true
             }
             position = source.indexOf(token, end)
-        }
-        return false
-    }
-
-    private fun hasExplicitHeadingDeclaration(source: String, heading: String): Boolean {
-        var position = source.indexOf(heading)
-        if (position < 0) return false
-        if (heading in declaredReplyHeadings(source)) return true
-        val literals by lazy(LazyThreadSafetyMode.NONE) { classifyLiterals(source) }
-        while (position >= 0) {
-            val start = lineStart(source, position)
-            val end = position + heading.length
-            if (inlineVerbatimHeadingLead.matches(source.substring(start, position)) &&
-                headingSentenceEnd.matches(source.substring(end, lineEnd(source, end))) &&
-                literals.isUnprotected(start) && literals.isUnprotected(position)
-            ) return true
-            position = source.indexOf(heading, end)
         }
         return false
     }
@@ -2303,6 +2312,12 @@ object NarrativeHistoryEcho {
             openingLineBreak != null && wrapper != legacyWrapper &&
                 projectedBodies.keys.any { it.startsWith(wrapper.opening) } && literals.isStandaloneTagLine(position, close)
 
+        fun endsWithLiteralFence(position: Int): Boolean {
+            val fence = literals.fences.lastOrNull() ?: return false
+            return fence.topLevel && fence.closingLineStart != null && fence.range in literals.roleplayLiteralCode &&
+                fence.range.last < position && body.subSequence(fence.range.last + 1, position).isBlank()
+        }
+
         fun bodyBeforeClose(position: Int, completeClose: String? = null): String {
             val trimmed = body.substring(0, position).trimEnd()
             val openingBreak = openingLineBreak
@@ -2316,7 +2331,9 @@ object NarrativeHistoryEcho {
                 val hasCrLfInsideBody = "\r\n" in payload.trim('\r', '\n')
                 val hasPaddedTerminalCodeLine = payload.endsWith('\n') &&
                     body.startsWith("  ", trimmed.length) && literals.indentedCode.containsOffset(trimmed.lastIndex)
-                if (hasCrLfInsideBody || markdownHardBreakBetweenLines.containsMatchIn(payload) || hasPaddedTerminalCodeLine) {
+                if (hasCrLfInsideBody || markdownHardBreakBetweenLines.containsMatchIn(payload) ||
+                    hasPaddedTerminalCodeLine || endsWithLiteralFence(position)
+                ) {
                     return payload
                 }
             }
@@ -2329,10 +2346,8 @@ object NarrativeHistoryEcho {
             return body.substring(0, endOfContent)
         }
         fun blankTailAfterFencedBody(position: Int, afterClosing: Int, close: String): String {
-            if (!body.getOrNull(afterClosing).isHistoryLineBreak() || !isProjectedOwnLineFrame(position, close)) return ""
-            val fence = literals.fences.lastOrNull() ?: return ""
-            if (!fence.topLevel || fence.closingLineStart == null || fence.range !in literals.roleplayLiteralCode ||
-                fence.range.last >= position || !body.subSequence(fence.range.last + 1, position).isBlank()
+            if (!body.getOrNull(afterClosing).isHistoryLineBreak() ||
+                !isProjectedOwnLineFrame(position, close) || !endsWithLiteralFence(position)
             ) return ""
             return body.substring(afterClosing)
         }

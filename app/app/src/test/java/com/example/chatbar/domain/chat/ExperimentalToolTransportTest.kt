@@ -4519,6 +4519,33 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `actual sent Character tail inline heading instruction preserves the separate routine title`() = runBlocking {
+        val heading = PromptTemplates.sectionHeading(PromptTemplates.SECTION_PREVIOUS_TURN)
+        val previous = ChatMessage.create("fixture", MessageRole.ASSISTANT, "She lit the lamp.").copy(narrativeMode = ChatNarrativeMode.FOCUS)
+        val story = "The lamp was still lit."
+        val raw = "$heading\n$story"
+        val directive = "Print this heading verbatim: $heading"
+        val multiline = "Begin each reply with this exact heading verbatim:\n$heading"
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            for (tail in listOf(null, "The manual references $heading.", "```text\n$directive\n```")) {
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(story), story, previousAssistant = previous, previousUserText = "Light the lamp.",
+                    currentUserText = "Continue.", issueRoutineHistoryHeading = true, characterPostHistoryInstructions = tail,
+                    experimental = experimental, toolCall = toolCall, requestNarrativeMode = ChatNarrativeMode.FOCUS,
+                )
+            }
+            for ((user, tail) in listOf(directive to null, "Continue." to multiline, "Continue." to directive)) {
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(raw), raw, previousAssistant = previous, previousUserText = "Light the lamp.",
+                    currentUserText = user, issueRoutineHistoryHeading = true, characterPostHistoryInstructions = tail,
+                    experimental = experimental, toolCall = toolCall, requestNarrativeMode = ChatNarrativeMode.FOCUS,
+                    checkHeldStop = tail == directive,
+                )
+            }
+        }
+    }
+
+    @Test
     fun `complete mode echo is independent from a separately authored matching title`() = runBlocking {
         val story = "She turned the page."
         for (mode in ChatNarrativeMode.entries) {
@@ -5292,6 +5319,26 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `a genuine code fence carries its inner breaks without Markdown hard break spaces`(): Unit = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "The rain stopped.").copy(narrativeMode = mode)
+        val suffix = "\n\n"
+        val code = "\n```kotlin\nval stored = 7\n```\n"
+        val prose = "The value was stored."
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            for (reason in listOf(if (toolCall) "tool_calls" else "stop", "length")) {
+                for ((payload, expected) in listOf("\n$prose\n" to prose, code to code + suffix)) {
+                    assertNarrativeReplyDeltas(
+                        listOf(PromptTemplates.narrativeModeHistoryReply(payload, mode) + suffix), listOf(expected), expected,
+                        previousAssistant = prior, experimental = experimental, toolCall = toolCall,
+                        finishReason = reason, requestNarrativeMode = mode,
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
     fun `repair SSE removes a forbidden outer pair while retaining an original code sample`() = runBlocking {
         val mode = ChatNarrativeMode.FOCUS
         val sample = PromptTemplates.narrativeModeHistoryReply("字面样张。", mode)
@@ -5451,6 +5498,7 @@ class ExperimentalToolTransportTest {
         characterBasicSetting: String? = null,
         dispatchActualModeTail: Boolean = false,
         regenerationTarget: ChatMessage? = null,
+        checkHeldStop: Boolean = false,
     ) {
         val cleanup = NarrativeHistoryEcho.forRequest(requestNarrativeMode.takeIf { narrativeModesEnabled }, formatCard)
         val histories = if (previousAssistant != null) listOfNotNull(earlierAssistant, previousAssistant)
@@ -5517,11 +5565,11 @@ class ExperimentalToolTransportTest {
             if (dispatchedModeTail != null) dispatchedModeTail.record(cleanup, currentUserText)
             else cleanup.recordNarrativePrompt(wireModeTail, currentUserText)
         }
-        previousUserText?.let { requestMessages.add(1, ChatApiMessage.text("user", it)) }
         val historyMessages = histories.map { projectAssistant(cleanup, it, narrativeModesEnabled) }
         for (history in historyMessages) {
             requestMessages.add(1, history)
         }
+        previousUserText?.let { requestMessages.add(1, ChatApiMessage.text("user", it)) }
         val historyHeading = PromptTemplates.sectionHeading(PromptTemplates.SECTION_PREVIOUS_TURN)
         if (issueRoutineHistoryHeading && historyMessages.isNotEmpty()) {
             requestMessages.add(1, ChatApiMessage.text("system", historyHeading))
@@ -5589,6 +5637,9 @@ class ExperimentalToolTransportTest {
                         previews += preview
                         if (preview == rawPreviews.last()) {
                             assertFalse(server.tailSent)
+                            if (checkHeldStop) assertEquals(
+                                "Held Stop", expectedCompleted, cleanup.completedBody(preview, interrupted = true),
+                            )
                             server.releaseTail()
                         }
                     }
@@ -6141,6 +6192,39 @@ class ExperimentalToolTransportTest {
             assertRepairBoundaryReply("$system\n$original", null, null, listOf(raw), raw, experimental, toolCall)
             assertRepairBoundaryReply(original, null, null, listOf(raw), repaired, experimental, toolCall)
         }
+    }
+
+    @Test
+    fun `the exact sent repair system block is removed when appended to a repaired paragraph`() = runBlocking {
+        val original = "The door was closed"
+        val repaired = "$original."
+        val card = "End the sentence with a period."
+        val system = PromptTemplates.MESSAGE_FORMAT_REPAIR_SYSTEM_PROMPT.trim()
+        val raw = "$repaired\n\n$system"
+        val altered = system.dropLast(1) + "!"
+        val fragment = system.substringBefore('。') + "。"
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            for (authored in listOf(
+                "~~~text\n$system\n~~~",
+                "~~~text\n$system",
+                system.prependIndent("> "),
+                "The following is a literal quotation from the history log.\n\n$system",
+                altered,
+                fragment,
+            )) {
+                val content = "$repaired\n\n$authored"
+                assertRepairBoundaryReply(original, card, null, listOf(content), content, experimental, toolCall)
+            }
+            assertRepairBoundaryReply("$original\n\n$system", card, null, listOf(raw), raw, experimental, toolCall)
+            assertRepairBoundaryReply(original, "$card\n\n$system", null, listOf(raw), raw, experimental, toolCall)
+            val noParagraph = "$repaired\n$system"
+            assertRepairBoundaryReply(original, card, null, listOf(noParagraph), noParagraph, experimental, toolCall)
+            assertRepairBoundaryReply(original, card, null, listOf(raw), repaired, experimental, toolCall)
+        }
+        assertRepairBoundaryReply(
+            original, card, null, listOf("$repaired\n", system), repaired, experimental = true, tool = true,
+            expectedFirstPreview = "$repaired\n",
+        )
     }
 
     @Test

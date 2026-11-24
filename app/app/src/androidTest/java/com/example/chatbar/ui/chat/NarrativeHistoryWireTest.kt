@@ -89,7 +89,7 @@ class NarrativeHistoryWireTest {
         DISPATCHED_BOUNDARIES, AUTHORED_BOUNDARY, SYSTEM_PREAMBLE, AUTHORED_SYSTEM_PREAMBLE, INTERIOR_SYSTEM_PREAMBLE,
         SPLIT_SYSTEM_PREAMBLE,
         UNLABELLED_SYSTEM_INTRODUCTION,
-        WHOLE_REPAIR_SYSTEM_BLOCK,
+        WHOLE_REPAIR_SYSTEM_BLOCK, WHOLE_REPAIR_SYSTEM_SUFFIX,
     }
 
     @Before fun prepareSyntheticApplication() = runBlocking {
@@ -425,6 +425,35 @@ class NarrativeHistoryWireTest {
     @Test fun fullIssuedRepairRulesStayOutOfColdStorage() = runBlocking {
         verifyRepair(Transport.ORDINARY, stop = true, orphan = RepairOrphan.WHOLE_REPAIR_SYSTEM_BLOCK)
         verifyRepair(Transport.EXPERIMENTAL_TOOL, stop = false, orphan = RepairOrphan.WHOLE_REPAIR_SYSTEM_BLOCK)
+    }
+
+    @Test fun authoredPostHistoryTitleAndUnpaddedFencedCodeSurviveTheColdPaths() = runBlocking {
+        val heading = PromptTemplates.sectionHeading(PromptTemplates.SECTION_PREVIOUS_TURN)
+        val directive = "Print this heading verbatim: $heading"
+        val story = "$heading\nThe lamp was still lit."
+        val code = "\n```kotlin\nval stored = 7\n```\n"
+        for (stop in listOf(true, false)) {
+            val transport = if (stop) Transport.ORDINARY else Transport.EXPERIMENTAL_TOOL
+            val base = buildReplyFixture(transport, stop = true).copy(stop = stop)
+            runReplyFixture(base.copy(
+                card = base.card.copy(postHistoryInstructions = directive),
+                historicalUser = "Light the lamp.", prior = "She lit the lamp.",
+                sentRoutineHistoryHeading = true, renderedTail = directive,
+                input = "Continue.", parts = listOf(story), expected = story, preview = story,
+            ))
+            val tail = "\n\n"
+            runReplyFixture(base.copy(
+                parts = listOf(PromptTemplates.narrativeModeHistoryReply(code, base.mode) + tail),
+                expected = code + tail, preview = code + tail,
+            ))
+        }
+    }
+
+    @Test fun appendedIssuedRepairSystemRulesStayOutOfColdStorage() = runBlocking {
+        for (stop in listOf(true, false)) {
+            verifyRepair(Transport.ORDINARY, stop, orphan = RepairOrphan.WHOLE_REPAIR_SYSTEM_SUFFIX)
+            verifyRepair(Transport.EXPERIMENTAL_TOOL, stop, orphan = RepairOrphan.WHOLE_REPAIR_SYSTEM_SUFFIX)
+        }
     }
 
     @Test fun explainedXmlAndExplicitPreviousProjectionSurvivePreviewStopAndReload() = runBlocking {
@@ -1284,6 +1313,7 @@ class NarrativeHistoryWireTest {
             RepairOrphan.AUTHORED_CLOSE_EXTRA -> "屏幕显示 `$close`。旧句。"
             RepairOrphan.AUTHORED_BOUNDARY -> "$messageBoundary\n旧。"
             RepairOrphan.AUTHORED_SYSTEM_PREAMBLE -> "$repairSentence\n旧。"
+            RepairOrphan.WHOLE_REPAIR_SYSTEM_SUFFIX -> "The door was closed"
             else -> "旧。"
         }
         val first = when (orphan) {
@@ -1297,6 +1327,7 @@ class NarrativeHistoryWireTest {
             RepairOrphan.AUTHORED_BOUNDARY -> "$messageBoundary\nA repaired first line."
             RepairOrphan.AUTHORED_SYSTEM_PREAMBLE -> "$repairSentence\nA repaired first line."
             RepairOrphan.INTERIOR_SYSTEM_PREAMBLE -> "A repaired first line.\n$repairSecondProse"
+            RepairOrphan.WHOLE_REPAIR_SYSTEM_SUFFIX -> "$original."
             else -> "A repaired first line."
         }
         val second = if (splitCaption) close else "A repaired second line."
@@ -1325,6 +1356,7 @@ class NarrativeHistoryWireTest {
             RepairOrphan.SPLIT_SYSTEM_PREAMBLE -> listOf("$first\n$messageBoundary", "$repairSentence\n$second")
             RepairOrphan.UNLABELLED_SYSTEM_INTRODUCTION -> listOf("$repairIntroduction\n$first")
             RepairOrphan.WHOLE_REPAIR_SYSTEM_BLOCK -> listOf("$repairSystem\n\n$first")
+            RepairOrphan.WHOLE_REPAIR_SYSTEM_SUFFIX -> listOf("$first\n\n$repairSystem")
             null -> if (tool) listOf(first, second) else listOf(first)
         }
         val formatCard = orphan?.let {
@@ -1338,6 +1370,7 @@ class NarrativeHistoryWireTest {
                 RepairOrphan.SYSTEM_PREAMBLE, RepairOrphan.AUTHORED_SYSTEM_PREAMBLE,
                 RepairOrphan.INTERIOR_SYSTEM_PREAMBLE, RepairOrphan.SPLIT_SYSTEM_PREAMBLE,
                 RepairOrphan.UNLABELLED_SYSTEM_INTRODUCTION, RepairOrphan.WHOLE_REPAIR_SYSTEM_BLOCK -> "Keep all prose."
+                RepairOrphan.WHOLE_REPAIR_SYSTEM_SUFFIX -> "End the sentence with a period."
                 else -> "以下是禁止输出的反例：\n$sample"
             }
             FormatCard.create("Synthetic prohibited history wrapper", instructions)
@@ -1384,7 +1417,8 @@ class NarrativeHistoryWireTest {
                 }
                 if (orphan in setOf(RepairOrphan.SYSTEM_PREAMBLE, RepairOrphan.AUTHORED_SYSTEM_PREAMBLE,
                         RepairOrphan.INTERIOR_SYSTEM_PREAMBLE, RepairOrphan.SPLIT_SYSTEM_PREAMBLE,
-                        RepairOrphan.UNLABELLED_SYSTEM_INTRODUCTION, RepairOrphan.WHOLE_REPAIR_SYSTEM_BLOCK)
+                        RepairOrphan.UNLABELLED_SYSTEM_INTRODUCTION, RepairOrphan.WHOLE_REPAIR_SYSTEM_BLOCK,
+                        RepairOrphan.WHOLE_REPAIR_SYSTEM_SUFFIX)
                 ) {
                     assertTrue(messageBoundary in repairUser.lines())
                     val system = Json.parseToJsonElement(request).jsonObject.getValue("messages").jsonArray.first().jsonObject
