@@ -3371,6 +3371,29 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `ambiguous inline multipart closure keeps the example without original-output evidence`(): Unit = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "旧事。").copy(narrativeMode = mode)
+        val previous = "雨势稍缓。"
+        val closing = "</历史回复>"
+        val first = "<历史回复 模式=\"聚焦\">\n他走上台阶。"
+        val last = "她站在门边。"
+        val inline = listOf(previous, first, "他推开门。$closing", last)
+        val ownLine = listOf(previous, first, "他推开门。\n$closing", last)
+        assertMultipartNarrativeReply(
+            ownLine, "$previous\n他走上台阶。\n他推开门。\n$last",
+            userText = "Continue.", previousAssistant = prior, checkHeldStop = true,
+        )
+        for (lead in listOf(previous, "The following shows the history metadata:")) {
+            val ambiguous = listOf(lead) + inline.drop(1)
+            assertMultipartNarrativeReply(
+                ambiguous, ambiguous.joinToString("\n"), userText = "Continue.",
+                previousAssistant = prior, checkHeldStop = true,
+            )
+        }
+    }
+
+    @Test
     fun `held multipart Stop retains only the bounded quotation from actual completed calls`() = runBlocking {
         val quoteLead = "Below is a literal quotation copied from the history log."
         val quoteTail = "That was a verbatim quotation from the log."
@@ -4228,6 +4251,65 @@ class ExperimentalToolTransportTest {
                 currentUserText = request, requestNarrativeMode = mode, dispatchActualModeTail = true,
                 experimental = experimental, toolCall = tool, checkHeldStop = true,
             )
+        }
+    }
+
+    @Test
+    fun `a direct exactly citation preserves the actual dispatched XML projection`() = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val body = "门半开着。"
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, body).copy(narrativeMode = mode)
+        val quote = PromptTemplates.narrativeModeHistoryReply(body, mode)
+        val request = "Quote the previous assistant reply with its XML history tags exactly."
+        for ((experimental, tool) in listOf(false to false, true to false, true to true)) {
+            val negatives = listOf(
+                "Quote the previous assistant reply exactly.",
+                "Quote the previous assistant reply exactly, without its XML history tags.",
+                "Quote the previous assistant reply without its XML history tags exactly.",
+                "He read: “$request”",
+                "The manual contains:\n$request",
+                "> $request",
+                "Continue.",
+            )
+            for (negative in negatives) assertNarrativeReplyDeltas(
+                listOf(quote), listOf(body), body, previousAssistant = prior, currentUserText = negative,
+                experimental = experimental, toolCall = tool, requestNarrativeMode = mode,
+            )
+            for (directive in listOf(request.replace("exactly", "verbatim"), request)) {
+                assertNarrativeReplyDeltas(
+                    listOf(quote), listOf(quote), quote, previousAssistant = prior, currentUserText = directive,
+                    experimental = experimental, toolCall = tool, requestNarrativeMode = mode, checkHeldStop = true,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `a direct exactly citation cleans only its independently framed plain explanation`() = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val body = "门半开着。"
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, body).copy(narrativeMode = mode)
+        val quote = PromptTemplates.narrativeModeHistoryReply(body, mode)
+        val commentary = "The mode appears in an XML attribute."
+        val separateFrame = PromptTemplates.narrativeModeHistoryReply(commentary, mode)
+        val request = "Quote the previous assistant reply with its XML history tags exactly, then explain in plain prose."
+        val expected = "$quote\n\n$commentary"
+        for ((experimental, tool) in listOf(false to false, true to false, true to true)) {
+            for (negative in listOf("Continue.", "He read: “$request”", request.replace("with its", "without its"))) {
+                val plain = "$body\n\n$commentary"
+                assertNarrativeReplyDeltas(
+                    listOf(quote, "\n\n$commentary"), listOf(body, plain), plain, previousAssistant = prior, currentUserText = negative,
+                    experimental = experimental, toolCall = tool, requestNarrativeMode = mode, checkHeldStop = true,
+                )
+            }
+            for (directive in listOf(request.replace("exactly", "verbatim"), request)) {
+                for (explanation in listOf(commentary, separateFrame)) {
+                    assertNarrativeReplyDeltas(
+                        listOf(quote, "\n\n$explanation"), listOf(quote, expected), expected, previousAssistant = prior,
+                        currentUserText = directive, experimental = experimental, toolCall = tool, requestNarrativeMode = mode, checkHeldStop = true,
+                    )
+                }
+            }
         }
     }
 

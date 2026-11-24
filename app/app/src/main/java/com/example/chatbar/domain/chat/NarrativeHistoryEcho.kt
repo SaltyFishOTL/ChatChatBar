@@ -157,7 +157,7 @@ object NarrativeHistoryEcho {
         " {0,3}(?:please[ \\t]+)?(?:quote|copy|reproduce)[ \\t]+the[ \\t]+" +
             "(?:previous|last|immediately[ \\t]+preceding)[ \\t]+" +
             "(?:assistant(?:[’']s)?[ \\t]+)?(?:displayed[ \\t]+)?(?:answer|reply|response)[ \\t]+(?:" +
-            "(?:with|including)[ \\t]+(?:its|the)[ \\t]+XML[ \\t]+history[ \\t]+tags[ \\t]+verbatim|" +
+            "(?:with|including)[ \\t]+(?:its|the)[ \\t]+XML[ \\t]+history[ \\t]+tags[ \\t]+(?:verbatim|exactly)|" +
             "(?:literally|verbatim)[ \\t]+with[ \\t]+(?:its|the)[ \\t]+XML[ \\t]+history[ \\t]+tags|" +
             "verbatim,[ \\t]+including[ \\t]+both[ \\t]+XML[ \\t]+history[ \\t]+tags|" +
             "(?:literally|verbatim),[ \\t]+with[ \\t]+the[ \\t]+surrounding[ \\t]+XML[ \\t]+included)" +

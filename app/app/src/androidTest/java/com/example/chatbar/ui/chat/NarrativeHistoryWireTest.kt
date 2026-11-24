@@ -535,6 +535,25 @@ class NarrativeHistoryWireTest {
         }
     }
 
+    @Test fun explicitExactlyCitationAndPlainExplanationKeepTheRequestedXmlOnDisk() = runBlocking {
+        val body = "门半开着。"
+        val request = "Quote the previous assistant reply with its XML history tags exactly"
+        for (stop in listOf(true, false)) {
+            val transport = if (stop) Transport.ORDINARY else Transport.EXPERIMENTAL_TOOL
+            val base = buildReplyFixture(transport, stop = true).copy(stop = stop, prior = body)
+            val citation = PromptTemplates.narrativeModeHistoryReply(body, base.mode)
+            runReplyFixture(base.copy(
+                input = "$request.", parts = listOf(citation), preview = citation, expected = citation,
+            ))
+            val explanation = "The mode appears in an XML attribute."
+            val raw = "$citation\n\n" + PromptTemplates.narrativeModeHistoryReply(explanation, base.mode)
+            val expected = "$citation\n\n$explanation"
+            runReplyFixture(base.copy(
+                input = "$request, then explain in plain prose.", parts = listOf(raw), preview = expected, expected = expected,
+            ))
+        }
+    }
+
     @Test fun adjacentLogBlankLineAndRetainedLegacyQuotePreserveTheRightColdBytes() = runBlocking {
         val lead = "Below is a literal quotation copied from the history log.\n"
         val tail = "That was a verbatim quotation from the log."
