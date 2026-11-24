@@ -91,7 +91,7 @@ class NarrativeHistoryWireTest {
         SPLIT_SYSTEM_PREAMBLE,
         UNLABELLED_SYSTEM_INTRODUCTION,
         WHOLE_REPAIR_SYSTEM_BLOCK, WHOLE_REPAIR_SYSTEM_SUFFIX, WHOLE_REPAIR_SYSTEM_INTERIOR,
-        REPAIR_SYSTEM_ECHO_ONLY, PARTIAL_REPAIR_TAIL,
+        REPAIR_SYSTEM_ECHO_ONLY, REPAIR_USER_PAYLOAD_ECHO_ONLY, PARTIAL_REPAIR_TAIL,
     }
 
     @Before fun prepareSyntheticApplication() = runBlocking {
@@ -121,6 +121,24 @@ class NarrativeHistoryWireTest {
         verifyReply(
             Transport.EXPERIMENTAL_TOOL, stop = false, continuation = "She notices the rain has stopped.",
         )
+    }
+
+    @Test fun isolatedDispatchedTailHeadingPreservesToolBodyLineBreaksThroughColdPaths(): Unit = runBlocking {
+        val body = "铜铃响了。\r\n\r\n"
+        for (stop in listOf(true, false)) {
+            val fixture = buildReplyFixture(Transport.EXPERIMENTAL_TOOL, stop = stop)
+            val tail = PromptTemplates.narrativeModeTailSystemPrompt(fixture.mode, fixture.priorMode)
+            runReplyFixture(fixture.copy(
+                parts = listOf(body, tail.lineSequence().first()), preview = body, expected = body,
+                sentModeBlock = tail, input = "Continue.", reasoningWitness = "Both validated calls have arrived.",
+            ))
+        }
+    }
+
+    @Test fun anEchoedRepairUserPayloadKeepsTheOriginalWithoutAppliedThroughColdPaths(): Unit = runBlocking {
+        for (stop in listOf(true, false)) {
+            verifyRepair(Transport.ORDINARY, stop, orphan = RepairOrphan.REPAIR_USER_PAYLOAD_ECHO_ONLY)
+        }
     }
 
     @Test fun currentUserLiteralOpenerSurvivesStreamingStopAndCompletion() = runBlocking {
@@ -1518,6 +1536,8 @@ class NarrativeHistoryWireTest {
         val repairIntroduction = repairSystem.lineSequence().first()
         val repairSentence = repairIntroduction.substringBefore('。') + "。"
         val repairSecondProse = "She found the key again."
+        val echoUserPayload = orphan == RepairOrphan.REPAIR_USER_PAYLOAD_ECHO_ONLY
+        val shortParagraphs = "Use short paragraphs."
         val original = when (orphan) {
             RepairOrphan.SPLIT_CAPTION -> "End tag: &lt;/历史回复&gt;."
             RepairOrphan.VISIBLE_INPUT_LITERAL -> "结束标签示例：\n$close\n她关上门。"
@@ -1528,6 +1548,7 @@ class NarrativeHistoryWireTest {
             RepairOrphan.WHOLE_REPAIR_SYSTEM_SUFFIX -> "The door was closed"
             RepairOrphan.WHOLE_REPAIR_SYSTEM_INTERIOR -> "The door was open. The lamp was out."
             RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY -> "The door was closed"
+            RepairOrphan.REPAIR_USER_PAYLOAD_ECHO_ONLY -> "钟响了。"
             RepairOrphan.PARTIAL_REPAIR_TAIL -> "门没关严。"
             else -> "旧。"
         }
@@ -1544,7 +1565,7 @@ class NarrativeHistoryWireTest {
             RepairOrphan.INTERIOR_SYSTEM_PREAMBLE -> "A repaired first line.\n$repairSecondProse"
             RepairOrphan.WHOLE_REPAIR_SYSTEM_SUFFIX -> "$original."
             RepairOrphan.WHOLE_REPAIR_SYSTEM_INTERIOR -> "The door was closed."
-            RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY -> original
+            RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY, RepairOrphan.REPAIR_USER_PAYLOAD_ECHO_ONLY -> original
             RepairOrphan.PARTIAL_REPAIR_TAIL -> "门已关严。"
             else -> "A repaired first line."
         }
@@ -1582,6 +1603,8 @@ class NarrativeHistoryWireTest {
             RepairOrphan.WHOLE_REPAIR_SYSTEM_INTERIOR ->
                 if (tool) listOf(first, repairSystem, second) else listOf("$first\n\n$repairSystem\n\n$second")
             RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY -> listOf(repairSystem)
+            RepairOrphan.REPAIR_USER_PAYLOAD_ECHO_ONLY ->
+                listOf(PromptTemplates.messageFormatRepairUserPrompt(shortParagraphs, null, original))
             RepairOrphan.PARTIAL_REPAIR_TAIL -> listOf("$first\n{待修复")
             null -> if (tool) listOf(first, second) else listOf(first)
         }
@@ -1599,6 +1622,7 @@ class NarrativeHistoryWireTest {
                 RepairOrphan.WHOLE_REPAIR_SYSTEM_SUFFIX -> "End the sentence with a period."
                 RepairOrphan.WHOLE_REPAIR_SYSTEM_INTERIOR -> "Keep both revised paragraphs."
                 RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY -> "End the sentence with a period."
+                RepairOrphan.REPAIR_USER_PAYLOAD_ECHO_ONLY -> shortParagraphs
                 RepairOrphan.PARTIAL_REPAIR_TAIL -> "Keep all prose."
                 else -> "以下是禁止输出的反例：\n$sample"
             }
@@ -1613,7 +1637,10 @@ class NarrativeHistoryWireTest {
             stop -> firstPreview
             else -> first
         }
-        HeldNarrativeReplyServer(parts, tool, reasoningWitness = null, secondCall = secondCall, toolIndexes = toolIndexes).use { server ->
+        HeldNarrativeReplyServer(
+            parts, tool, reasoningWitness = null, secondCall = secondCall, toolIndexes = toolIndexes,
+            stagedOrdinaryPrefix = if (echoUserPayload) parts.single().substringBeforeLast("\n\n") else null,
+        ).use { server ->
             val model = ModelConfig.create("Synthetic repair ${transport.name}", server.baseUrl, "fixture-key", "fixture-model")
             val session = ChatSession.create(card.id, model.displayName).copy(
                 modelId = model.id, longTermMemoryEnabled = false, formatCardId = formatCard?.id, narrativeMode = repairMode,
@@ -1628,7 +1655,7 @@ class NarrativeHistoryWireTest {
                 app.chatRepository.addMessage(message)
                 app.settingsRepository.saveAppSettings(settings.copy(
                     allowCleartextModelApi = true, defaultEmbeddingId = null, defaultFormatCardId = null,
-                    formatRepairModelId = model.id, assistantSegmentedBubblesEnabled = true,
+                    formatRepairModelId = model.id, assistantSegmentedBubblesEnabled = !echoUserPayload,
                     automaticFormatCheckEnabled = false, momentsEnabled = false,
                     experimentalApiModeEnabled = transport.experimental,
                 ))
@@ -1643,6 +1670,11 @@ class NarrativeHistoryWireTest {
                     it.jsonObject["role"]?.jsonPrimitive?.content == "user" &&
                         (it.jsonObject["content"] as? JsonPrimitive)?.content?.contains(original) == true
                 }.jsonObject.getValue("content").jsonPrimitive.content
+                if (echoUserPayload) {
+                    assertEquals(parts.single(), repairUser)
+                    rule.waitUntil(20_000) { vm.messageFormatRepairState.value?.previewContent == shortParagraphs }
+                    server.releaseReplyRemainder()
+                }
                 if (orphan == RepairOrphan.DISPATCHED_BOUNDARIES) {
                     assertTrue(listOf(cardBoundary, bubbleBoundary, messageBoundary).all { it in repairUser.lines() })
                 }
@@ -1675,12 +1707,13 @@ class NarrativeHistoryWireTest {
                 assertEquals(message.id, saved.id)
                 assertEquals(expected, saved.displayContent)
                 val expectedNotice = when {
-                    toolIndexes != null || orphan == RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY -> MessageFormatRepairNoticeKind.ERROR
+                    toolIndexes != null || orphan == RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY || echoUserPayload && !stop ->
+                        MessageFormatRepairNoticeKind.ERROR
                     stop -> MessageFormatRepairNoticeKind.STOPPED
                     else -> MessageFormatRepairNoticeKind.APPLIED
                 }
                 assertEquals(expectedNotice, saved.formatRepairNotice?.kind)
-                if (orphan == RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY) {
+                if (orphan == RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY || echoUserPayload && !stop) {
                     assertNull(saved.formatRepairNotice?.originalContent)
                     assertEquals("格式修复模型返回空结果", saved.formatRepairNotice?.errorMessage)
                 } else if (toolIndexes == null) assertEquals(original, saved.formatRepairNotice?.originalContent)
@@ -1734,9 +1767,11 @@ class NarrativeHistoryWireTest {
         parts: List<String>, tool: Boolean, reasoningWitness: String?, secondCall: RepairSecondCall = RepairSecondCall.COMPLETE,
         toolIndexes: List<Int>? = null,
         finishReason: String? = null,
+        stagedOrdinaryPrefix: String? = null,
     ) : AutoCloseable {
         private val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
         private val terminal = CountDownLatch(1)
+        private val replyRemainder = CountDownLatch(if (stagedOrdinaryPrefix == null) 0 else 1)
         val baseUrl = "http://127.0.0.1:${server.localPort}/v1"
         val requestBody = CompletableDeferred<String>()
         val terminalSent = AtomicBoolean(false)
@@ -1750,16 +1785,26 @@ class NarrativeHistoryWireTest {
                         .substringAfter(':').trim().toInt()
                     val bytes = ByteArray(length) { input.read().also { check(it >= 0) }.toByte() }
                     requestBody.complete(bytes.toString(Charsets.UTF_8))
-                    val first = "data: ${delta(parts, tool, reasoningWitness, secondCall, toolIndexes)}\n\n".toByteArray(Charsets.UTF_8)
+                    fun frame(content: List<String>) =
+                        "data: ${delta(content, tool, reasoningWitness, secondCall, toolIndexes)}\n\n".toByteArray(Charsets.UTF_8)
+                    val first = if (stagedOrdinaryPrefix == null) frame(parts) else frame(listOf(stagedOrdinaryPrefix))
+                    val remaining = stagedOrdinaryPrefix?.let { prefix ->
+                        check(!tool && parts.single().startsWith(prefix) && parts.single() != prefix)
+                        frame(listOf(parts.single().removePrefix(prefix)))
+                    }
                     val reason = finishReason ?: if (tool) "tool_calls" else "stop"
                     val last = ("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"$reason\"}]}\n\n" +
                         "data: [DONE]\n\n").toByteArray(Charsets.UTF_8)
                     val response = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n" +
-                        "Content-Length: ${first.size + last.size}\r\nConnection: close\r\n\r\n"
+                        "Content-Length: ${first.size + (remaining?.size ?: 0) + last.size}\r\nConnection: close\r\n\r\n"
                     socket.getOutputStream().apply {
                         write(response.toByteArray(Charsets.US_ASCII))
                         write(first)
                         flush()
+                        if (remaining != null && replyRemainder.await(60, TimeUnit.SECONDS)) {
+                            write(remaining)
+                            flush()
+                        }
                         if (terminal.await(60, TimeUnit.SECONDS)) {
                             terminalSent.set(true)
                             write(last)
@@ -1772,7 +1817,10 @@ class NarrativeHistoryWireTest {
 
         fun release() = terminal.countDown()
 
+        fun releaseReplyRemainder() = replyRemainder.countDown()
+
         override fun close() {
+            releaseReplyRemainder()
             release()
             server.close()
             worker.join(1_000)
