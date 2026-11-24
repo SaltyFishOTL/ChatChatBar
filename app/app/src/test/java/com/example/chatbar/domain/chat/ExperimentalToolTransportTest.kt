@@ -426,6 +426,32 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `a dispatched switch with tool owned terminal line breaks stays out of the joined story`() = runBlocking {
+        val first = "The lantern went out.\r\n"
+        val second = "The door shut."
+        for (mode in ChatNarrativeMode.entries) {
+            val previous = ChatNarrativeMode.entries.first { it != mode }
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Waiting.").copy(narrativeMode = previous)
+            val tail = PromptTemplates.narrativeModeTailSystemPrompt(mode, previous)
+            val switch = tail.lineSequence().drop(1).first() + "\r\n"
+            val parts = listOf(first, switch, second)
+            val raw = parts.joinToString("\n")
+            assertMultipartNarrativeReply(parts, raw, previousAssistant = prior, checkHeldStop = true)
+            assertNarrativeReplyDeltas(
+                listOf(raw), listOf(raw), raw, previousAssistant = prior, narrativeTail = tail,
+                currentUserText = "Continue.", requestNarrativeMode = mode, dispatchActualModeTail = true,
+            )
+            val quoted = listOf("The note quoted this line:", switch, second)
+            assertMultipartNarrativeReply(
+                quoted, quoted.joinToString("\n"), previousAssistant = prior, requestNarrativeMode = mode, checkHeldStop = true,
+            )
+            assertMultipartNarrativeReply(
+                parts, "$first\n$second", previousAssistant = prior, requestNarrativeMode = mode, checkHeldStop = true,
+            )
+        }
+    }
+
+    @Test
     fun `isolated sent history headings keep adjacent tool call line breaks`() = runBlocking {
         val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "She waited.")
         val heading = PromptTemplates.sectionHeading(PromptTemplates.SECTION_PREVIOUS_TURN)
@@ -6998,6 +7024,57 @@ class ExperimentalToolTransportTest {
         val issued = MessageFormatRepairService.PreparedRequest(original, null, null).systemPrompt
         assertRepairBoundaryReply(original, null, null, listOf(issued, revised), revised,
             experimental = true, tool = true, expectedFirstPreview = "")
+    }
+
+    @Test
+    fun `a leading exact repair system call with terminal LF retains the next call initial LF`() = runBlocking {
+        val original = "门原来开着。"
+        val card = "Keep the prose."
+        val issued = MessageFormatRepairService.PreparedRequest(original, card, null).systemPrompt + "\n"
+        val revised = "\n修复正文"
+        assertRepairBoundaryReply(
+            original, card, null, listOf(issued, revised), revised,
+            experimental = true, tool = true, expectedFirstPreview = "",
+        )
+    }
+
+    @Test
+    fun `a final exact repair system call with terminal LF retains the preceding call CRLF`() = runBlocking {
+        val original = "门原来开着。"
+        val card = "Keep the prose."
+        val issued = MessageFormatRepairService.PreparedRequest(original, card, null).systemPrompt + "\n"
+        val revised = "修复正文\r\n"
+        assertRepairBoundaryReply(
+            original, card, null, listOf(revised, issued), revised,
+            experimental = true, tool = true, expectedFirstPreview = revised,
+        )
+    }
+
+    @Test
+    fun `a final exact repair system call with terminal LF needs its own validated join`() = runBlocking {
+        val original = "门原来开着。"
+        val card = "Keep the prose."
+        val system = MessageFormatRepairService.PreparedRequest(original, card, null).systemPrompt
+        val issued = "$system\n"
+        val revised = "修复正文"
+        val parts = listOf(revised, issued)
+        val raw = parts.joinToString("\n")
+        assertRepairBoundaryReply(original, card, null, listOf(raw), raw, experimental = true, tool = false)
+        assertRepairBoundaryReply(
+            "$original\n\n$system", card, null, parts, raw, experimental = true, tool = true, expectedFirstPreview = revised,
+        )
+        for (literal in listOf(system.dropLast(1) + "!\n", system.prependIndent("> ") + "\n")) {
+            assertRepairBoundaryReply(
+                original, card, null, listOf(revised, literal), "$revised\n$literal",
+                experimental = true, tool = true, expectedFirstPreview = revised,
+            )
+        }
+        val fenced = listOf("$revised\n~~~text", issued, "~~~")
+        assertRepairBoundaryReply(
+            original, card, null, fenced, fenced.joinToString("\n"),
+            experimental = true, tool = true, expectedFirstPreview = fenced.first(),
+        )
+        assertRepairBoundaryReply(original, card, null, parts, revised, experimental = true, tool = true, expectedFirstPreview = revised)
     }
 
     @Test

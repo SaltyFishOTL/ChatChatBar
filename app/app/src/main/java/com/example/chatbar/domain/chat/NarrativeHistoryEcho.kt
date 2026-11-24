@@ -718,9 +718,17 @@ object NarrativeHistoryEcho {
                 }
                 val received = DispatchReply(text, partLengths, loggedRepairQuotes(text))
                 val payloadLines = repairDispatch.userPromptBlock?.lines()
-                val input = if (payloadLines == null) received else received.withoutExactToolEchoes(provisional) { start, end, _ ->
-                    exactDirectiveBlockEnd(text, start, payloadLines) == end
-                }
+                val systemLines = repairDispatch.unlabelledSystemBlock?.lines()
+                val input = if (payloadLines != null || systemLines != null) {
+                    received.withoutExactToolEchoes(provisional) { start, end, atEdge ->
+                        if (payloadLines != null && exactDirectiveBlockEnd(text, start, payloadLines) == end) {
+                            return@withoutExactToolEchoes true
+                        }
+                        val systemEnd = if (atEdge) systemLines?.let { exactDirectiveBlockEnd(text, start, it) } else null
+                        // Physical line breaks within the call belong to that exact echo.
+                        systemEnd != null && systemEnd <= end && (systemEnd until end).all { text[it].isHistoryLineBreak() }
+                    }
+                } else received
                 val interior = if (input.partLengths.size > 1) {
                     interiorRepairEchoRanges(input.text, repairDispatch, provisional)
                 } else emptyList()
@@ -756,7 +764,7 @@ object NarrativeHistoryEcho {
                 if (eligibleHistoryHeadings.isEmpty() && switches.isEmpty()) return reply
                 return reply.withoutExactToolEchoes(provisional) { start, end, atEdge ->
                     val part = body.substring(start, end)
-                    part in switches || atEdge && part in eligibleHistoryHeadings
+                    part.trimEnd('\r', '\n') in switches || atEdge && part in eligibleHistoryHeadings
                 }
             }
             fun removeDispatchEcho(body: String, isJoinedLiteral: (Int) -> Boolean = { false }) =
