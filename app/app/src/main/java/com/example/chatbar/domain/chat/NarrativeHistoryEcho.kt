@@ -489,10 +489,37 @@ object NarrativeHistoryEcho {
             }
             recordCurrentOutput(authoredSources[source] ?: declaredUserOutput(source))
             omitInheritedXmlTemplates = currentUserOmitsXml(source)
-            val citation = exactPreviousReplyCitation.matchEntire(source)
+            val citationSource = citationWithoutOuterPadding(source)
+            val citation = exactPreviousReplyCitation.matchEntire(citationSource)
             citeLatestProjectionVerbatim = citation != null ||
-                exactPreviousReplyCitationInChinese.matches(source)
+                exactPreviousReplyCitationInChinese.matches(citationSource)
             explainCitationInPlainProse = citation?.groups?.get("plainProse") != null
+        }
+
+        private fun citationWithoutOuterPadding(source: String): CharSequence {
+            var start = 0
+            while (start < source.length) {
+                var afterPadding = start
+                while (source.getOrNull(afterPadding)?.isHorizontalPadding() == true) afterPadding++
+                // Keep all indentation on the first nonempty physical line.
+                start = when {
+                    source.getOrNull(afterPadding) == '\n' -> afterPadding + 1
+                    source.startsWith("\r\n", afterPadding) -> afterPadding + 2
+                    else -> break
+                }
+            }
+            var end = source.length
+            while (end > start) {
+                when (source[end - 1]) {
+                    ' ', '\t' -> end--
+                    '\n' -> {
+                        end--
+                        if (end > start && source[end - 1] == '\r') end--
+                    }
+                    else -> break
+                }
+            }
+            return source.subSequence(start, end)
         }
 
         private fun recordCurrentOutput(output: UserOutput) {

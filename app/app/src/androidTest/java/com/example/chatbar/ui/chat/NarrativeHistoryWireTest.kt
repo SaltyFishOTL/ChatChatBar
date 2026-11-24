@@ -554,6 +554,27 @@ class NarrativeHistoryWireTest {
         }
     }
 
+    @Test fun citationPaddingKeepsTheSerializedRequestAndQuotedXmlOnDisk() = runBlocking {
+        val body = "A hard break.  \r\n    The door opened."
+        val english = "Quote the previous assistant reply with its XML history tags exactly."
+        val chinese = "请原样引用上一条助手回复，连同外层的 XML 历史标签。"
+        for (stop in listOf(true, false)) {
+            val ordinary = buildReplyFixture(Transport.ORDINARY, stop = true).copy(stop = stop, prior = body)
+            val citation = PromptTemplates.narrativeModeHistoryReply(body, ordinary.mode)
+            runReplyFixture(ordinary.copy(
+                input = "\r\n \t\r\n$english\r\n \t\r\n", parts = listOf(citation), preview = citation, expected = citation,
+            ))
+            runReplyFixture(ordinary.copy(
+                input = "\n    $chinese\n", parts = listOf(citation), preview = body, expected = body,
+            ))
+            val parts = listOf(citation.substringBeforeLast('\n'), citation.substringAfterLast('\n'))
+            runReplyFixture(ordinary.copy(
+                transport = Transport.EXPERIMENTAL_TOOL, input = "\n$chinese\n\n", parts = parts,
+                expected = citation, preview = parts.first(), reasoningWitness = "Both completed calls were sent.",
+            ))
+        }
+    }
+
     @Test fun adjacentLogBlankLineAndRetainedLegacyQuotePreserveTheRightColdBytes() = runBlocking {
         val lead = "Below is a literal quotation copied from the history log.\n"
         val tail = "That was a verbatim quotation from the log."

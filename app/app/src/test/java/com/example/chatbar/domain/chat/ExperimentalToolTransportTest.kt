@@ -363,6 +363,11 @@ class ExperimentalToolTransportTest {
                 .single { it.getValue("name").jsonPrimitive.content == "context" }
                 .getValue("description").jsonPrimitive.content
             val sentHistory = Json.parseToJsonElement(sent).jsonArray
+            if (userText != null) assertTrue(sentHistory.any {
+                val item = it.jsonObject
+                item.getValue("role").jsonPrimitive.content == "user" &&
+                    item.getValue("content").jsonPrimitive.content == userText
+            })
             if (issueRoutineHistoryHeading) {
                 assertEquals(previousAssistant != null, sentHistory.any {
                     val item = it.jsonObject
@@ -4311,6 +4316,82 @@ class ExperimentalToolTransportTest {
                 }
             }
         }
+    }
+
+    @Test
+    fun `English XML citations tolerate outer blank physical lines without treating indented code as a request`() = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val body = "The latch held.  \r\n    Then it opened.  "
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, body).copy(narrativeMode = mode)
+        val quote = PromptTemplates.narrativeModeHistoryReply(body, mode)
+        val request = "Quote the previous assistant reply with its XML history tags exactly."
+        val clause = "Quote the last reply verbatim, including both XML history tags."
+        val followup = "Then explain what the quotation demonstrates."
+        val commentary = "\n\nThe opening tag describes the mode."
+        for ((experimental, tool) in listOf(false to false, true to false, true to true)) {
+            for (literal in listOf(
+                "\n    $request\n", "\r\n\t$request\r\n", "\n> $request\n",
+                "\nHe read: “$request”\n", "\n$request\nThen omit the XML history tags.\n",
+                "\r\n$clause\r\n\r\n$followup\r\n", "\nQuote the previous assistant reply without its XML history tags exactly.\n",
+                "\nContinue.\n",
+            )) assertNarrativeReplyDeltas(
+                listOf(quote), listOf(body), body, previousAssistant = prior, currentUserText = literal,
+                experimental = experimental, toolCall = tool, requestNarrativeMode = mode, checkHeldStop = true,
+            )
+            for (padding in listOf(request, "\n$request\n", " \t\r\n\r\n$request\r\n  \r\n\t", "\n  $request \t\n")) {
+                assertNarrativeReplyDeltas(
+                    listOf(quote), listOf(quote), quote, previousAssistant = prior, currentUserText = padding,
+                    experimental = experimental, toolCall = tool, requestNarrativeMode = mode, checkHeldStop = true,
+                )
+            }
+            val paddedClause = "\r\n\t \r\n$clause\r\n$followup \t\r\n"
+            assertNarrativeReplyDeltas(
+                listOf(quote, commentary), listOf(quote, quote + commentary), quote + commentary,
+                previousAssistant = prior, currentUserText = paddedClause,
+                experimental = experimental, toolCall = tool, requestNarrativeMode = mode, checkHeldStop = true,
+            )
+        }
+    }
+
+    @Test
+    fun `Chinese XML citations tolerate outer LF and CRLF without changing the quoted bytes`() = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val body = "屋内还亮着灯。  \r\n    她停在门边。"
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, body).copy(narrativeMode = mode)
+        val quote = PromptTemplates.narrativeModeHistoryReply(body, mode)
+        val request = "请原样引用上一条助手回复，连同外层的 XML 历史标签。"
+        val omit = "请原样引用上一条助手回复，但不要包含外层的 XML 历史标签。"
+        for ((experimental, tool) in listOf(false to false, true to false, true to true)) {
+            for (literal in listOf("\r\n    $request\r\n", "\n\t$request\n", "\n> $request\n", "\n$omit\n")) {
+                assertNarrativeReplyDeltas(
+                    listOf(quote), listOf(body), body, previousAssistant = prior, currentUserText = literal,
+                    experimental = experimental, toolCall = tool, requestNarrativeMode = mode, checkHeldStop = true,
+                )
+            }
+            for (padding in listOf(request, "\n$request\n", " \t\r\n$request\r\n   \r\n")) {
+                assertNarrativeReplyDeltas(
+                    listOf(quote), listOf(quote), quote, previousAssistant = prior, currentUserText = padding,
+                    experimental = experimental, toolCall = tool, requestNarrativeMode = mode, checkHeldStop = true,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `classifier padding leaves an actual two-call XML citation and request byte exact`(): Unit = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val body = "The letter was still sealed.  \r\n    The lock clicked.  "
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, body).copy(narrativeMode = mode)
+        val quote = PromptTemplates.narrativeModeHistoryReply(body, mode)
+        val parts = listOf(quote.substringBeforeLast('\n'), quote.substringAfterLast('\n'))
+        val request = "Quote the last reply verbatim, including both XML history tags."
+        assertMultipartNarrativeReply(parts, quote, previousAssistant = prior, userText = request, checkHeldStop = true)
+        for (literal in listOf("\n    $request\n", "\r\n\t$request\r\n", "\n> $request\n", "\nContinue.\n")) {
+            assertMultipartNarrativeReply(parts, body, previousAssistant = prior, userText = literal, checkHeldStop = true)
+        }
+        assertMultipartNarrativeReply(
+            parts, quote, previousAssistant = prior, userText = "\r\n \t\r\n$request\r\n\t \r\n", checkHeldStop = true,
+        )
     }
 
     @Test
