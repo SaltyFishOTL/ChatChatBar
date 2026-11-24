@@ -85,7 +85,7 @@ object NarrativeHistoryEcho {
     private const val commentOpening = "<!--"
     private val commentDelimiters = Regex("<!--|-->")
     private val markdownContainerOrIndent = Regex(
-        "(?m)^(?:[ \\t]{4}|[ \\t]*\\t| {0,3}(?:>|~{3,}|[-+*][ \\t]|[0-9]{1,9}[.)][ \\t]))",
+        "(?m)^(?:[ \\t]{4}|[ \\t]*\\t| {0,3}(?:>|`{3,}|~{3,}|[-+*][ \\t]|[0-9]{1,9}[.)][ \\t]))",
     )
     private const val cdataOpening = "<![CDATA["
     private const val cdataClosing = "]]>"
@@ -3138,8 +3138,9 @@ object NarrativeHistoryEcho {
     }
 
     /** Closed comments hidden in the bubble. Code and escaped comment openers are literal. */
-    internal fun hiddenHtmlCommentRanges(text: String): List<IntRange> =
-        if (commentOpening !in text) emptyList() else classifyLiterals(text, interpretProseQuotes = false).commentRanges
+    internal fun hiddenHtmlCommentRanges(text: String, onMarkdownScan: (() -> Unit)? = null): List<IntRange> =
+        if (commentOpening !in text) emptyList() else
+            classifyLiterals(text, interpretProseQuotes = false, onMarkdownScan = onMarkdownScan).commentRanges
 
     /** Preserve Markdown code while keeping legacy status fences eligible for roleplay parsing. */
     internal fun roleplayLiteralCodeRanges(text: String): List<IntRange> {
@@ -3165,6 +3166,7 @@ object NarrativeHistoryEcho {
         closings: List<String> = emptyList(),
         includeUnclosed: Boolean = false,
         interpretProseQuotes: Boolean = true,
+        onMarkdownScan: (() -> Unit)? = null,
     ): ReplyLiterals {
         val markdown = bareCarriageReturn.replace(end, "\n")
         val comments = mutableListOf<IntRange>()
@@ -3174,6 +3176,7 @@ object NarrativeHistoryEcho {
         val markupCanChangeMarkdown = hasMarkup && ('`' in markdown || markdownContainerOrIndent.containsMatchIn(markdown))
 
         fun inspect(source: String): ReplyLiterals {
+            onMarkdownScan?.invoke()
             val lazyQuoteLineStarts = mutableSetOf<Int>()
             val containerLineStarts = mutableSetOf<Int>()
             val listItemLineStarts = mutableSetOf<Int>()
@@ -3263,19 +3266,18 @@ object NarrativeHistoryEcho {
         val range = markup.range
         val containsBackticks = range.any { text[it] == '`' }
         val multiline = range.any { text[it] == '\n' }
-        // Backtick runs can only pair inside their paragraph. A standalone, isolated
-        // one-line comment cannot affect a different paragraph when its runs are masked.
-        if (containsBackticks && multiline) return false
         val start = lineStart(text, range.first)
         val prefix = text.subSequence(start, range.first)
         if (multiline || containsBackticks) {
             if (!markup.isComment || !prefix.isBlank() || start in containers || start in lazyQuotes) return false
             val end = text.indexOf('\n', range.last + 1).let { if (it < 0) text.length else it }
             if (!text.subSequence(range.last + 1, end).isBlank()) return false
-            // Blank lines isolate a plain, standalone note from adjacent Markdown paragraphs.
-            val blankBefore = start == 0 || text.subSequence(lineStart(text, start - 1), start - 1).isBlank()
+            // Real paragraph breaks isolate any inline backticks inside the note.
+            // Block markers inside it can still change the interpretation of following lines.
+            val blankBefore = start == 0 ||
+                text.subSequence(lineStart(text, start - 1), start - 1).all { it in " \t\r" }
             val nextEnd = text.indexOf('\n', end + 1).let { if (it < 0) text.length else it }
-            val blankAfter = end == text.length || text.subSequence(end + 1, nextEnd).isBlank()
+            val blankAfter = end == text.length || text.subSequence(end + 1, nextEnd).all { it in " \t\r" }
             return blankBefore && blankAfter && !markdownContainerOrIndent.containsMatchIn(text.subSequence(start, end))
         }
         // A visible lead outside the Markdown block markers keeps the line in its paragraph.

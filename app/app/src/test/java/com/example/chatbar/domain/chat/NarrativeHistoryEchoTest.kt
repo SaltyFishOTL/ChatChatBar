@@ -247,6 +247,23 @@ class NarrativeHistoryEchoTest {
     }
 
     @Test
+    fun isolatedMultilineCommentsWithBackticksOnlyNeedOneRescan() {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val closing = "</历史回复>"
+        for (count in listOf(1, 96)) {
+            val notes = List(count) { "<!-- note $it\ncode sample `$closing` -->" }
+            val body = (listOf("Story starts.") + notes + "Story ends.").joinToString("\n\n")
+            val raw = "$opening\n$body\n$closing"
+            var scans = 0
+            val hidden = NarrativeHistoryEcho.hiddenHtmlCommentRanges(raw) { scans++ }.map(raw::substring)
+            assertEquals(notes, hidden)
+            assertEquals("Full scans with $count notes", 2, scans)
+            assertEquals(body, NarrativeHistoryEcho.replyBody(raw, streaming = true))
+            assertEquals(body, NarrativeHistoryEcho.replyBody(raw))
+        }
+    }
+
+    @Test
     fun classifiesManyCommentsAndRescansWhenAHiddenFenceCouldChangeCodeBoundaries() {
         val notes = List(64) { "<!-- note $it contains </历史回复> -->" }
         val plain = notes.joinToString("\n", prefix = "Story starts.\n", postfix = "\nStory ends.")
