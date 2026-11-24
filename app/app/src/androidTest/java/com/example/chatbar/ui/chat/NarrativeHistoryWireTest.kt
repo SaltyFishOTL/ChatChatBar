@@ -427,6 +427,57 @@ class NarrativeHistoryWireTest {
         verifyRepair(Transport.EXPERIMENTAL_TOOL, stop = false, orphan = RepairOrphan.WHOLE_REPAIR_SYSTEM_BLOCK)
     }
 
+    @Test fun explainedXmlAndExplicitPreviousProjectionSurvivePreviewStopAndReload() = runBlocking {
+        val prior = "The rain stopped."
+        val focus = ChatNarrativeMode.FOCUS
+        val sampleBody = "示例内容"
+        val sample = PromptTemplates.narrativeModeHistoryReply(sampleBody, focus)
+        val explanation = "The opening element declares the narrative mode in its attribute."
+        val expectedExample = "$sample\n$explanation"
+        val projection = PromptTemplates.narrativeModeHistoryReply(prior, focus)
+        val commentary = "\n\nThe opening element carries the narrative mode."
+        val citation = projection + commentary
+        for (stop in listOf(true, false)) {
+            for (transport in listOf(Transport.ORDINARY, Transport.EXPERIMENTAL_TOOL)) {
+                val base = buildReplyFixture(transport, stop = true)
+                    .copy(stop = stop, prior = prior)
+                val tool = transport == Transport.EXPERIMENTAL_TOOL
+                runReplyFixture(base.copy(
+                    input = "Explain this kind of XML.",
+                    parts = if (tool) listOf(sample, explanation) else listOf(expectedExample),
+                    expected = expectedExample, preview = if (tool) sampleBody else expectedExample,
+                    reasoningWitness = "Both sample and explanation were sent.".takeIf { tool },
+                ))
+                runReplyFixture(base.copy(
+                    input = "Quote the previous assistant reply verbatim with its XML history tags, then explain it.",
+                    parts = listOf(citation), expected = citation, preview = citation,
+                ))
+                runReplyFixture(base.copy(
+                    input = "Continue.", parts = listOf(citation),
+                    expected = prior + commentary, preview = prior + commentary,
+                ))
+            }
+        }
+    }
+
+    @Test fun anEchoOnlyFirstSwitchHasNoStoredStoryAndFencedCodeKeepsItsNewlines() = runBlocking {
+        for (stop in listOf(true, false)) {
+            val firstAdvance = buildReplyFixture(Transport.ORDINARY, stop, literal = LiteralCase.FIRST_ADVANCE_SWITCH)
+            val sentence = checkNotNull(firstAdvance.sentModeBlock).lineSequence().drop(1).first()
+            runReplyFixture(firstAdvance.copy(
+                input = "Begin the scene.", parts = listOf(sentence + if (stop) "\n" else ""),
+                expected = "", preview = "", expectNoUsableReply = true,
+            ))
+            val body = "\n```kotlin\nval stored = 7  \n```\n"
+            val afterFrame = "\n\n"
+            val fenced = buildReplyFixture(Transport.EXPERIMENTAL_TOOL, stop = true)
+            runReplyFixture(fenced.copy(
+                stop = stop, parts = listOf(PromptTemplates.narrativeModeHistoryReply(body, fenced.mode) + afterFrame),
+                expected = body + afterFrame, preview = body + afterFrame,
+            ))
+        }
+    }
+
     @Test fun exactUnlabelledInstructionsAndEnvelopeWhitespaceUseTheActualColdPaths() = runBlocking {
         for (literal in listOf(LiteralCase.UNLABELLED_MODE_SWITCH, LiteralCase.FRESH_FRAME_WHITESPACE)) {
             verifyReply(Transport.ORDINARY, stop = true, literal = literal)
@@ -539,17 +590,18 @@ class NarrativeHistoryWireTest {
         val finishReason: String?,
         val disconnectedText: String,
         val checksStrongDenial: Boolean,
+        val expectNoUsableReply: Boolean = false,
     )
 
     private fun buildReplyFixture(
         transport: Transport,
         stop: Boolean,
-        continuation: String?,
-        literal: LiteralCase?,
-        stopAfterCompleteToolCalls: Boolean,
-        legacyFirst: Boolean?,
-        toolIndexes: List<Int>?,
-        useGlobalPersona: Boolean,
+        continuation: String? = null,
+        literal: LiteralCase? = null,
+        stopAfterCompleteToolCalls: Boolean = false,
+        legacyFirst: Boolean? = null,
+        toolIndexes: List<Int>? = null,
+        useGlobalPersona: Boolean = false,
     ): ReplyFixture {
         val cardName = "Synthetic narrative wire"
         val mode = if (stop && legacyFirst == null && literal != LiteralCase.FIRST_ADVANCE_SWITCH) {
@@ -1107,6 +1159,12 @@ class NarrativeHistoryWireTest {
         }
         assertEquals(priorBodies.toSet(), saved.take(priorBodies.size).map(ChatMessage::displayContent).toSet())
         val newMessages = saved.drop(priorBodies.size).map(ChatMessage::displayContent)
+        if (fixture.expectNoUsableReply) {
+            val expectedBodies = if (fixture.stop) listOf(fixture.input)
+            else listOf(fixture.input, "错误: 模型未返回可用正文")
+            assertEquals(expectedBodies, newMessages)
+            return
+        }
         if (fixture.toolIndexes == null) assertEquals(listOf(fixture.input, fixture.expected), newMessages) else {
             assertEquals(fixture.input, newMessages.first())
             assertTrue(newMessages.last().startsWith("错误:"))

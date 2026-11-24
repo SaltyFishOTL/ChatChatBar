@@ -150,8 +150,9 @@ object NarrativeHistoryEcho {
     private val exactPreviousReplyCitation = Regex(
         " {0,3}(?:please[ \\t]+)?(?:quote|copy|reproduce)[ \\t]+the[ \\t]+" +
             "(?:previous|last|immediately[ \\t]+preceding)[ \\t]+" +
-            "(?:assistant[’']s[ \\t]+)?(?:displayed[ \\t]+)?(?:answer|reply|response)[ \\t]+(?:" +
+            "(?:assistant(?:[’']s)?[ \\t]+)?(?:displayed[ \\t]+)?(?:answer|reply|response)[ \\t]+(?:" +
             "(?:with|including)[ \\t]+(?:its|the)[ \\t]+XML[ \\t]+history[ \\t]+tags[ \\t]+verbatim|" +
+            "(?:literally|verbatim)[ \\t]+with[ \\t]+(?:its|the)[ \\t]+XML[ \\t]+history[ \\t]+tags|" +
             "verbatim,[ \\t]+including[ \\t]+both[ \\t]+XML[ \\t]+history[ \\t]+tags|" +
             "(?:literally|verbatim),[ \\t]+with[ \\t]+the[ \\t]+surrounding[ \\t]+XML[ \\t]+included)" +
             "(?:,[ \\t]+then[ \\t]+(?:explain[ \\t]+[^\\r\\n.!?]+|" +
@@ -281,6 +282,12 @@ object NarrativeHistoryEcho {
             "这是(?:一个)?(?:历史)?标签示例[。.]?|" +
             "(?:The (?:above|preceding)|These) (?:history|metadata) tags (?:are|were) " +
             "(?:only|just) (?:an example|for illustration)\\.?)[ \\t]*",
+        RegexOption.IGNORE_CASE,
+    )
+    private val historyElementAttributeExplanation = Regex(
+        " {0,3}The[ \\t]+(?:opening|outer)[ \\t]+(?:XML[ \\t]+)?(?:element|tag)[ \\t]+" +
+            "(?:declares|specifies)[ \\t]+the[ \\t]+narrative[ \\t]+mode[ \\t]+" +
+            "(?:in[ \\t]+(?:its|the)|as[ \\t]+an)[ \\t]+(?:XML[ \\t]+)?attribute\\.?[ \\t]*",
         RegexOption.IGNORE_CASE,
     )
     private val literalClosingTagLead = Regex(
@@ -694,8 +701,8 @@ object NarrativeHistoryEcho {
                     line in independentlyWitnessedSwitchLines ||
                         latestHistoryProjection?.startsWith(previousModeOpeningBySwitchLine.getValue(line)) == true
                 }
-                val switch = exactLeadingDirective(body, witnessedSwitchLines)
-                    ?.takeUnless { isAuthoredModeText(body.substring(it).trimEnd('\r', '\n')) }
+                val switch = exactLeadingDirective(body, witnessedSwitchLines, allowEchoOnly = true)
+                    ?.takeUnless { isAuthoredModeText(body.substring(0, lineEnd(body, 0))) }
                 val prepared = DispatchReply(body, lengths).withoutRanges(listOfNotNull(switch))
                 return withoutCompleteModeEchoes(
                     prepared, narrativeHeadingContinuations, provisional, ::isAuthoredHeading, ::hasDirectedHeading, ::isAuthoredModeText,
@@ -838,12 +845,13 @@ object NarrativeHistoryEcho {
         return reply.copy(quotedBlocks = quotedBlocks).withoutRanges(unquotedEchoes)
     }
 
-    private fun exactLeadingDirective(text: String, issuedLines: Set<String>): IntRange? {
+    private fun exactLeadingDirective(text: String, issuedLines: Set<String>, allowEchoOnly: Boolean = false): IntRange? {
         if (issuedLines.isEmpty()) return null
         val end = lineEnd(text, 0)
-        if (end == text.length || text.substring(0, end) !in issuedLines) return null
+        if (text.substring(0, end) !in issuedLines) return null
+        if (text.subSequence(end, text.length).isBlank()) return text.indices.takeIf { allowEchoOnly }
         val following = end + if (text.startsWith("\r\n", end)) 2 else 1
-        return (0 until following).takeIf { text.subSequence(following, text.length).isNotBlank() }
+        return 0 until following
     }
 
     private fun exactLeadingDirectiveBlock(text: String, issuedBlock: String?): IntRange? {
@@ -966,8 +974,8 @@ object NarrativeHistoryEcho {
         val storyStart = start + text.substring(start).takeWhile { it == ' ' }.length
         if (storyStart - start > 3 || text.getOrNull(storyStart)?.isLetterOrDigit() != true) return false
         val firstLine = text.substring(start, lineEnd(text, start))
-        if (historyExampleExplanation.matches(firstLine) || metadataExampleBridge.matches(firstLine) ||
-            logQuotationTail.matches(firstLine)
+        if (historyExampleExplanation.matches(firstLine) || historyElementAttributeExplanation.matches(firstLine) ||
+            metadataExampleBridge.matches(firstLine) || logQuotationTail.matches(firstLine)
         ) return false
         return wrappers.none { wrapper ->
             text.indexOf(wrapper.opening, start) >= 0 || wrapper.closings.any { text.indexOf(it, start) >= 0 }
@@ -1959,11 +1967,14 @@ object NarrativeHistoryEcho {
             val toolCloses by lazy(LazyThreadSafetyMode.NONE) {
                 toolClosesByOpening(text, joinedTags, joinedLiterals, literalOutput)
             }
-            fun explainsPreviousExample(index: Int): Boolean =
-                parts.getOrNull(index)?.let { part ->
-                    text.substring(part).lineSequence().firstOrNull(String::isNotBlank)
-                        ?.let(historyExampleExplanation::matches)
-                } == true
+            fun explainsPreviousExample(index: Int, afterFrame: Boolean = false): Boolean {
+                val part = parts.getOrNull(index) ?: return false
+                val first = text.substring(part).lineSequence().firstOrNull(String::isNotBlank)
+                if (first?.let(historyExampleExplanation::matches) == true) return true
+                if (!afterFrame) return false
+                val line = nextNonblankLine(joinedLiterals.markdown, part.first - 1) ?: return false
+                return line.last in part && joinedLiterals.matchesVisibleLine(line, historyElementAttributeExplanation)
+            }
 
             fun isBoundedLogQuotation(first: Int, last: Int): Boolean {
                 val before = previousVisibleLine(joinedLiterals.markdown, parts[first].first) ?: return false
@@ -2045,7 +2056,7 @@ object NarrativeHistoryEcho {
                             previousVisibleLine(joinedLiterals.markdown, parts[first].first), metadataExampleBridge,
                         )
                     if (cleaned.matchedOuterPair &&
-                        (followsExampleLead || explainsPreviousExample(next) || isBoundedLogQuotation(first, first))
+                        (followsExampleLead || explainsPreviousExample(next, afterFrame = true) || isBoundedLogQuotation(first, first))
                     ) {
                         cleaned = CleanedReply(text.substring(parts[first]))
                     }
@@ -2064,7 +2075,7 @@ object NarrativeHistoryEcho {
                         for (last in closingParts) {
                             val grouped = cleanParts(first, last, requirePair = true)
                             if (!grouped.matchedOuterPair && !grouped.preservedLiteralExample) continue
-                            val explicitExample = followsExampleLead || explainsPreviousExample(last + 1) ||
+                            val explicitExample = followsExampleLead || explainsPreviousExample(last + 1, afterFrame = true) ||
                                 isBoundedLogQuotation(first, last)
                             val ambiguousContinuation = if (!explicitExample && last < parts.lastIndex) {
                                 val closingOffset = standaloneClosingOffset(text.substring(parts[last]))
@@ -2288,14 +2299,16 @@ object NarrativeHistoryEcho {
         fun headingAfterClose(suffixStart: Int): IntRange? = trailerHeading?.takeIf {
             suffixStart <= it.first && body.subSequence(suffixStart, it.first).isBlank()
         }
+        fun isProjectedOwnLineFrame(position: Int, close: String): Boolean =
+            openingLineBreak != null && wrapper != legacyWrapper &&
+                projectedBodies.keys.any { it.startsWith(wrapper.opening) } && literals.isStandaloneTagLine(position, close)
+
         fun bodyBeforeClose(position: Int, completeClose: String? = null): String {
             val trimmed = body.substring(0, position).trimEnd()
-            if (completeClose != null && openingLineBreak != null && wrapper != legacyWrapper &&
-                projectedBodies.keys.any { it.startsWith(wrapper.opening) } &&
-                literals.isStandaloneTagLine(position, completeClose)
-            ) {
-                val breakAfterOpening = if (afterOpening.startsWith("\r\n", openingLineBreak)) 2 else 1
-                val contentStart = openingStart + wrapper.opening.length + openingLineBreak + breakAfterOpening
+            val openingBreak = openingLineBreak
+            if (completeClose != null && openingBreak != null && isProjectedOwnLineFrame(position, completeClose)) {
+                val breakAfterOpening = if (afterOpening.startsWith("\r\n", openingBreak)) 2 else 1
+                val contentStart = openingStart + wrapper.opening.length + openingBreak + breakAfterOpening
                 val closingLine = bodyStart + lineStart(body, position)
                 // Only the envelope owns the two adjacent line breaks.
                 val breakBeforeClosing = if (closingLine >= 2 && text.startsWith("\r\n", closingLine - 2)) 2 else 1
@@ -2314,6 +2327,14 @@ object NarrativeHistoryEcho {
             var endOfContent = trimmed.length
             while (endOfContent < limit && !body[endOfContent].isHistoryLineBreak()) endOfContent++
             return body.substring(0, endOfContent)
+        }
+        fun blankTailAfterFencedBody(position: Int, afterClosing: Int, close: String): String {
+            if (!body.getOrNull(afterClosing).isHistoryLineBreak() || !isProjectedOwnLineFrame(position, close)) return ""
+            val fence = literals.fences.lastOrNull() ?: return ""
+            if (!fence.topLevel || fence.closingLineStart == null || fence.range !in literals.roleplayLiteralCode ||
+                fence.range.last >= position || !body.subSequence(fence.range.last + 1, position).isBlank()
+            ) return ""
+            return body.substring(afterClosing)
         }
         fun endsReply(tag: MatchResult): Boolean =
             tag.range.last + 1 == end.length ||
@@ -2412,12 +2433,13 @@ object NarrativeHistoryEcho {
             val afterClosing = closing.range.last + 1
             // A complete leading pair followed by visible prose is an example.
             if (!endsReply(closing)) {
+                val nextLine = nextNonblankLine(literals.markdown, afterClosing)
+                val explained = literals.matchesVisibleLine(nextLine, historyExampleExplanation) ||
+                    literals.matchesVisibleLine(nextLine, historyElementAttributeExplanation)
                 return CleanedReply(
                     text,
                     pendingToolOpening = openingStart,
-                    preservedLiteralExample = literals.matchesVisibleLine(
-                        nextNonblankLine(literals.markdown, afterClosing), historyExampleExplanation,
-                    ) && body.subSequence(afterClosing, lineEnd(body, afterClosing)).isBlank(),
+                    preservedLiteralExample = explained && body.subSequence(afterClosing, lineEnd(body, afterClosing)).isBlank(),
                 )
             }
             if (declared) return CleanedReply(text, matchedOuterPair = true)
@@ -2433,7 +2455,8 @@ object NarrativeHistoryEcho {
             if (afterClosing == end.length) {
                 val content = projectedBodies[text] ?:
                     cleanExposedBody(removeInnerTransport(bodyBeforeClose(position, closing.value), requireInnerPair = true))
-                return CleanedReply(leadingContent + content, matchedOuterPair = true)
+                val tail = blankTailAfterFencedBody(position, afterClosing, closing.value)
+                return CleanedReply(leadingContent + content + tail, matchedOuterPair = true)
             }
             val tail = headingAfterClose(afterClosing)?.let { heading ->
                 body.substring(afterClosing, heading.first).trimEnd('\r', '\n') + body.substring(heading.last + 1)
