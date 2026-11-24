@@ -207,11 +207,27 @@ class ManageViewModel : ViewModel() {
         _editorDrafts.value = editorDraftRepository.getAll().sortedByDescending { it.updatedAt }
     }
 
-    fun discardEditorDraft(draft: EditorDraft) {
+    fun discardEditorDraft(draft: EditorDraft, onResult: (String?) -> Unit = {}) {
         viewModelScope.launch {
-            editorDraftRepository.delete(draft.id)
-            editorDraftAssetService.deleteDraft(draft.draftSessionId)
+            var discarded = false
+            val errorMessage = try {
+                check(editorDraftRepository.deleteIfUnchanged(draft)) { "草稿已更新，请重新确认" }
+                discarded = true
+                editorDraftRepository.withDraftsForAssetCleanup { remaining ->
+                    editorDraftAssetService.deleteUnreferencedDraftAssets(remaining, sessions = listOf(draft.draftSessionId))
+                }
+                null
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                if (discarded) {
+                    "草稿已清除，临时资源清理失败：${error.message}"
+                } else {
+                    "清除草稿失败：${error.message}"
+                }
+            }
             refreshDraftsNow()
+            onResult(errorMessage)
         }
     }
 
@@ -226,10 +242,20 @@ class ManageViewModel : ViewModel() {
         viewModelScope.launch { onDone(characterTransfers.duplicate(id).id) }
     }
 
-    fun createSessionForCharacter(id: String, onDone: (String) -> Unit) {
+    fun createSessionForCharacter(
+        id: String,
+        greetingChoice: com.example.chatbar.domain.card.CharacterGreetingChoice? = null,
+        onFailure: (Exception) -> Unit = { throw it },
+        onDone: (String) -> Unit
+    ) {
         viewModelScope.launch {
-            if (modelResolver.status().isUsable) {
-                onDone(ChatBarApp.instance.characterSessionService.createSessionForCharacter(id))
+            try {
+                check(modelResolver.status().isUsable) { "模型配置不可用，无法创建会话。" }
+                onDone(ChatBarApp.instance.characterSessionService.createSessionForCharacter(id, greetingChoice))
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                onFailure(error)
             }
         }
     }

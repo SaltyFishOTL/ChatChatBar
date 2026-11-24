@@ -180,16 +180,21 @@ class JsonFileStorage(private val context: Context) {
     suspend fun <T : Any> loadEntity(
         entityType: String,
         id: String,
-        serializer: KSerializer<T>
+        serializer: KSerializer<T>,
+        requireReadable: Boolean = false
     ): T? = mutexFor(entityType).withStorageAccess {
         withContext(Dispatchers.IO) {
             val file = entityFile(entityType, id)
-            if (!file.exists()) return@withContext null
+            if (!requireReadable && !file.exists()) return@withContext null
             try {
-                file.inputStream().buffered().use { input ->
+                val source = if (requireReadable) Files.newInputStream(file.toPath()) else file.inputStream()
+                source.buffered().use { input ->
                     json.decodeFromStream(serializer, input)
                 }
-            } catch (e: Exception) {
+            } catch (_: NoSuchFileException) {
+                null
+            } catch (error: Exception) {
+                if (requireReadable) throw IOException("无法读取本地记录", error)
                 null
             }
         }
@@ -201,24 +206,30 @@ class JsonFileStorage(private val context: Context) {
     @OptIn(ExperimentalSerializationApi::class)
     suspend fun <T : Any> loadAll(
         entityType: String,
-        serializer: KSerializer<T>
-    ): List<T> = loadAllById(entityType, serializer).values.toList()
+        serializer: KSerializer<T>,
+        requireComplete: Boolean = false
+    ): List<T> = loadAllById(entityType, serializer, requireComplete).values.toList()
 
     @OptIn(ExperimentalSerializationApi::class)
     internal suspend fun <T : Any> loadAllById(
         entityType: String,
-        serializer: KSerializer<T>
+        serializer: KSerializer<T>,
+        requireComplete: Boolean = false
     ): Map<String, T> = mutexFor(entityType).withStorageAccess {
         withContext(Dispatchers.IO) {
             val dir = entityDir(entityType)
             val entities = mutableMapOf<String, T>()
-            dir.listFiles { f -> f.extension == "json" }?.forEach { file ->
+            val files = dir.listFiles { f -> f.extension == "json" }
+            if (requireComplete && files == null) throw IOException("无法读取全部本地记录")
+            files?.forEach { file ->
                 try {
                     val entity = openSerializedInput(file).use { input ->
                         json.decodeFromStream(serializer, input)
                     }
                     entities[file.nameWithoutExtension] = entity
-                } catch (_: Exception) { /* skip corrupt files */ }
+                } catch (error: Exception) {
+                    if (requireComplete) throw IOException("无法读取全部本地记录", error)
+                }
             }
 
             // 初始化缓存
@@ -616,7 +627,15 @@ class JsonFileStorage(private val context: Context) {
     ) = mutexFor(entityType).withStorageAccess {
         withContext(Dispatchers.IO) {
             val file = entityFile(entityType, id)
-            if (requireSuccess) Files.deleteIfExists(file.toPath()) else file.delete()
+            if (requireSuccess) {
+                try {
+                    Files.deleteIfExists(file.toPath())
+                } catch (error: IOException) {
+                    throw IOException("删除本地记录失败", error)
+                }
+            } else {
+                file.delete()
+            }
 
             // 更新缓存
             val flow = getCacheFlow<T>(entityType)

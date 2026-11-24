@@ -33,6 +33,7 @@ import com.example.chatbar.data.local.entity.RagIndexStatus
 import com.example.chatbar.data.local.entity.SpeakerTagRename
 import com.example.chatbar.data.local.entity.SpeakerTagRenameTask
 import com.example.chatbar.data.local.entity.WorldBookEntry
+import com.example.chatbar.data.repository.EditorDraftRepository
 import com.example.chatbar.domain.card.CharacterSpeakerNamePolicy
 import com.example.chatbar.domain.card.CharacterCardCharacterImportResult
 import com.example.chatbar.domain.card.CharacterSectionImportPolicy
@@ -46,6 +47,7 @@ import com.example.chatbar.domain.card.CharacterAppearanceImageModelRoute
 import com.example.chatbar.domain.card.CharacterRewriteDraft
 import com.example.chatbar.domain.card.CharacterRewriteGenerationCheckpoint
 import com.example.chatbar.domain.card.StructuredCharacterFreeformConverter
+import com.example.chatbar.domain.draft.CharacterOpenModalKind
 import com.example.chatbar.domain.draft.CharacterOpenModalState
 import com.example.chatbar.domain.image.CharacterAvatarImagePolicy
 import com.example.chatbar.domain.image.ImageCropFractionRect
@@ -79,6 +81,7 @@ import com.example.chatbar.domain.voice.FishAudioTtsModels
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -279,13 +282,17 @@ class CharacterEditViewModel(
     private var appearanceImageGenerationToken = 0
     private var baseCard: CharacterCard? = null
     private var loadedDraft: EditorDraft? = null
+    private var ignoredDraft: EditorDraft? = null
     private var draftJob: Job? = null
+    private val draftWriteMutex = Mutex()
+    private var draftExitInProgress = false
     private val draftSessionId = routeDraftId.ifBlank { UUID.randomUUID().toString() }
     private var voicePreviewJob: Job? = null
     private var voicePreviewGenerationToken = 0
     private var voicePreviewSessionId = UUID.randomUUID().toString()
     private val voicePreviewSessionCache = FishAudioPreviewSessionCache()
     private val pendingDeletedAssets = mutableSetOf<String>()
+    private val removedDraftDocuments = mutableSetOf<String>()
     private val pendingDeletedDocumentIds = mutableSetOf<String>()
     private val transientGeneratedAvatarPaths = mutableSetOf<String>()
 
@@ -294,6 +301,14 @@ class CharacterEditViewModel(
 
     private val _isSaving = MutableStateFlow(false)
     val isSaving: StateFlow<Boolean> = _isSaving.asStateFlow()
+    private var formalSaveInProgress = false
+    private data class CommittedDraftCleanup(
+        val oldCard: CharacterCard?,
+        val savedCard: CharacterCard,
+        val consumedDraft: EditorDraft?,
+    )
+    private var committedDraftCleanup by mutableStateOf<CommittedDraftCleanup?>(null)
+    val isDraftCleanupPending: Boolean get() = committedDraftCleanup != null
 
     private val _indexingStatus = MutableStateFlow<String?>(null)
     val indexingStatus: StateFlow<String?> = _indexingStatus.asStateFlow()
@@ -378,6 +393,11 @@ class CharacterEditViewModel(
     var postHistoryInstructions by mutableStateOf("")
     var mesExample by mutableStateOf("")
     var creatorNotes by mutableStateOf("")
+    var tags by mutableStateOf(listOf<String>())
+    var creator by mutableStateOf("")
+    var characterVersion by mutableStateOf("")
+    var extensions by mutableStateOf("")
+        private set
     var momentsEnabled by mutableStateOf(true)
     var defaultNovelAiImageModel by mutableStateOf<NovelAiImageModel?>(null)
     var defaultImageGenerationSettings by mutableStateOf<com.example.chatbar.domain.image.NovelAiCharacterImageSettings?>(null)
@@ -511,12 +531,15 @@ class CharacterEditViewModel(
                 }
                 if (draft != null) {
                     if (card == null) {
-                        loadedDraft = draft.copy(targetId = null)
+                        loadedDraft = draft
                         draft.characterPayload?.let(::applyCard)
                         restoreOpenModal(draft.openModalState)
                         pendingDeletedAssets.addAll(draft.pendingDeletedAssets)
                         pendingDeletedDocumentIds.addAll(draft.pendingDeletedDocumentIds)
                         refreshChangeState()
+                    } else if (isRedundantDraft(card, draft)) {
+                        // A reverted or already committed snapshot has nothing left to restore.
+                        cleanupRedundantDraft(draft)
                     } else {
                         restoreDraft = draft
                         restoreConflict = draftRepository.isChanged(card, draft)
@@ -540,6 +563,7 @@ class CharacterEditViewModel(
     fun restoreDraft() {
         restoreDraft?.let { draft ->
             loadedDraft = draft
+            ignoredDraft = null
             draft.characterPayload?.let(::applyCard)
             restoreOpenModal(draft.openModalState)
             pendingDeletedAssets.clear()
@@ -554,6 +578,7 @@ class CharacterEditViewModel(
     }
 
     fun keepOriginal() {
+        restoreDraft?.let { ignoredDraft = it }
         restoreDraft = null
         restoreConflict = false
     }
@@ -561,70 +586,105 @@ class CharacterEditViewModel(
     private fun observeDiscardedDrafts() {
         viewModelScope.launch {
             draftRepository.drafts.collect { drafts ->
+                val ignored = ignoredDraft
+                if (ignored != null && drafts.none { it.id == ignored.id }) {
+                    // The ignored draft never owned the current edits. Release only its save precondition.
+                    ignoredDraft = null
+                }
                 val remembered = loadedDraft ?: restoreDraft
                 // A management-list discard must also invalidate a retained editor.
                 // Internal discard/save already owns its reset while not ready/saving.
                 if (draftReady && !_isSaving.value && remembered != null && drafts.none { it.id == remembered.id }) {
-                    discardDraft()
+                    discardDraft(recordAlreadyDeleted = true)
                 }
             }
         }
     }
 
-    fun discardDraft(onDone: (() -> Unit)? = null) {
+    fun discardDraft(onDone: (() -> Unit)? = null) = discardDraft(recordAlreadyDeleted = false, onDone = onDone)
+
+    private fun discardDraft(recordAlreadyDeleted: Boolean, onDone: (() -> Unit)? = null) {
+        if (_isSaving.value || !draftReady) return
+        _isSaving.value = true
         draftReady = false
         viewModelScope.launch {
+            var discarded = false
             try {
-                draftJob?.cancelAndJoin()
-                draftJob = null
+                finishDraftAutosave()
                 val savedCard = characterId?.let { characterRepository.getById(it) }
-                loadedDraft?.draftSessionId?.let { draftAssetService.deleteDraft(it) } ?: draftAssetService.deleteDraft(draftSessionId)
-                loadedDraft?.id?.let { draftRepository.delete(it) }
-                draftRepository.deleteForTarget(EditorDraftType.CHARACTER_CARD, characterId)
-                loadedDraft = null
-                // The same editor ViewModel can be reused when this card is reopened.
-                // Discard its editable fields as well as the persisted draft.
-                baseCard = savedCard
-                _indexingStatus.value = null
-                applyCard(savedCard)
-                draftSavedAt = null
-                sourceDeleted = false
-                saveConflict = false
-                pendingDeletedAssets.clear()
-                pendingDeletedDocumentIds.clear()
-                openModalState = null
-                restoredOpenModalState = null
-                hasLocalChanges = false
-                hasUnsavedDraftChanges = false
-                restoreDraft = null
-                restoreConflict = false
+                val reset = {
+                    // Reset once the selected record is gone, even if its resource cleanup fails.
+                    discarded = true
+                    loadedDraft = null
+                    ignoredDraft = null
+                    baseCard = savedCard
+                    _indexingStatus.value = null
+                    applyCard(savedCard)
+                    draftSavedAt = null
+                    sourceDeleted = false
+                    saveConflict = false
+                    pendingDeletedAssets.clear()
+                    removedDraftDocuments.clear()
+                    pendingDeletedDocumentIds.clear()
+                    openModalState = null
+                    restoredOpenModalState = null
+                    hasLocalChanges = false
+                    hasUnsavedDraftChanges = false
+                    restoreDraft = null
+                    restoreConflict = false
+                }
+                if (recordAlreadyDeleted) {
+                    // Management owns the selected row and its assets. A recovery draft can have a different target row.
+                    reset()
+                } else {
+                    deleteCharacterDraftAndAssets(loadedDraft ?: restoreDraft) { reset() }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                _indexingStatus.value = if (discarded) {
+                    "角色卡草稿已清除，临时资源清理失败：${error.message}"
+                } else {
+                    "清除角色卡草稿失败：${error.message}"
+                }
             } finally {
                 draftReady = true
+                _isSaving.value = false
             }
-            onDone?.invoke()
+            if (discarded) onDone?.invoke()
         }
     }
 
     fun saveCharacterCard(onSuccess: () -> Unit, forceOverwrite: Boolean = false, saveAsNew: Boolean = false) {
+        if (_isSaving.value || !draftReady) return
+        committedDraftCleanup?.let { pending ->
+            formalSaveInProgress = true
+            _isSaving.value = true
+            viewModelScope.launch {
+                val cleaned = completeCommittedDraftCleanup(pending)
+                finishCharacterSave()
+                if (cleaned) onSuccess()
+            }
+            return
+        }
         if (_characterCard.value?.isCommunityDownload == true) {
             _indexingStatus.value = "下载角色卡只读，请复制后编辑"
             return
         }
-        if (_isSaving.value) return
         if (validateForSave().isNotEmpty()) return
+        formalSaveInProgress = true
         _isSaving.value = true
 
         viewModelScope.launch {
             // A delayed draft write can otherwise recreate an older draft after this
             // formal save has deleted it. That stale draft is then restorable and can
             // overwrite newly materialized image paths on the next save.
-            draftJob?.cancelAndJoin()
-            draftJob = null
+            finishDraftAutosave()
             name = NamePolicy.normalize(name)
             val targetId = if (saveAsNew || sourceDeleted) null else characterId
             if (!forceOverwrite && targetId != null && loadedDraft != null && draftRepository.isChanged(characterRepository.getById(targetId), loadedDraft!!)) {
                 saveConflict = true
-                _isSaving.value = false
+                finishCharacterSave()
                 return@launch
             }
             val conflict = characterRepository.getAll().firstOrNull {
@@ -632,7 +692,7 @@ class CharacterEditViewModel(
             }
             if (conflict != null && targetId != null) {
                 _indexingStatus.value = "角色卡名称与“${conflict.name}”冲突"
-                _isSaving.value = false
+                finishCharacterSave()
                 return@launch
             }
             if (targetId == null && conflict != null) {
@@ -651,7 +711,7 @@ class CharacterEditViewModel(
                 draftAssetService.materializeCharacterAssets(rawCard)
             } catch (error: Throwable) {
                 _indexingStatus.value = "角色卡保存失败：${error.message ?: "草稿资源读取失败"}"
-                _isSaving.value = false
+                finishCharacterSave()
                 return@launch
             }
             val speakerRenames = buildSpeakerRenames(oldCard, materializedCard)
@@ -668,7 +728,7 @@ class CharacterEditViewModel(
                 characterRepository.save(card)
             } catch (error: Throwable) {
                 _indexingStatus.value = "角色卡保存失败：${error.message}"
-                _isSaving.value = false
+                finishCharacterSave()
                 return@launch
             }
             transientGeneratedAvatarPaths.removeAll(
@@ -706,29 +766,95 @@ class CharacterEditViewModel(
             charactersList.addAll(effectiveCard.characters)
             documentsList.clear()
             documentsList.addAll(effectiveCard.customDocuments)
-            draftJob?.cancelAndJoin()
-            draftJob = null
-            loadedDraft?.id?.let { draftRepository.delete(it) }
-            draftRepository.deleteForTarget(EditorDraftType.CHARACTER_CARD, characterId)
-            // Consumed drafts no longer retain images removed by this save; other drafts still do.
-            cleanupAfterCharacterSave(oldCard, effectiveCard)
-            loadedDraft?.draftSessionId?.let { draftAssetService.deleteDraft(it) } ?: draftAssetService.deleteDraft(draftSessionId)
-            pendingDeletedAssets.clear()
-            pendingDeletedDocumentIds.clear()
-            loadedDraft = null
             openModalState = null
             restoredOpenModalState = null
             baseCard = effectiveCard
             hasLocalChanges = false
             hasUnsavedDraftChanges = false
-            _isSaving.value = false
+            val consumedDraft = loadedDraft ?: ignoredDraft?.takeIf { it.targetId == effectiveCard.id }
+            val cleanup = CommittedDraftCleanup(oldCard, effectiveCard, consumedDraft)
+            val cleaned = completeCommittedDraftCleanup(cleanup)
+            finishCharacterSave()
             startBackgroundIndex(effectiveCard)
             if (effectiveCard.momentsEnabled) ChatBarApp.instance.momentScheduler.kick("character-save")
+            if (!cleaned) return@launch
             if (speakerRenameFailure == null) {
                 onSuccess()
             } else {
                 _indexingStatus.value = speakerRenameFailure
             }
+        }
+    }
+
+    private suspend fun completeCommittedDraftCleanup(cleanup: CommittedDraftCleanup): Boolean {
+        return try {
+            deleteCharacterDraftAndAssets(cleanup.consumedDraft, requireFileDeletion = true) {
+                // Consumed drafts no longer retain images removed by this save; other drafts still do.
+                cleanupAfterCharacterSave(cleanup.oldCard, cleanup.savedCard)
+            }
+            loadedDraft = null
+            ignoredDraft = null
+            draftSavedAt = null
+            restoreDraft = null
+            restoreConflict = false
+            pendingDeletedAssets.clear()
+            removedDraftDocuments.clear()
+            pendingDeletedDocumentIds.clear()
+            committedDraftCleanup = null
+            _indexingStatus.value = null
+            true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            committedDraftCleanup = cleanup
+            _indexingStatus.value = "角色卡已保存，草稿清理待重试：${error.message}"
+            false
+        }
+    }
+
+    private suspend fun deleteCharacterDraftAndAssets(
+        draft: EditorDraft?,
+        requireFileDeletion: Boolean = false,
+        afterDeletingDraft: suspend () -> Unit,
+    ) {
+        draft?.let { draftRepository.deleteIfUnchanged(it) }
+        afterDeletingDraft()
+        draftRepository.withDraftsForAssetCleanup { remaining ->
+            draftAssetService.deleteUnreferencedDraftAssets(
+                remaining,
+                sessions = listOfNotNull(draft?.draftSessionId, draftSessionId),
+                files = (draft?.draftAssetPaths.orEmpty() +
+                    draft?.characterPayload?.let(draftAssetService::ownedAssetPaths).orEmpty()).toSet(),
+                requireFileDeletion = requireFileDeletion,
+            )
+        }
+    }
+
+    private fun isRedundantDraft(card: CharacterCard, draft: EditorDraft): Boolean {
+        val payload = draft.characterPayload ?: return false
+        if (draft.openModalState != null || draftAssetService.ownedAssetPaths(card).any(draftAssetService::isDraftAsset)) {
+            return false
+        }
+        fun effective(card: CharacterCard) = card.copy(
+            defaultImageNegativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(card.defaultImageNegativePrompt)
+        )
+        return draftRepository.sameCharacterContent(effective(card), effective(payload))
+    }
+
+    private suspend fun cleanupRedundantDraft(draft: EditorDraft) {
+        try {
+            if (!draftRepository.deleteIfUnchanged(draft)) {
+                restoreDraft = draftRepository.getById(draft.id)
+                restoreConflict = restoreDraft?.let { draftRepository.isChanged(baseCard, it) } == true
+                return
+            }
+            draftRepository.withDraftsForAssetCleanup { remaining ->
+                draftAssetService.deleteUnreferencedDraftAssets(remaining, sessions = listOf(draft.draftSessionId))
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            _indexingStatus.value = "草稿清理失败：${error.message}"
         }
     }
 
@@ -746,31 +872,78 @@ class CharacterEditViewModel(
     }
 
     fun scheduleDraftSave() {
-        if (!draftReady || restoreDraft != null) return
+        if (!draftReady || restoreDraft != null || formalSaveInProgress || draftExitInProgress || isDraftCleanupPending) return
         refreshChangeState()
-        if (!hasLocalChanges) {
+        draftJob?.cancel()
+        if (!hasLocalChanges && !needsRevertedDraftCleanup()) {
             hasUnsavedDraftChanges = false
-            draftJob?.cancel()
             return
         }
         hasUnsavedDraftChanges = true
-        draftJob?.cancel()
         draftJob = viewModelScope.launch {
             delay(700)
-            saveDraftNow()
+            try {
+                draftWriteMutex.withLock {
+                    // Finish publishing the row and its in-memory owner together once writing starts.
+                    withContext(NonCancellable) { saveDraftNow() }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                _indexingStatus.value = "处理角色卡草稿失败：${error.message}"
+            }
+        }
+    }
+
+    fun requestExit(onUnsavedChanges: () -> Unit, onDone: () -> Unit) {
+        if (_isSaving.value || isDraftCleanupPending) return
+        refreshChangeState()
+        when {
+            hasLocalChanges -> onUnsavedChanges()
+            draftReady && restoreDraft == null && needsRevertedDraftCleanup() -> saveDraftAndExit(onDone)
+            else -> onDone()
         }
     }
 
     fun saveDraftAndExit(onDone: () -> Unit) {
+        if (_isSaving.value || !draftReady || restoreDraft != null || isDraftCleanupPending) return
+        draftExitInProgress = true
+        _isSaving.value = true
         viewModelScope.launch {
-            draftJob?.cancelAndJoin()
-            draftJob = null
-            if (hasUnsavedDraftChanges) saveDraftNow()
+            try {
+                finishDraftAutosave()
+                withContext(NonCancellable) { saveDraftNow() }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                _indexingStatus.value = "保存草稿失败：${error.message}"
+                return@launch
+            } finally {
+                draftExitInProgress = false
+                _isSaving.value = false
+            }
             onDone()
         }
     }
 
+    private fun needsRevertedDraftCleanup(): Boolean =
+        loadedDraft != null || removedDraftDocuments.isNotEmpty() || draftWriteMutex.isLocked
+
+    private suspend fun finishDraftAutosave() {
+        draftJob?.cancelAndJoin()
+        draftJob = null
+        // A prior job may have been replaced after it began writing.
+        draftWriteMutex.withLock { }
+    }
+
+    private var originalDocumentModal: CharacterOpenModalState? = null
+
     fun updateOpenModalState(state: CharacterOpenModalState?) {
+        if (state?.kind != CharacterOpenModalKind.EDIT_DOCUMENT) {
+            originalDocumentModal = null
+        } else if (openModalState?.documentId != state.documentId) {
+            originalDocumentModal = state
+        }
         openModalState = state
         scheduleDraftSave()
     }
@@ -780,12 +953,32 @@ class CharacterEditViewModel(
     }
 
     private suspend fun saveDraftNow() {
-        if (!draftReady || restoreDraft != null) return
+        if (!draftReady || restoreDraft != null || formalSaveInProgress || isDraftCleanupPending) return
+        refreshChangeState()
+        if (!hasLocalChanges) {
+            loadedDraft?.let { previous ->
+                loadedDraft = null
+                try {
+                    draftRepository.deleteIfUnchanged(previous)
+                    draftSavedAt = null
+                } catch (error: Exception) {
+                    loadedDraft = previous
+                    throw error
+                }
+            }
+            reclaimRemovedDraftDocuments()
+            hasUnsavedDraftChanges = false
+            return
+        }
         val payload = buildCurrentCard(markDirty = false)
-        val draftAssetPaths = draftAssetService.ownedAssetPaths(payload)
+        val draftAssetPaths = (draftAssetService.ownedAssetPaths(payload) +
+            listOfNotNull(openModalState?.character?.appearanceImage)).distinct()
             .filter { draftAssetService.isDraftAsset(it) }
+        val targetId = if (sourceDeleted) null else characterId
+        val owner = loadedDraft ?: ignoredDraft
+        val previous = loadedDraft?.takeIf { it.targetId == targetId }
         val draft = draftRepository.characterDraft(
-            targetId = if (sourceDeleted) null else characterId,
+            targetId = targetId,
             draftSessionId = draftSessionId,
             payload = payload,
             base = baseCard,
@@ -796,9 +989,41 @@ class CharacterEditViewModel(
                 draftJson.encodeToString(CharacterOpenModalState.serializer(), it)
             }
         )
-        loadedDraft = draftRepository.save(draft)
+        // Loading a draft does not acknowledge changes made to its source card.
+        val update = previous?.let { draft.copy(baseHash = it.baseHash, baseUpdatedAt = it.baseUpdatedAt) } ?: draft
+        loadedDraft = checkNotNull(draftRepository.saveIfUnchanged(update, owner)) {
+            "草稿已更新或清除，请重新打开角色卡"
+        }
+        ignoredDraft = null
         draftSavedAt = loadedDraft?.updatedAt
+        reclaimRemovedDraftDocuments()
         hasUnsavedDraftChanges = false
+    }
+
+    private suspend fun reclaimRemovedDraftDocuments() {
+        if (removedDraftDocuments.isEmpty()) return
+        val retainedPaths = documentsList.map { it.filePath } +
+            baseCard?.customDocuments.orEmpty().map { it.filePath } + loadedDraft?.draftAssetPaths.orEmpty()
+        val removed = removedDraftDocuments - retainedPaths.toSet()
+        if (removed.isEmpty()) return
+        try {
+            val reclaimed = draftRepository.withDraftsForAssetCleanup { remaining ->
+                draftAssetService.deleteUnreferencedDraftAssets(remaining, files = removed)
+            }
+            removedDraftDocuments.removeAll(reclaimed)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            _indexingStatus.value = "清理草稿临时资源失败：${error.message}"
+        }
+    }
+
+    private fun finishCharacterSave() {
+        formalSaveInProgress = false
+        _isSaving.value = false
+        // Formal save owns draft cleanup. Resume only a genuine outstanding edit,
+        // including a failed save, rather than a delayed UI snapshot of that cleanup.
+        scheduleDraftSave()
     }
 
     private fun restoreOpenModal(raw: String?) {
@@ -806,6 +1031,7 @@ class CharacterEditViewModel(
             runCatching { draftJson.decodeFromString(CharacterOpenModalState.serializer(), it) }.getOrNull()
         }
         openModalState = state
+        originalDocumentModal = null
         restoredOpenModalState = state
     }
 
@@ -2358,11 +2584,30 @@ class CharacterEditViewModel(
         }
     }
 
-    fun addDocument(fileName: String, content: String) {
-        viewModelScope.launch {
+    fun addDocument(fileName: String, content: String, onSuccess: () -> Unit = {}) {
+        writeCharacterDocument(onSuccess) {
             val localPath = draftAssetService.writeDocumentToDraft(draftSessionId, fileName, content)
             documentsList.add(DocumentInfo.create(fileName, localPath, fileName.substringAfterLast('.', "txt")))
             markRagIndexDirty("文档已添加，保存角色卡后将重建 RAG 索引")
+        }
+    }
+
+    private fun writeCharacterDocument(onSuccess: () -> Unit, write: suspend () -> Unit) {
+        if (_isSaving.value || !draftReady || isDraftCleanupPending) return
+        // Take ownership before the IO suspension, so Save cannot capture the previous document list.
+        _isSaving.value = true
+        viewModelScope.launch {
+            try {
+                write()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                _indexingStatus.value = "参考文档保存失败：${error.message}"
+                return@launch
+            } finally {
+                _isSaving.value = false
+            }
+            onSuccess()
             scheduleDraftSave()
         }
     }
@@ -2416,20 +2661,21 @@ class CharacterEditViewModel(
         scheduleDraftSave()
     }
 
-    fun updateDocument(doc: DocumentInfo, newName: String, newContent: String) {
-        viewModelScope.launch {
+    fun updateDocument(doc: DocumentInfo, newName: String, newContent: String, onSuccess: () -> Unit = {}) {
+        writeCharacterDocument(onSuccess) {
             val effectiveName = newName.ifBlank { doc.fileName }
+            val previous = documentsList.firstOrNull { it.id == doc.id } ?: error("参考文档已移除")
             val newPath = draftAssetService.writeDocumentToDraft(draftSessionId, effectiveName, newContent)
-            if (!draftAssetService.isDraftAsset(doc.filePath)) {
-                pendingDeletedAssets += doc.filePath
-                pendingDeletedDocumentIds += doc.id
+            if (!draftAssetService.isDraftAsset(previous.filePath)) {
+                pendingDeletedAssets += previous.filePath
+                pendingDeletedDocumentIds += previous.id
             }
-            val index = documentsList.indexOfFirst { it.id == doc.id }
+            val index = documentsList.indexOfFirst { it.id == previous.id }
             if (index >= 0) {
-                documentsList[index] = doc.copy(
+                documentsList[index] = previous.copy(
                     fileName = effectiveName,
                     filePath = newPath,
-                    fileType = effectiveName.substringAfterLast('.', doc.fileType),
+                    fileType = effectiveName.substringAfterLast('.', previous.fileType),
                     ragStatus = DocumentRagStatus.PENDING.name,
                     ragChunkCount = 0,
                     ragIndexedAt = null,
@@ -2437,7 +2683,6 @@ class CharacterEditViewModel(
                 )
             }
             markRagIndexDirty("文档已编辑，保存角色卡后将重建 RAG 索引")
-            scheduleDraftSave()
         }
     }
 
@@ -2462,6 +2707,10 @@ class CharacterEditViewModel(
         postHistoryInstructions = card.postHistoryInstructions
         mesExample = card.mesExample
         creatorNotes = card.creatorNotes
+        tags = card.tags
+        creator = card.creator
+        characterVersion = card.characterVersion
+        extensions = card.extensions
         momentsEnabled = card.momentsEnabled
         defaultNovelAiImageModel = card.defaultNovelAiImageModel
         defaultImageGenerationSettings = card.defaultImageGenerationSettings
@@ -2492,7 +2741,13 @@ class CharacterEditViewModel(
             val retained = com.example.chatbar.domain.card.CharacterBackgroundRetention.currentReferences(app, newCard.id) +
                 newCard.chatBackgroundImages + listOfNotNull(newCard.chatBackground)
             val removableAssets = MomentMediaRetention.unreferencedPaths(removedAssets, app.momentRepository.getAllPosts(), retained)
-            draftAssetService.deleteFiles(removableAssets)
+            val stagedAssets = removableAssets.filter(draftAssetService::isDraftAsset).toSet()
+            draftAssetService.deleteFiles(removableAssets - stagedAssets)
+            if (stagedAssets.isNotEmpty()) {
+                draftRepository.withDraftsForAssetCleanup { remaining ->
+                    draftAssetService.deleteUnreferencedDraftAssets(remaining, files = stagedAssets)
+                }
+            }
         }
 
         val newDocsById = newCard.customDocuments.associateBy { it.id }
@@ -2524,7 +2779,7 @@ class CharacterEditViewModel(
 
     private fun refreshChangeState() {
         val base = baseCard
-        hasLocalChanges = if (base == null) {
+        hasLocalChanges = hasUnconfirmedModalChanges() || if (base == null) {
             sourceDeleted || hasNewCharacterInput()
         } else {
             base.copy(
@@ -2544,24 +2799,53 @@ class CharacterEditViewModel(
                 postHistoryInstructions = postHistoryInstructions,
                 mesExample = mesExample,
                 creatorNotes = creatorNotes,
+                tags = tags,
+                creator = creator,
+                characterVersion = characterVersion,
+                extensions = extensions,
                 momentsEnabled = momentsEnabled,
                 defaultNovelAiImageModel = defaultNovelAiImageModel,
                 defaultImageGenerationSettings = defaultImageGenerationSettings,
                 worldBookIds = selectedWorldBookIds.distinct(),
                 defaultFormatCardId = selectedDefaultFormatCardId,
                 characters = charactersList.map { it.copy(name = NamePolicy.normalize(it.name)) },
-                customDocuments = documentsList.toList()
+                customDocuments = documentsList.map { it.withoutIndexState() }
             ) != base.copy(
-                defaultImageNegativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(base.defaultImageNegativePrompt)
+                defaultImageNegativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(base.defaultImageNegativePrompt),
+                customDocuments = base.customDocuments.map { it.withoutIndexState() }
             )
         }
     }
+
+    private fun hasUnconfirmedModalChanges(): Boolean {
+        val modal = openModalState ?: return false
+        return when (modal.kind) {
+            CharacterOpenModalKind.CHARACTER -> modal.character?.let { edited ->
+                val confirmed = charactersList.firstOrNull { it.id == edited.id }
+                if (confirmed != null) confirmed != edited else edited.hasEditorContent()
+            } ?: false
+            CharacterOpenModalKind.NEW_DOCUMENT -> modal.documentName.isNotBlank() || modal.documentContent.isNotBlank()
+            CharacterOpenModalKind.EDIT_DOCUMENT -> modal != originalDocumentModal
+        }
+    }
+
+    // Indexing progress is derived state, matching the draft repository's conflict
+    // fingerprint. It must not turn an untouched editor into a new user draft.
+    private fun DocumentInfo.withoutIndexState(): DocumentInfo = copy(
+        contentHash = null,
+        indexedHash = null,
+        ragStatus = "",
+        ragChunkCount = 0,
+        ragIndexedAt = null,
+        ragError = null
+    )
 
     private fun hasNewCharacterInput(): Boolean =
         name.isNotBlank() || botName.isNotBlank() || greeting.isNotBlank() || alternateGreetings.any(String::isNotBlank) ||
             avatar != null || chatBackground != null || chatBackgroundImages.isNotEmpty() || editMode != CharacterEditMode.STRUCTURED ||
             basicSetting.isNotBlank() || freeformCharacterText.isNotBlank() || defaultImagePrompt.isNotBlank() ||
             systemPrompt.isNotBlank() || postHistoryInstructions.isNotBlank() || mesExample.isNotBlank() ||
+            tags.isNotEmpty() || creator.isNotBlank() || characterVersion.isNotBlank() ||
             creatorNotes.isNotBlank() || !momentsEnabled || selectedWorldBookIds.isNotEmpty() ||
             defaultNovelAiImageModel != null || defaultImageGenerationSettings != null || selectedDefaultFormatCardId != null ||
             documentsList.isNotEmpty() || charactersList.any { it.hasEditorContent() }
@@ -2593,6 +2877,10 @@ class CharacterEditViewModel(
             postHistoryInstructions = postHistoryInstructions,
             mesExample = mesExample,
             creatorNotes = creatorNotes,
+            tags = tags,
+            creator = creator,
+            characterVersion = characterVersion,
+            extensions = extensions,
             momentsEnabled = momentsEnabled,
             defaultNovelAiImageModel = defaultNovelAiImageModel,
             defaultImageGenerationSettings = defaultImageGenerationSettings,
@@ -2626,6 +2914,10 @@ class CharacterEditViewModel(
             postHistoryInstructions = postHistoryInstructions,
             mesExample = mesExample,
             creatorNotes = creatorNotes,
+            tags = tags,
+            creator = creator,
+            characterVersion = characterVersion,
+            extensions = extensions,
             momentsEnabled = momentsEnabled,
             defaultNovelAiImageModel = defaultNovelAiImageModel,
             defaultImageGenerationSettings = defaultImageGenerationSettings,
@@ -2665,30 +2957,30 @@ class CharacterEditViewModel(
     }
 
     fun deleteDocument(doc: DocumentInfo) {
-        viewModelScope.launch {
+        writeCharacterDocument(onSuccess = {}) {
             if (!draftAssetService.isDraftAsset(doc.filePath)) {
                 pendingDeletedAssets += doc.filePath
                 pendingDeletedDocumentIds += doc.id
             } else {
-                draftAssetService.deleteFiles(listOf(doc.filePath))
+                removedDraftDocuments += doc.filePath
             }
             documentsList.remove(doc)
             markRagIndexDirty("文档已删除，保存角色卡后将重建 RAG 索引")
-            scheduleDraftSave()
         }
     }
 
     fun clearAllDocuments() {
-        viewModelScope.launch {
+        writeCharacterDocument(onSuccess = {}) {
             indexingJob?.cancel()
             val docs = documentsList.toList()
             docs.forEach { doc ->
                 if (!draftAssetService.isDraftAsset(doc.filePath)) {
                     pendingDeletedAssets += doc.filePath
                     pendingDeletedDocumentIds += doc.id
+                } else {
+                    removedDraftDocuments += doc.filePath
                 }
             }
-            draftAssetService.deleteFiles(docs.map { it.filePath }.filter { draftAssetService.isDraftAsset(it) })
             documentsList.clear()
             val now = System.currentTimeMillis()
             val current = _characterCard.value
@@ -2765,8 +3057,9 @@ class CharacterEditViewModel(
     }
 
     fun importDocumentsFromFolder(treeUri: Uri) {
+        if (_isSaving.value || !draftReady || isDraftCleanupPending) return
+        _isSaving.value = true
         viewModelScope.launch {
-            _isSaving.value = true
             try {
                 val context = ChatBarApp.instance
                 val contentResolver = context.contentResolver
@@ -2890,6 +3183,7 @@ class CharacterEditViewModel(
     }
 
     fun copyUriToLocalFile(uri: Uri, onSuccess: (String) -> Unit) {
+        if (_isSaving.value) return
         viewModelScope.launch {
             _isSaving.value = true
             try {

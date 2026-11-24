@@ -335,7 +335,7 @@ fun CharacterEditScreen(
     }
 
     fun requestExit() {
-        if (viewModel.hasLocalChanges) showExitDialog = true else onBack()
+        viewModel.requestExit(onUnsavedChanges = { showExitDialog = true }, onDone = onBack)
     }
 
     BackHandler {
@@ -605,6 +605,27 @@ fun CharacterEditScreen(
                 }
                 CbSwitch(viewModel.momentsEnabled, { viewModel.momentsEnabled = it })
             }
+            CharacterAlternateGreetingsEditor(
+                greetings = viewModel.alternateGreetings,
+                onChange = { viewModel.alternateGreetings = it },
+                onFullscreenEdit = { index, value ->
+                    // Do not apply a fullscreen draft to a changed or reordered source list.
+                    val expected = viewModel.alternateGreetings
+                    fullscreenField = "备用开场 ${index + 1}" to value
+                    fullscreenOnChange = { next ->
+                        if (viewModel.alternateGreetings == expected) {
+                            viewModel.alternateGreetings = expected.toMutableList().also { it[index] = next }
+                        }
+                    }
+                }
+            )
+            CbField("对话示例", modifier = Modifier.testTag("character-dialogue-examples"),
+                description = "作为人物对话示例加入模型输入；留空不添加示例，不替换系统提示词。", onFullscreenEdit = {
+                fullscreenField = "对话示例" to viewModel.mesExample
+                fullscreenOnChange = { viewModel.mesExample = it }
+            }) {
+                CbInput(viewModel.mesExample, { viewModel.mesExample = it }, singleLine = false, minLines = 4)
+            }
             CbField("基本设定", description = "世界观、扮演要求等共同设定；两种编辑模式均会生效。", onFullscreenEdit = {
                 fullscreenField = "基本设定" to viewModel.basicSetting; fullscreenOnChange = { viewModel.basicSetting = it }
             }) {
@@ -872,6 +893,15 @@ fun CharacterEditScreen(
             ) {
                 CbInput(viewModel.postHistoryInstructions, { viewModel.postHistoryInstructions = it }, placeholder = "留空使用默认…", singleLine = false, minLines = 3)
             }
+            CharacterCardMetadataEditor(
+                tags = viewModel.tags,
+                onTagsChange = { viewModel.tags = it },
+                creator = viewModel.creator,
+                onCreatorChange = { viewModel.creator = it },
+                version = viewModel.characterVersion,
+                onVersionChange = { viewModel.characterVersion = it },
+                extensions = viewModel.extensions
+            )
             CbField("作者备注", description = "仅供用户参考，不会注入AI提示词。", onFullscreenEdit = {
                 fullscreenField = "作者备注" to viewModel.creatorNotes; fullscreenOnChange = { viewModel.creatorNotes = it }
             }) {
@@ -1002,6 +1032,7 @@ fun CharacterEditScreen(
     }
 
     fullscreenField?.let { (title, text) ->
+        BackHandler { fullscreenField = null; fullscreenOnChange = null }
         FullscreenTextEditor(
             title = title,
             text = text,
@@ -1061,9 +1092,10 @@ fun CharacterEditScreen(
                 viewModel.updateOpenModalState(null)
             },
             onSave = {
-                viewModel.updateDocument(doc, editDocName, editDocContent)
-                editDocument = null
-                viewModel.updateOpenModalState(null)
+                viewModel.updateDocument(doc, editDocName, editDocContent) {
+                    editDocument = null
+                    viewModel.updateOpenModalState(null)
+                }
             }
         )
     }
@@ -1314,9 +1346,10 @@ fun CharacterEditScreen(
                 viewModel.updateOpenModalState(null)
             },
             onSave = { name, content ->
-                viewModel.addDocument(name, content)
-                showDocumentDialog = false
-                viewModel.updateOpenModalState(null)
+                viewModel.addDocument(name, content) {
+                    showDocumentDialog = false
+                    viewModel.updateOpenModalState(null)
+                }
             }
         )
     }
@@ -1503,6 +1536,17 @@ fun CharacterEditScreen(
                 CbButton("另存为新卡", { viewModel.saveConflict = false; viewModel.saveCharacterCard(onBack, saveAsNew = true) }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
                 CbButton("取消", { viewModel.saveConflict = false }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Ghost)
             }
+        }
+    }
+    if (viewModel.isDraftCleanupPending && !isSaving) {
+        CbDialog(
+            onDismissRequest = {},
+            title = "角色卡已保存",
+            dismissOnClickOutside = false,
+            dismiss = { CbButton("退出编辑", onBack, variant = ButtonVariant.Ghost) },
+            confirm = { CbButton("重试清理", { viewModel.saveCharacterCard(onBack) }) }
+        ) {
+            CbText("旧草稿的清理未完成，草稿资源已保留。")
         }
     }
     if (isSaving) {
@@ -2026,6 +2070,10 @@ private fun characterDraftSnapshot(viewModel: CharacterEditViewModel): String = 
     append(viewModel.postHistoryInstructions).append('|')
     append(viewModel.mesExample).append('|')
     append(viewModel.creatorNotes).append('|')
+    append(viewModel.tags.size).append(':')
+    viewModel.tags.forEach { append(it.length).append(':').append(it) }
+    append(viewModel.creator.length).append(':').append(viewModel.creator)
+    append(viewModel.characterVersion.length).append(':').append(viewModel.characterVersion)
     append(viewModel.momentsEnabled).append('|')
     append(viewModel.defaultImageGenerationSettings.toString())
     append(viewModel.defaultNovelAiImageModel?.name.orEmpty()).append('|')
