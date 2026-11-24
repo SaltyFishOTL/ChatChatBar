@@ -563,6 +563,36 @@ class NarrativeHistoryWireTest {
         }
     }
 
+    @Test fun captionedXmlSampleKeepsItsTagsThroughMultipartStopAndDone() = runBlocking {
+        val caption = "Example XML:"
+        val explanation = "The element stores a story excerpt."
+        for (stop in listOf(true, false)) {
+            val base = buildReplyFixture(Transport.EXPERIMENTAL_TOOL, stop = true).copy(stop = stop)
+            val example = PromptTemplates.narrativeModeHistoryReply("A fictional excerpt.", base.mode)
+            val parts = listOf(caption, example, explanation)
+            runReplyFixture(base.copy(
+                input = "Show a sample XML element as plain text. Put the caption before the sample.",
+                parts = parts,
+                preview = caption,
+                expected = parts.joinToString("\n"),
+                reasoningWitness = "All three sample calls have been sent.",
+            ))
+        }
+    }
+
+    @Test fun exactPreviousXmlWrapperAndExplanationStayWithTheColdReply() = runBlocking {
+        for (stop in listOf(true, false)) {
+            val base = buildReplyFixture(Transport.ORDINARY, stop = true).copy(stop = stop, prior = "The window opened.")
+            val projection = PromptTemplates.narrativeModeHistoryReply(base.prior, base.mode)
+            val explanation = "This XML element is a literal copy of the preceding reply."
+            val expected = "$projection\n\n$explanation"
+            runReplyFixture(base.copy(
+                input = "Please quote the previous answer along with its XML wrapper, then explain the example.",
+                parts = listOf(expected), preview = expected, expected = expected,
+            ))
+        }
+    }
+
     @Test fun explicitExactlyCitationAndPlainExplanationKeepTheRequestedXmlOnDisk() = runBlocking {
         val body = "门半开着。"
         val request = "Quote the previous assistant reply with its XML history tags exactly"
