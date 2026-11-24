@@ -621,7 +621,9 @@ object NarrativeHistoryEcho {
                 }
                 val added = (if (reset) 0 else previousLength) until text.length
                 val from = bodyStart
-                if (!requiresFullCleanup && from != null && added.all { text[it].isPlainPreviewBodyCharacter() }) {
+                if (!requiresFullCleanup && from != null && added.all { text[it].isPlainPreviewBodyCharacter() } &&
+                    issuedSwitchLines.none { text.indexOf(it, maxOf(from, added.first - it.length)) >= 0 }
+                ) {
                     return text.substring(from)
                 }
                 if (from != null) requiresFullCleanup = true
@@ -691,14 +693,22 @@ object NarrativeHistoryEcho {
                     while (end > selection.body.first && part[end - 1].isHistoryLineBreak()) end--
                     return selection.copy(body = selection.body.first until end)
                 }
-                fun unlabelledRepairRange(part: String): IntRange? =
-                    exactLeadingDirectiveBlock(part, repairDispatch.unlabelledSystemBlock)
-                        ?: (if (provisional) exactUnfinishedLeadingDirectiveBlock(part, repairDispatch.unlabelledSystemBlock) else null)
+                fun issuedRepairRanges(part: String, lengths: List<Int> = emptyList()): List<IntRange> {
+                    val separators = validatedReplyPartSeparators(part, lengths) ?: return emptyList()
+                    val block = repairDispatch.unlabelledSystemBlock
+                    val unfinished = if (provisional) {
+                        exactUnfinishedLeadingDirectiveBlock(part, block)?.takeUnless {
+                            isAuthoredRepairSystemText(repairDispatch.authoredSections, part.trimEnd('\r', '\n'))
+                        }
+                    } else null
+                    val leading = exactLeadingDirectiveBlock(part, block, separators.firstOrNull())
+                        ?: unfinished
                         ?: exactLeadingDirective(part, setOfNotNull(repairDispatch.unlabelledIntroduction))
-                fun issuedRepairRanges(part: String, lengths: List<Int> = emptyList()): List<IntRange> = listOfNotNull(
-                    unlabelledRepairRange(part),
-                    exactTrailingDirectiveBlock(part, repairDispatch.unlabelledSystemBlock, provisional),
-                ) + exactInteriorRepairBlocks(part, repairDispatch.unlabelledSystemBlock, lengths, provisional)
+                    return listOfNotNull(
+                        leading,
+                        exactTrailingDirectiveBlock(part, block, provisional, separators.lastOrNull()),
+                    ) + exactInteriorRepairBlocks(part, block, separators.toSet(), provisional)
+                }
                 fun loggedRepairQuotes(part: String): List<IntRange> {
                     val continuations = repairDispatch.continuations
                     if (continuations.keys.none { it in part }) return emptyList()
@@ -756,9 +766,10 @@ object NarrativeHistoryEcho {
                     line in independentlyWitnessedSwitchLines ||
                         latestHistoryProjection?.startsWith(previousModeOpeningBySwitchLine.getValue(line)) == true
                 }
-                val switch = exactLeadingDirective(body, witnessedSwitchLines, allowEchoOnly = true)
-                    ?.takeUnless { isAuthoredModeText(body.substring(0, lineEnd(body, 0))) }
-                val prepared = DispatchReply(body, lengths).withoutRanges(listOfNotNull(switch))
+                val eligibleSwitches = witnessedSwitchLines.filterNotTo(mutableSetOf(), ::isAuthoredModeText)
+                val leadingSwitch = exactLeadingDirective(body, eligibleSwitches, allowEchoOnly = true)
+                val trailingSwitch = exactTrailingDirective(body, eligibleSwitches, provisional, lengths)
+                val prepared = DispatchReply(body, lengths).withoutRanges(listOfNotNull(leadingSwitch, trailingSwitch))
                 return withoutCompleteModeEchoes(
                     prepared, narrativeHeadingContinuations, provisional, ::isAuthoredHeading, ::hasDirectedHeading, ::isAuthoredModeText,
                 )
@@ -929,9 +940,28 @@ object NarrativeHistoryEcho {
         return 0 until following
     }
 
-    private fun exactLeadingDirectiveBlock(text: String, issuedBlock: String?): IntRange? {
+    private fun exactTrailingDirective(
+        text: String, issuedLines: Set<String>, provisional: Boolean, partLengths: List<Int>,
+    ): IntRange? {
+        if (issuedLines.isEmpty()) return null
+        val end = (text.length - 1 downTo 0).firstOrNull { !text[it].isHistoryLineBreak() }?.plus(1) ?: return null
+        val start = lineStart(text, end)
+        if (start == 0 || text.substring(start, end) !in issuedLines) return null
+        val literals = classifyLiterals(text, includeUnclosed = provisional)
+        val lead = previousVisibleLine(literals.markdown, start) ?: return null
+        if (!literals.isUnprotected(start) || hasOrphanClosingCaption(text, start) ||
+            literals.followsLiteralHeadingLead(start) || literals.matchesVisibleLine(lead, logQuotationLead) ||
+            literals.matchesVisibleLine(lead, metadataExampleBridge)
+        ) return null
+        val toolSeparator = validatedReplyPartSeparators(text, partLengths)?.lastOrNull()
+        val separator = start - if (toolSeparator != start - 1 && text.startsWith("\r\n", start - 2)) 2 else 1
+        return separator until text.length
+    }
+
+    private fun exactLeadingDirectiveBlock(text: String, issuedBlock: String?, firstToolSeparator: Int?): IntRange? {
         if (issuedBlock == null) return null
         val end = exactDirectiveBlockEnd(text, 0, issuedBlock.lines()) ?: return null
+        if (end == firstToolSeparator) return 0..end
         var offset = nextHistoryLineStart(text, end)
         while (text.getOrNull(offset).isHistoryLineBreak()) offset++
         return 0 until offset
@@ -959,7 +989,17 @@ object NarrativeHistoryEcho {
         return text.indices
     }
 
-    private fun exactTrailingDirectiveBlock(text: String, issuedBlock: String?, provisional: Boolean): IntRange? {
+    internal fun isAuthoredRepairSystemText(authoredSections: List<String>, text: String): Boolean {
+        val normalized = text.replace("\r\n", "\n").replace('\r', '\n')
+        return authoredSections.any { source ->
+            text in source ||
+                ('\r' in source || text != normalized) && normalized in source.replace("\r\n", "\n").replace('\r', '\n')
+        }
+    }
+
+    private fun exactTrailingDirectiveBlock(
+        text: String, issuedBlock: String?, provisional: Boolean, lastToolSeparator: Int?,
+    ): IntRange? {
         if (issuedBlock == null) return null
         val end = (text.length - 1 downTo 0).firstOrNull { !text[it].isHistoryLineBreak() }?.plus(1) ?: return null
         val lines = issuedBlock.lines()
@@ -970,17 +1010,25 @@ object NarrativeHistoryEcho {
             start = lineStart(text, precedingBreak)
         }
         if (start <= 0 || exactDirectiveBlockEnd(text, start, lines) != end) return null
-        val lastBodyCharacter = (start - 1 downTo 0).firstOrNull { !text[it].isWhitespace() } ?: return null
-        val separator = lineEnd(text, lastBodyCharacter)
-        if (paragraphBreak.matchAt(text, separator) == null) return null
+        val separator = if (lastToolSeparator != null && lastToolSeparator == start - 1 && end == text.length) {
+            // The decoder owns this join. Newlines in the preceding call remain part of its body.
+            lastToolSeparator
+        } else {
+            val lastBodyCharacter = (start - 1 downTo 0).firstOrNull { !text[it].isWhitespace() } ?: return null
+            val paragraphSeparator = lineEnd(text, lastBodyCharacter)
+            if (paragraphBreak.matchAt(text, paragraphSeparator) == null) return null
+            paragraphSeparator
+        }
         val literals = classifyLiterals(text, includeUnclosed = provisional)
         val lead = previousVisibleLine(literals.markdown, start)
-        if (!literals.isUnprotected(start) || literals.matchesVisibleLine(lead, logQuotationLead)) return null
+        if (!literals.isUnprotected(start) || literals.followsLiteralHeadingLead(start) ||
+            literals.matchesVisibleLine(lead, logQuotationLead) || literals.matchesVisibleLine(lead, metadataExampleBridge)
+        ) return null
         return separator until text.length
     }
 
     private fun exactInteriorRepairBlocks(
-        text: String, issuedBlock: String?, partLengths: List<Int>, provisional: Boolean,
+        text: String, issuedBlock: String?, separators: Set<Int>, provisional: Boolean,
     ): List<IntRange> {
         if (issuedBlock == null) return emptyList()
         val lines = issuedBlock.lines()
@@ -988,7 +1036,6 @@ object NarrativeHistoryEcho {
         if (firstLine.isEmpty()) return emptyList()
         var occurrence = text.indexOf(firstLine, startIndex = 1)
         if (occurrence < 0) return emptyList()
-        val separators = validatedReplyPartSeparators(text, partLengths)?.toSet() ?: return emptyList()
         val literals = classifyLiterals(text, includeUnclosed = provisional)
         return buildList {
             while (occurrence >= 0) {
@@ -1086,7 +1133,9 @@ object NarrativeHistoryEcho {
         for (cut in cuts) {
             // If an echo consumes the join between calls, use the surviving line break before
             // the echo as the join. Preserve that break's bytes, including a preceding CR.
-            if (originalSeparators.any { it in cut } && text.getOrNull(cut.first - 1) == '\n') {
+            if (cut.last + 1 < text.length && originalSeparators.any { it in cut } &&
+                text.getOrNull(cut.first - 1) == '\n'
+            ) {
                 separators += cut.first - 1
             }
         }
@@ -2095,6 +2144,7 @@ object NarrativeHistoryEcho {
                 ) return clean(text).body
                 (offset until end).also { offset = end + 1 }
             }
+            val toolSeparators = parts.dropLast(1).mapTo(mutableSetOf()) { it.last + 1 }
             // A model can spread one wrapper across several valid game_content calls.
             // A complete match on the joined body takes precedence over per-call cleanup,
             // including when the format card reserves the matching outer wrapper.
@@ -2106,6 +2156,7 @@ object NarrativeHistoryEcho {
                 literalOutput = literalOutput, trailerHeadings = trailerHeadings,
                 trailerContinuations = trailerContinuations,
                 cleanExposedBody = cleanExposedBody,
+                isToolJoin = toolSeparators::contains,
             )
             if (wholeReply.matchedOuterPair) return wholeReply.body
             // Independent wrappers and groups of calls can coexist in the same tool reply.
@@ -2171,6 +2222,7 @@ object NarrativeHistoryEcho {
                         trailerContinuations = trailerContinuations,
                         cleanExposedBody = cleanExposedBody,
                         isJoinedLiteral = { index, opening -> isJoinedLiteral(sectionStart + index, opening, afterClosedSection) },
+                        isToolJoin = { index -> start + sectionStart + index in toolSeparators },
                     )
                 val cleaned = cleanSection(part, 0, requirePair)
                 if (first == last && cleaned.couldSpanToolCalls) {
@@ -2388,6 +2440,7 @@ object NarrativeHistoryEcho {
         trailerHeadings: List<String> = emptyList(),
         trailerContinuations: Map<String, Set<List<String>>> = emptyMap(),
         cleanExposedBody: (String) -> String = { it },
+        isToolJoin: (Int) -> Boolean = { false },
     ): CleanedReply {
         val first = text.indexOfFirst { !it.isWhitespace() }
         if (first < 0) return CleanedReply(text)
@@ -2472,17 +2525,17 @@ object NarrativeHistoryEcho {
                 val breakAfterOpening = if (afterOpening.startsWith("\r\n", openingBreak)) 2 else 1
                 val contentStart = openingStart + wrapper.opening.length + openingBreak + breakAfterOpening
                 val closingLine = bodyStart + lineStart(body, position)
-                // Only the envelope owns the two adjacent line breaks.
-                val breakBeforeClosing = if (closingLine >= 2 && text.startsWith("\r\n", closingLine - 2)) 2 else 1
+                val closingToolJoin = isToolJoin(closingLine - 1)
+                val breakBeforeClosing = if (!closingToolJoin && text.startsWith("\r\n", closingLine - 2)) 2 else 1
                 val payload = text.substring(contentStart, maxOf(contentStart, closingLine - breakBeforeClosing))
+                // Validated joins distinguish padding inside the body calls from envelope whitespace.
+                val bodyHasOwnToolBoundaries = isToolJoin(contentStart - 1) && closingToolJoin
                 val hasCrLfInsideBody = "\r\n" in payload.trim('\r', '\n')
                 val hasPaddedTerminalCodeLine = payload.endsWith('\n') &&
                     body.startsWith("  ", trimmed.length) && literals.indentedCode.containsOffset(trimmed.lastIndex)
-                if (hasCrLfInsideBody || markdownHardBreakBetweenLines.containsMatchIn(payload) ||
+                if (bodyHasOwnToolBoundaries || hasCrLfInsideBody || markdownHardBreakBetweenLines.containsMatchIn(payload) ||
                     hasPaddedTerminalCodeLine || endsWithLiteralFence(position)
-                ) {
-                    return payload
-                }
+                ) return payload
             }
             val trailingLiteral = literals.roleplayLiteralCode.firstOrNull {
                 trimmed.lastIndex in it && trimmed.length in it

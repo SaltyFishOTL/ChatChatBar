@@ -5235,6 +5235,40 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `exact standalone switch footer needs an actual dispatched mode transition`() = runBlocking {
+        val prose = "门终于开了。"
+        for (mode in ChatNarrativeMode.entries) {
+            val previous = ChatNarrativeMode.entries.first { it != mode }
+            val issued = PromptTemplates.narrativeModeTailSystemPrompt(mode, previous)
+            val switch = issued.lineSequence().drop(1).first()
+            val raw = "$prose\n$switch"
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "门还没有打开。").copy(narrativeMode = previous)
+            for ((experimental, toolCall) in listOf(false to false, true to true)) {
+                val unchanged = PromptTemplates.narrativeModeTailSystemPrompt(mode, mode)
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(raw), raw, narrativeTail = unchanged, previousAssistant = prior.copy(narrativeMode = mode),
+                    requestNarrativeMode = mode, experimental = experimental, toolCall = toolCall, dispatchActualModeTail = true,
+                )
+                val cited = "$prose\nThe note quoted this line:\n$switch"
+                assertNarrativeReplyDeltas(
+                    listOf(cited), listOf(cited), cited, narrativeTail = issued, previousAssistant = prior,
+                    requestNarrativeMode = mode, experimental = experimental, toolCall = toolCall, dispatchActualModeTail = true,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(raw), raw, narrativeTail = issued, previousAssistant = prior,
+                    currentUserText = "Copy this text verbatim:\n$raw", requestNarrativeMode = mode,
+                    experimental = experimental, toolCall = toolCall, dispatchActualModeTail = true,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(prose, "\n$switch"), listOf(prose, prose), prose, narrativeTail = issued, previousAssistant = prior,
+                    currentUserText = "Continue.", requestNarrativeMode = mode,
+                    experimental = experimental, toolCall = toolCall, dispatchActualModeTail = true, checkHeldStop = true,
+                )
+            }
+        }
+    }
+
+    @Test
     fun `truncated interior stock lines leave the short uncertain list fragment intact`() = runBlocking {
         val prose = "门开了。"
         for (mode in ChatNarrativeMode.entries) {
@@ -5278,6 +5312,23 @@ class ExperimentalToolTransportTest {
                         experimental = experimental, toolCall = toolCall, requestNarrativeMode = mode,
                     )
                 }
+            }
+        }
+    }
+
+    @Test
+    fun `a witnessed history frame preserves padding owned by a validated body call`() = runBlocking {
+        for (mode in ChatNarrativeMode.entries) {
+            val earlier = ChatMessage.create("fixture", MessageRole.ASSISTANT, "An earlier scene.").copy(narrativeMode = mode)
+            val opening = PromptTemplates.narrativeModeHistoryReply("", mode).lineSequence().first()
+            val prose = "雨停了。"
+            for (body in listOf("\n$prose  \n", "\n$prose  \r")) {
+                val parts = listOf(opening, body, "</历史回复>")
+                assertNarrativeReplyDeltas(
+                    listOf(parts.joinToString("\n")), listOf(prose), prose, previousAssistant = earlier,
+                    currentUserText = "Continue.", experimental = true, toolCall = true, requestNarrativeMode = mode,
+                )
+                assertMultipartNarrativeReply(parts, body, previousAssistant = earlier, checkHeldStop = true)
             }
         }
     }
@@ -6723,10 +6774,6 @@ class ExperimentalToolTransportTest {
             assertRepairBoundaryReply(original, card, null, listOf(noParagraph), noParagraph, experimental, toolCall)
             assertRepairBoundaryReply(original, card, null, listOf(raw), repaired, experimental, toolCall)
         }
-        assertRepairBoundaryReply(
-            original, card, null, listOf("$repaired\n", system), repaired, experimental = true, tool = true,
-            expectedFirstPreview = "$repaired\n",
-        )
     }
 
     @Test
@@ -6853,6 +6900,50 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `whole issued repair in a validated final tool call leaves the repaired paragraph unchanged`() = runBlocking {
+        val original = "The door was open"
+        val card = "End the sentence with a period."
+        val revised = "The door was shut."
+        val issued = MessageFormatRepairService.PreparedRequest(original, card, null).systemPrompt
+        val parts = listOf(revised, issued)
+        val raw = parts.joinToString("\n")
+        assertRepairBoundaryReply(original, card, null, listOf(raw), raw, experimental = true, tool = false)
+        assertRepairBoundaryReply("$original\n\n$issued", card, null, parts, raw,
+            experimental = true, tool = true, expectedFirstPreview = revised)
+        val quoted = listOf(revised, issued.prependIndent("> "))
+        assertRepairBoundaryReply(original, card, null, quoted, quoted.joinToString("\n"),
+            experimental = true, tool = true, expectedFirstPreview = revised)
+        assertRepairBoundaryReply(original, card, null, parts, revised,
+            experimental = true, tool = true, expectedFirstPreview = revised)
+        val padded = "$revised\n"
+        assertRepairBoundaryReply(original, card, null, listOf(padded, issued), padded,
+            experimental = true, tool = true, expectedFirstPreview = padded)
+    }
+
+    @Test
+    fun `an authored short repair quotation does not protect a complete issued block`() = runBlocking {
+        val card = "Keep the spoken sentence unchanged."
+        val issued = MessageFormatRepairService.PreparedRequest("Original.", card, null).systemPrompt
+        val sentence = issued.substringBefore('。') + "。"
+        val original = "她念出屏幕上的一句话：“$sentence”\n灯亮了。"
+        val revised = "她轻声念道：“$sentence”\n灯亮了。"
+        for (experimental in listOf(false, true)) {
+            val reply = "$revised\n\n$issued"
+            assertRepairBoundaryReply(original, card, null, listOf(revised), revised, experimental, tool = false)
+            assertRepairBoundaryReply(original, card, null, listOf(reply), revised, experimental, tool = false)
+        }
+    }
+
+    @Test
+    fun `discarding a complete leading repair tool call preserves line breaks in the following call`() = runBlocking {
+        val original = "The lamp was out."
+        val revised = "\r\nThe lamp flickered."
+        val issued = MessageFormatRepairService.PreparedRequest(original, null, null).systemPrompt
+        assertRepairBoundaryReply(original, null, null, listOf(issued, revised), revised,
+            experimental = true, tool = true, expectedFirstPreview = "")
+    }
+
+    @Test
     fun `stopped opening containing exact complete issued repair rules keeps the original text`() = runBlocking {
         val original = "The lamp was still out."
         val card = "Leave the original text intact until the revised text arrives."
@@ -6863,7 +6954,8 @@ class ExperimentalToolTransportTest {
         for (experimental in listOf(false, true)) {
             assertRepairBoundaryReply(original, card, null, listOf(reply), revised, experimental, tool = false,
                 expectedFirstPreview = "", expectedStopped = "", firstWireFragment = prefix)
-            assertRepairBoundaryReply("$original\n\n$prefix", card, null, listOf(reply), reply, experimental, tool = false,
+            val authoredPrefix = "$prefix\n\n$revised"
+            assertRepairBoundaryReply("$original\n\n$prefix", card, null, listOf(authoredPrefix), authoredPrefix, experimental, tool = false,
                 expectedFirstPreview = prefix, expectedStopped = prefix, firstWireFragment = prefix)
         }
     }
