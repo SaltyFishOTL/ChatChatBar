@@ -1264,6 +1264,28 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `headed paired choices can continue their first numbered item without keeping the history frame`() = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val story = "The lamp lit up."
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "The previous scene.").copy(narrativeMode = mode)
+        val wrapped = PromptTemplates.narrativeModeHistoryReply(story, mode)
+        val suffix = "\n\n---\n**【行动选项】**\n\n1. **[Open the door]()**\n   Wait for the latch to click.\n2. **[Stay here]()**\n---"
+        val example = "$wrapped\n\n---\n1. An ordinarily authored item.\n   It continues here.\n---"
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            assertNarrativeReplyDeltas(
+                listOf(example), listOf(example), example, previousAssistant = prior,
+                experimental = experimental, toolCall = toolCall, requestNarrativeMode = mode,
+            )
+            val raw = wrapped + suffix
+            val body = story + suffix
+            assertNarrativeReplyDeltas(
+                listOf(raw), listOf(body), body, previousAssistant = prior, checkHeldStop = true,
+                experimental = experimental, toolCall = toolCall, requestNarrativeMode = mode,
+            )
+        }
+    }
+
+    @Test
     fun `ordinary SSE keeps a declared bare status without treating bare code as status evidence`() = runBlocking {
         val story = "灯亮了。"
         val wrapped = PromptTemplates.narrativeModeHistoryReply(story, ChatNarrativeMode.FOCUS)
@@ -4032,6 +4054,31 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `explicit citation and separate explanation sentence keep the actual latest XML projection`() = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "The rain stopped.").copy(narrativeMode = mode)
+        val projection = PromptTemplates.narrativeModeHistoryReply(prior.displayContent, mode)
+        val explanation = "\n\nThe opening element identifies the reply mode."
+        val raw = projection + explanation
+        val directive = "Quote the last reply verbatim, including both XML history tags."
+        val followup = "Then explain what the quotation demonstrates."
+        val request = "$directive\n$followup"
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            for (user in listOf("Continue.", "> $directive\n> $followup", "A manual example:\n$request", "$directive\nThen omit the tags.")) {
+                val body = prior.displayContent + explanation
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(body), body, previousAssistant = prior, currentUserText = user,
+                    experimental = experimental, toolCall = toolCall, requestNarrativeMode = mode,
+                )
+            }
+            assertNarrativeReplyDeltas(
+                listOf(projection, explanation), listOf(projection, raw), raw, previousAssistant = prior,
+                currentUserText = request, experimental = experimental, toolCall = toolCall, requestNarrativeMode = mode,
+            )
+        }
+    }
+
+    @Test
     fun `sent format can declare paired exact boundary lines in inline code`() = runBlocking {
         val body = "The door closed."
         for (mode in ChatNarrativeMode.entries) {
@@ -4515,6 +4562,43 @@ class ExperimentalToolTransportTest {
                     )
                 }
             }
+        }
+    }
+
+    @Test
+    fun `actual Character can declare paired exact boundary lines in inline code`() = runBlocking {
+        assertDispatchedInlineBoundaries(fromWorldBook = false)
+    }
+
+    @Test
+    fun `active WorldBook can declare paired exact boundary lines in inline code`() = runBlocking {
+        assertDispatchedInlineBoundaries(fromWorldBook = true)
+    }
+
+    private suspend fun assertDispatchedInlineBoundaries(fromWorldBook: Boolean) {
+        val mode = ChatNarrativeMode.FOCUS
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Earlier scene.").copy(narrativeMode = mode)
+        val story = "The lamp was still lit."
+        val raw = PromptTemplates.narrativeModeHistoryReply(story, mode)
+        val opener = raw.substringBefore('\n')
+        val closer = raw.substringAfterLast('\n')
+        val directive = "Always begin the reply with the exact line `$opener` and end it with the exact line `$closer`."
+        val mention = "A lecture refers to `$opener` and `$closer`."
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            for ((character, world, user) in listOf(
+                Triple("> $directive", null, "Continue."), Triple(null, mention, "Check the sigil."),
+                Triple(null, directive, "Stay at the gate."),
+            )) assertNarrativeReplyDeltas(
+                listOf(raw), listOf(story), story, previousAssistant = prior, currentUserText = user,
+                characterBasicSetting = character, worldBookEntry = world,
+                experimental = experimental, toolCall = toolCall, requestNarrativeMode = mode,
+            )
+            assertNarrativeReplyDeltas(
+                listOf(raw), listOf(raw), raw, previousAssistant = prior, currentUserText = "Check the sigil.",
+                characterBasicSetting = directive.takeUnless { fromWorldBook },
+                worldBookEntry = directive.takeIf { fromWorldBook }, checkHeldStop = true,
+                experimental = experimental, toolCall = toolCall, requestNarrativeMode = mode,
+            )
         }
     }
 
@@ -6195,6 +6279,41 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `an exact repair system reply does not become replacement text`() = runBlocking {
+        val original = "The door was closed"
+        val card = "End the sentence with a period."
+        val system = PromptTemplates.MESSAGE_FORMAT_REPAIR_SYSTEM_PROMPT.trim()
+        val preamble = system.lineSequence().first()
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            for (literal in listOf(preamble, "~~~text\n$system\n~~~", system.prependIndent("> "))) {
+                assertRepairBoundaryReply(original, card, null, listOf(literal), literal, experimental, toolCall)
+            }
+            assertRepairBoundaryReply("$original\n\n$system", card, null, listOf(system), system, experimental, toolCall)
+            assertRepairBoundaryReply(original, "$card\n\n$system", null, listOf(system), system, experimental, toolCall)
+            assertRepairBoundaryReply(original, card, null, listOf(system), "", experimental, toolCall)
+        }
+    }
+
+    @Test
+    fun `held repair Stop keeps changed prose and withholds only the partial terminal boundary`() = runBlocking {
+        val original = "门没关严。"
+        val revised = "门已关严。"
+        val partial = "{待修复"
+        val full = "$revised\n{待修复消息}"
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            for (intentional in listOf("$revised\n> $partial", "$revised\n`$partial`", "$revised\n$partial 是字面示例。")) {
+                assertRepairBoundaryReply(original, null, null, listOf(intentional), intentional, experimental, toolCall)
+            }
+            assertRepairBoundaryReply("$original\n$partial 是字面示例。", null, null, listOf("$revised\n$partial"),
+                "$revised\n$partial", experimental, toolCall)
+            assertRepairBoundaryReply(
+                original, null, null, listOf(full), revised, experimental, toolCall,
+                expectedFirstPreview = revised, expectedStopped = revised, firstWireFragment = "$revised\n$partial",
+            )
+        }
+    }
+
+    @Test
     fun `the exact sent repair system block is removed when appended to a repaired paragraph`() = runBlocking {
         val original = "The door was closed"
         val repaired = "$original."
@@ -6335,7 +6454,7 @@ class ExperimentalToolTransportTest {
                 val cleaned = previews.map { preview ->
                     incremental.appendedBody(preview, previousLength).also { previousLength = preview.length }
                 }
-                assertEquals(listOf("", expected), cleaned)
+                assertEquals(listOf(expectedFirstPreview, expected), cleaned)
             }
             assertEquals(raw, deltas.joinToString("") { it.text })
             assertEquals(lengths, deltas.last().toolReplyPartLengths)

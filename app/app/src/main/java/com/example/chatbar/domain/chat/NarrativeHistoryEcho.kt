@@ -157,7 +157,8 @@ object NarrativeHistoryEcho {
             "(?:literally|verbatim),[ \\t]+with[ \\t]+the[ \\t]+surrounding[ \\t]+XML[ \\t]+included)" +
             "(?:,[ \\t]+then[ \\t]+(?:explain[ \\t]+[^\\r\\n.!?]+|" +
             "tell[ \\t]+me[ \\t]+what[ \\t]+(?:the|that)[ \\t]+(?:quote|quotation)[ \\t]+(?:demonstrates|shows|illustrates)))?" +
-            "[.!?]?[ \\t]*",
+            "[.!?]?[ \\t]*(?:\\r?\\n {0,3}then[ \\t]+explain[ \\t]+what[ \\t]+(?:the|that)[ \\t]+" +
+            "(?:quote|quotation)[ \\t]+(?:demonstrates|shows|illustrates)[.!?]?[ \\t]*)?",
         RegexOption.IGNORE_CASE,
     )
     private val exactPreviousReplyCitationInChinese = Regex(
@@ -631,15 +632,26 @@ object NarrativeHistoryEcho {
                 fun withoutRepairOrphan(part: String, isJoinedLiteral: (Int) -> Boolean = { false }): String =
                     withoutOrphanClosing(part, repairClosings, provisional, formatOutput, ::authored, isJoinedLiteral)
                 fun removeRepairBoundary(part: String, isJoinedLiteral: (Int) -> Boolean = { false }): HeadingSelection {
-                    if (provisional && headingText(part)?.let(repairDispatch::uniquelyIdentifiesUnfinishedBoundary) == true &&
-                        !isJoinedLiteral(0)
-                    ) return HeadingSelection(0 until 0)
-                    return withoutEchoedHeading(
+                    val selection = withoutEchoedHeading(
                         part, repairDispatch.boundaries, provisional, isAuthored = { false },
                         continuations = repairDispatch.continuations,
                         isJoinedLiteral = { isJoinedLiteral(it) || hasOrphanClosingCaption(part, it) },
                         allowPartialHeading = false,
                     )
+                    if (!provisional || selection.body.isEmpty() || selection.body.last + 1 != part.length) return selection
+                    val lastLine = lineStart(part, part.length)
+                    val prefix = headingText(part.substring(lastLine)) ?: return selection
+                    if (!repairDispatch.uniquelyIdentifiesUnfinishedBoundary(prefix) ||
+                        isJoinedLiteral(lastLine) || hasOrphanClosingCaption(part, lastLine)
+                    ) return selection
+                    val literals = classifyLiterals(part, includeUnclosed = true)
+                    val lead = previousVisibleLine(literals.markdown, lastLine)
+                    if (!literals.isUnprotected(lastLine) || literals.followsLiteralHeadingLead(lastLine) ||
+                        literals.matchesVisibleLine(lead, logQuotationLead)
+                    ) return selection
+                    var end = lastLine
+                    while (end > selection.body.first && part[end - 1].isHistoryLineBreak()) end--
+                    return selection.copy(body = selection.body.first until end)
                 }
                 fun unlabelledRepairRange(part: String): IntRange? =
                     exactLeadingDirectiveBlock(part, repairDispatch.unlabelledSystemBlock)
@@ -862,11 +874,11 @@ object NarrativeHistoryEcho {
         var offset = 0
         for (line in issuedBlock.lineSequence()) {
             val end = lineEnd(text, offset)
-            if (end == text.length || text.subSequence(offset, end) != line) return null
-            offset = end + if (text.startsWith("\r\n", end)) 2 else 1
+            if (text.subSequence(offset, end) != line) return null
+            offset = if (end == text.length) end else end + if (text.startsWith("\r\n", end)) 2 else 1
         }
         while (text.getOrNull(offset).isHistoryLineBreak()) offset++
-        return (0 until offset).takeIf { text.subSequence(offset, text.length).isNotBlank() }
+        return 0 until offset
     }
 
     private fun exactTrailingDirectiveBlock(text: String, issuedBlock: String?, provisional: Boolean): IntRange? {
@@ -1064,6 +1076,7 @@ object NarrativeHistoryEcho {
         val standaloneOpenings = mutableSetOf<String>()
         val standaloneClosings = mutableSetOf<String>()
         val literals by lazy(LazyThreadSafetyMode.NONE) { classifyLiterals(text) }
+        templateOpenings += literals.declaredBoundaryOpenings(text, wrappers)
         fun startsLine(offset: Int): Boolean {
             val start = lineStart(text, offset)
             return offset - start <= 3 && (start until offset).all { text[it] == ' ' }
@@ -1634,6 +1647,17 @@ object NarrativeHistoryEcho {
         return previous < before && (character == ':' || character == '：')
     }
 
+    private fun ReplyLiterals.declaredBoundaryOpenings(source: String, candidates: List<Wrapper>): Set<String> = buildSet {
+        for (directive in exactBoundaryLines.findAll(source)) {
+            val (opening, closing) = directive.destructured
+            val wrapper = candidates.firstOrNull { it.opening == opening && closing in it.closings } ?: continue
+            val start = directive.range.first
+            if (!isUnprotected(start)) continue
+            val before = previousVisibleLine(markdown, start)
+            if (!prohibitsWrapper(before, directive.range.last + 1) && !isDocumentaryHistoryLead(before)) add(wrapper.opening)
+        }
+    }
+
     private fun declaredOutput(formatCard: String): FormatOutput {
         val candidates = wrappers.filter { it.opening in formatCard }
         if (candidates.isEmpty() && annotatedRoleplayActionOpening !in formatCard && "```" !in formatCard) {
@@ -1652,16 +1676,7 @@ object NarrativeHistoryEcho {
         val counterexampleOpenings = mutableSetOf<String>()
         val counterexampleClosingStarts = mutableSetOf<Int>()
         val declaredOpenings = buildSet {
-            for (directive in exactBoundaryLines.findAll(formatCard)) {
-                val (opening, closing) = directive.destructured
-                val wrapper = candidates.firstOrNull { it.opening == opening && closing in it.closings } ?: continue
-                val start = directive.range.first
-                if (!literals.isUnprotected(start)) continue
-                val before = previousVisibleLine(literals.markdown, start)
-                if (!literals.prohibitsWrapper(before, directive.range.last + 1) &&
-                    !literals.isDocumentaryHistoryLead(before)
-                ) add(wrapper.opening)
-            }
+            addAll(literals.declaredBoundaryOpenings(formatCard, candidates))
             var matchedEnd = -1
             for ((index, opening) in markup.withIndex()) {
                 val start = opening.range.first

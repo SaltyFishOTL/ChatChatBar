@@ -47,6 +47,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Before
@@ -78,7 +79,7 @@ class NarrativeHistoryWireTest {
         DISABLED_HISTORY_HEADING, DISABLED_UNSENT_HEADING, DISABLED_AUTHORED_HEADING, DISABLED_LITERAL_XML, REQUESTED_CITATION_TAGS_LAST,
         DISABLED_MIDDLE_TOOL_HEADING, WORLDBOOK_AUTHORED_HEADING, WORLDBOOK_INCIDENTAL_HEADING,
         FULL_MODE_BLOCK_INTERIOR, FULL_MODE_BLOCK_THEN_AUTHORED_TITLE,
-        SPLIT_MODE_BLOCK, WORLDBOOK_EXACT_XML,
+        SPLIT_MODE_BLOCK, WORLDBOOK_EXACT_XML, WORLDBOOK_BOUNDARY_XML,
         WORLDBOOK_EXACT_CLOSE, DISPLAY_CAPTION_TITLE, UNLABELLED_MODE_SWITCH, FRESH_FRAME_WHITESPACE,
         WORLDBOOK_EXACT_OPEN, CHARACTER_EXAMPLE_HEADING, FIRST_ADVANCE_SWITCH,
     }
@@ -89,7 +90,7 @@ class NarrativeHistoryWireTest {
         DISPATCHED_BOUNDARIES, AUTHORED_BOUNDARY, SYSTEM_PREAMBLE, AUTHORED_SYSTEM_PREAMBLE, INTERIOR_SYSTEM_PREAMBLE,
         SPLIT_SYSTEM_PREAMBLE,
         UNLABELLED_SYSTEM_INTRODUCTION,
-        WHOLE_REPAIR_SYSTEM_BLOCK, WHOLE_REPAIR_SYSTEM_SUFFIX,
+        WHOLE_REPAIR_SYSTEM_BLOCK, WHOLE_REPAIR_SYSTEM_SUFFIX, REPAIR_SYSTEM_ECHO_ONLY, PARTIAL_REPAIR_TAIL,
     }
 
     @Before fun prepareSyntheticApplication() = runBlocking {
@@ -456,6 +457,47 @@ class NarrativeHistoryWireTest {
         }
     }
 
+    @Test fun repairEchoOnlyAndInterruptedTailKeepTheRightColdMessage() = runBlocking {
+        for (transport in listOf(Transport.ORDINARY, Transport.EXPERIMENTAL_TOOL)) {
+            verifyRepair(transport, stop = false, orphan = RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY)
+            verifyRepair(transport, stop = true, orphan = RepairOrphan.PARTIAL_REPAIR_TAIL)
+        }
+    }
+
+    @Test fun headedChoicesAndTwoSentenceCitationPreserveExactlyTheirColdBytes() = runBlocking {
+        for (stop in listOf(true, false)) {
+            val transport = if (stop) Transport.ORDINARY else Transport.EXPERIMENTAL_TOOL
+            val base = buildReplyFixture(transport, stop = true).copy(stop = stop, prior = "The rain stopped.")
+            val story = "The lamp lit up."
+            val options = "\n\n---\n**【行动选项】**\n\n1. **[Open the door]()**\n   Wait for the latch to click.\n2. **[Stay here]()**\n---"
+            runReplyFixture(base.copy(
+                parts = listOf(PromptTemplates.narrativeModeHistoryReply(story, base.mode) + options),
+                expected = story + options, preview = story + options,
+            ))
+            val quote = PromptTemplates.narrativeModeHistoryReply(base.prior, base.mode) +
+                "\n\nThe opening element identifies the reply mode."
+            runReplyFixture(base.copy(
+                input = "Quote the last reply verbatim, including both XML history tags.\nThen explain what the quotation demonstrates.",
+                parts = listOf(quote), preview = quote, expected = quote,
+            ))
+        }
+    }
+
+    @Test fun dispatchedInlineBoundaryDeclarationsProtectNewRepliesOnDisk() = runBlocking {
+        for (stop in listOf(true, false)) {
+            val transport = if (stop) Transport.ORDINARY else Transport.EXPERIMENTAL_TOOL
+            val base = buildReplyFixture(transport, stop = true).copy(stop = stop)
+            val frame = PromptTemplates.narrativeModeHistoryReply("A new scene from the model.", base.mode)
+            val opening = frame.substringBefore('\n')
+            val closing = frame.substringAfterLast('\n')
+            val directive = "Always begin the reply with the exact line `$opening` and end it with the exact line `$closing`."
+            runReplyFixture(base.copy(
+                card = base.card.copy(basicSetting = directive), parts = listOf(frame), preview = frame, expected = frame,
+            ))
+            verifyReply(transport, stop, literal = LiteralCase.WORLDBOOK_BOUNDARY_XML)
+        }
+    }
+
     @Test fun explainedXmlAndExplicitPreviousProjectionSurvivePreviewStopAndReload() = runBlocking {
         val prior = "The rain stopped."
         val focus = ChatNarrativeMode.FOCUS
@@ -704,6 +746,8 @@ class NarrativeHistoryWireTest {
             LiteralCase.WORLDBOOK_AUTHORED_HEADING -> "Please start each reply with this literal heading verbatim:\n$routineHistoryHeading"
             LiteralCase.WORLDBOOK_INCIDENTAL_HEADING -> "The archive labels its earliest shelf $routineHistoryHeading."
             LiteralCase.WORLDBOOK_EXACT_XML -> "Copy the following XML exactly:\n$framedReply"
+            LiteralCase.WORLDBOOK_BOUNDARY_XML ->
+                "Always begin the reply with the exact line `$opener` and end it with the exact line `$closing`."
             LiteralCase.WORLDBOOK_EXACT_CLOSE -> "Print the literal closing tag only on its own line:\n$closing"
             LiteralCase.WORLDBOOK_EXACT_OPEN -> "Please show the literal opening tag only on its own line, then explain it:\n$opener"
             else -> null
@@ -872,7 +916,7 @@ class NarrativeHistoryWireTest {
             LiteralCase.FULL_MODE_BLOCK_INTERIOR -> "$prose\n$sentModeBlock\nShe took a lantern."
             LiteralCase.FULL_MODE_BLOCK_THEN_AUTHORED_TITLE -> "$sentModeBlock\n\n$modeTailTitle\n$prose"
             LiteralCase.SPLIT_MODE_BLOCK -> "$prose\n$sentModeBlock"
-            LiteralCase.WORLDBOOK_EXACT_XML -> framedReply
+            LiteralCase.WORLDBOOK_EXACT_XML, LiteralCase.WORLDBOOK_BOUNDARY_XML -> framedReply
             LiteralCase.WORLDBOOK_EXACT_CLOSE -> "$prose\n$closing"
             LiteralCase.WORLDBOOK_EXACT_OPEN -> "$opener\n$prose"
             LiteralCase.CHARACTER_EXAMPLE_HEADING -> "$routineHistoryHeading\n$prose"
@@ -1130,6 +1174,9 @@ class NarrativeHistoryWireTest {
         if (fixture.card.mesExample.isNotBlank()) {
             assertTrue(messages.any { (it.jsonObject["content"] as? JsonPrimitive)?.content?.contains(fixture.card.mesExample) == true })
         }
+        if (fixture.card.basicSetting.isNotBlank()) {
+            assertTrue(messages.any { (it.jsonObject["content"] as? JsonPrimitive)?.content?.contains(fixture.card.basicSetting) == true })
+        }
         fixture.priorLegacy?.let { body -> assertTrue(messages.any { it.hasMessage("assistant", body) }) }
         fixture.historicalUser?.let { body -> assertTrue(messages.any { it.hasMessage("user", body) }) }
         if (fixture.customCore.isNotEmpty()) {
@@ -1314,6 +1361,8 @@ class NarrativeHistoryWireTest {
             RepairOrphan.AUTHORED_BOUNDARY -> "$messageBoundary\n旧。"
             RepairOrphan.AUTHORED_SYSTEM_PREAMBLE -> "$repairSentence\n旧。"
             RepairOrphan.WHOLE_REPAIR_SYSTEM_SUFFIX -> "The door was closed"
+            RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY -> "The door was closed"
+            RepairOrphan.PARTIAL_REPAIR_TAIL -> "门没关严。"
             else -> "旧。"
         }
         val first = when (orphan) {
@@ -1328,6 +1377,8 @@ class NarrativeHistoryWireTest {
             RepairOrphan.AUTHORED_SYSTEM_PREAMBLE -> "$repairSentence\nA repaired first line."
             RepairOrphan.INTERIOR_SYSTEM_PREAMBLE -> "A repaired first line.\n$repairSecondProse"
             RepairOrphan.WHOLE_REPAIR_SYSTEM_SUFFIX -> "$original."
+            RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY -> original
+            RepairOrphan.PARTIAL_REPAIR_TAIL -> "门已关严。"
             else -> "A repaired first line."
         }
         val second = if (splitCaption) close else "A repaired second line."
@@ -1357,6 +1408,8 @@ class NarrativeHistoryWireTest {
             RepairOrphan.UNLABELLED_SYSTEM_INTRODUCTION -> listOf("$repairIntroduction\n$first")
             RepairOrphan.WHOLE_REPAIR_SYSTEM_BLOCK -> listOf("$repairSystem\n\n$first")
             RepairOrphan.WHOLE_REPAIR_SYSTEM_SUFFIX -> listOf("$first\n\n$repairSystem")
+            RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY -> listOf(repairSystem)
+            RepairOrphan.PARTIAL_REPAIR_TAIL -> listOf("$first\n{待修复")
             null -> if (tool) listOf(first, second) else listOf(first)
         }
         val formatCard = orphan?.let {
@@ -1371,6 +1424,8 @@ class NarrativeHistoryWireTest {
                 RepairOrphan.INTERIOR_SYSTEM_PREAMBLE, RepairOrphan.SPLIT_SYSTEM_PREAMBLE,
                 RepairOrphan.UNLABELLED_SYSTEM_INTRODUCTION, RepairOrphan.WHOLE_REPAIR_SYSTEM_BLOCK -> "Keep all prose."
                 RepairOrphan.WHOLE_REPAIR_SYSTEM_SUFFIX -> "End the sentence with a period."
+                RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY -> "End the sentence with a period."
+                RepairOrphan.PARTIAL_REPAIR_TAIL -> "Keep all prose."
                 else -> "以下是禁止输出的反例：\n$sample"
             }
             FormatCard.create("Synthetic prohibited history wrapper", instructions)
@@ -1418,7 +1473,8 @@ class NarrativeHistoryWireTest {
                 if (orphan in setOf(RepairOrphan.SYSTEM_PREAMBLE, RepairOrphan.AUTHORED_SYSTEM_PREAMBLE,
                         RepairOrphan.INTERIOR_SYSTEM_PREAMBLE, RepairOrphan.SPLIT_SYSTEM_PREAMBLE,
                         RepairOrphan.UNLABELLED_SYSTEM_INTRODUCTION, RepairOrphan.WHOLE_REPAIR_SYSTEM_BLOCK,
-                        RepairOrphan.WHOLE_REPAIR_SYSTEM_SUFFIX)
+                        RepairOrphan.WHOLE_REPAIR_SYSTEM_SUFFIX, RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY,
+                        RepairOrphan.PARTIAL_REPAIR_TAIL)
                 ) {
                     assertTrue(messageBoundary in repairUser.lines())
                     val system = Json.parseToJsonElement(request).jsonObject.getValue("messages").jsonArray.first().jsonObject
@@ -1442,12 +1498,15 @@ class NarrativeHistoryWireTest {
                 assertEquals(message.id, saved.id)
                 assertEquals(expected, saved.displayContent)
                 val expectedNotice = when {
-                    toolIndexes != null -> MessageFormatRepairNoticeKind.ERROR
+                    toolIndexes != null || orphan == RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY -> MessageFormatRepairNoticeKind.ERROR
                     stop -> MessageFormatRepairNoticeKind.STOPPED
                     else -> MessageFormatRepairNoticeKind.APPLIED
                 }
                 assertEquals(expectedNotice, saved.formatRepairNotice?.kind)
-                if (toolIndexes == null) assertEquals(original, saved.formatRepairNotice?.originalContent)
+                if (orphan == RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY) {
+                    assertNull(saved.formatRepairNotice?.originalContent)
+                    assertEquals("格式修复模型返回空结果", saved.formatRepairNotice?.errorMessage)
+                } else if (toolIndexes == null) assertEquals(original, saved.formatRepairNotice?.originalContent)
                 assertEquals(expected, saved.formatRepairNotice?.targetContent)
             } finally {
                 try {

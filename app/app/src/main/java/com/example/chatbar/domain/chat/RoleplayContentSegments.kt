@@ -328,6 +328,22 @@ private fun String.isActionListDelimiter(): Boolean =
 
 private fun actionBullet(line: String): String? = bulletedActionOption.matchEntire(line)?.groupValues?.get(1)
 
+private fun isNumberedActionList(lines: List<String>, minimumOptions: Int, allowsContinuation: Boolean): Boolean {
+    var count = 0
+    var contentIndent = Int.MAX_VALUE
+    for (line in lines) {
+        if (matchesNumberedActionOption(line, count + 1)) {
+            count++
+            val afterPeriod = line.indexOf('.') + 1
+            val padding = line.substring(afterPeriod).takeWhile { it == ' ' }
+            contentIndent = if (padding.isEmpty()) Int.MAX_VALUE else afterPeriod + padding.length
+        } else if (!allowsContinuation || line.takeWhile { it == ' ' }.length < contentIndent ||
+            numberedActionOption.matches(line.trimStart())
+        ) return false
+    }
+    return count >= minimumOptions
+}
+
 /** Paired dashes need an actual choice list. Legacy long delimiters require ordered choices. */
 internal fun roleplayListedActionRanges(text: String): Sequence<IntRange> =
     actionListBoundary.findAll(text)
@@ -342,8 +358,10 @@ internal fun roleplayListedActionRanges(text: String): Sequence<IntRange> =
             val options = if (hasHeading) lines.drop(1) else lines
             val minimumOptions = if (hasHeading) 1 else 2
             val bullet = options.firstOrNull()?.takeIf { delimiter == "---" }?.let(::actionBullet)
-            val listed = options.size >= minimumOptions && options.withIndex().all { (index, option) ->
-                if (bullet == null) matchesNumberedActionOption(option, index + 1) else actionBullet(option) == bullet
+            val listed = if (bullet == null) {
+                isNumberedActionList(options, minimumOptions, allowsContinuation = hasHeading && delimiter == "---")
+            } else {
+                options.size >= minimumOptions && options.all { actionBullet(it) == bullet }
             }
             if (listed) opening.range.first..closing.range.last else null
         }
