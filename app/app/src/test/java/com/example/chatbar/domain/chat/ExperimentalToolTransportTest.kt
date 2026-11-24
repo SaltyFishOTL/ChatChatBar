@@ -6695,6 +6695,64 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `whole issued repair system text between ordinary paragraphs stays out of the replacement`() = runBlocking {
+        val original = "The door was open. The lamp was out."
+        val card = "Keep both revised paragraphs."
+        val first = "The door was closed.  "
+        val second = "The lamp was lit."
+        val block = MessageFormatRepairService.PreparedRequest(original, card, null).systemPrompt
+        val raw = "$first\r\n\r\n$block\n\n$second"
+        val preamble = block.lineSequence().first()
+        val partial = block.substringBeforeLast('\n')
+        val changed = block.replace("7. ", "8. ")
+        val quoted = block.prependIndent("> ")
+        for (experimental in listOf(false, true)) {
+            val controls = listOf(
+                "$first\n$block\n$second",
+                "$first\n\n$preamble\n\n$second",
+                "$first\n\n$partial\n\n$second",
+                "$first\n\n$changed\n\n$second",
+                "$first\n\n~~~text\n$block\n~~~\n\n$second",
+                "$first\n\n$quoted\n\n$second",
+                "$first\n\nThe following is a literal quotation from the history log.\n\n$block\n\n$second",
+                "$first\n\n$block\n\nThat was a verbatim quotation from the log.",
+            )
+            for (literal in controls) assertRepairBoundaryReply(original, card, null, listOf(literal), literal, experimental, tool = false)
+            assertRepairBoundaryReply("$original\n\n$block", card, null, listOf(raw), raw, experimental, tool = false)
+            assertRepairBoundaryReply(original, "$card\n\n$block", null, listOf(raw), raw, experimental, tool = false)
+            assertRepairBoundaryReply(original, card, null, listOf(raw), "$first\r\n\r\n$second", experimental, tool = false)
+        }
+    }
+
+    @Test
+    fun `whole issued repair system text isolated in a validated middle tool call stays out of the replacement`() = runBlocking {
+        val original = "The door was open. The lamp was out."
+        val card = "Keep both revised paragraphs."
+        val first = "The door was closed."
+        val second = "The lamp was lit."
+        val block = MessageFormatRepairService.PreparedRequest(original, card, null).systemPrompt
+        val parts = listOf(first, block, second)
+        val raw = parts.joinToString("\n")
+        val controls = listOf(
+            listOf(first, block.lineSequence().first(), second),
+            listOf(first, block.replace("7. ", "8. "), second),
+            listOf("$first\n~~~text", block, "~~~\n$second"),
+            listOf(first, block.prependIndent("> "), second),
+            listOf("Below is a literal quotation copied from the history log.", block, "That was a verbatim quotation from the log."),
+        )
+        for (literal in controls) assertRepairBoundaryReply(
+            original, card, null, literal, literal.joinToString("\n"), experimental = true, tool = true,
+            expectedFirstPreview = literal.first(),
+        )
+        assertRepairBoundaryReply(
+            "$original\n\n$block", card, null, parts, raw, experimental = true, tool = true, expectedFirstPreview = first,
+        )
+        assertRepairBoundaryReply(
+            original, card, null, parts, "$first\n$second", experimental = true, tool = true, expectedFirstPreview = first,
+        )
+    }
+
+    @Test
     fun `terminal repair log quotes retain the actual label and system sentence`() = runBlocking {
         val original = "The key stayed in the door."
         val heading = "{待修复消息}"
@@ -6728,7 +6786,9 @@ class ExperimentalToolTransportTest {
         firstWireFragment: String? = null,
     ) {
         val frame = when {
-            parts.size == 2 -> repairToolFrame(parts[0], 1, buildJsonObject { put("content", parts[1]) }.toString())
+            parts.size > 1 -> repairToolFrame(parts.mapIndexed { index, part ->
+                index to buildJsonObject { put("content", part) }.toString()
+            })
             tool -> chunk(buildJsonObject { put("content", parts.single()) }.toString(), "game_content")
             else -> ordinaryDelta(parts.single())
         }
@@ -6777,6 +6837,9 @@ class ExperimentalToolTransportTest {
             val stoppedBody = cleanup.completedBody(stopped, interrupted = true, partLengths = lengths)
             val liveBody = cleanup.streamingPreview().appendedBody(live, 0)
             assertEquals(expectedStopped, stoppedBody)
+            if (parts.size > 2) assertEquals(
+                expectedStopped, cleanup.streamingPreview().appendedBody(stopped, 0, lengths),
+            )
             assertEquals(expectedFirstPreview, liveBody)
             assertEquals(
                 MessageFormatRepairPolicy.progressiveOverlay(original, expectedStopped),
@@ -7147,7 +7210,12 @@ class ExperimentalToolTransportTest {
         assertEquals(expected, observed)
     }
 
-    private fun repairToolFrame(first: String, followingIndex: Int, followingArguments: String): String {
+    private fun repairToolFrame(first: String, followingIndex: Int, followingArguments: String): String = repairToolFrame(listOf(
+        0 to buildJsonObject { put("content", first) }.toString(),
+        followingIndex to followingArguments,
+    ))
+
+    private fun repairToolFrame(calls: List<Pair<Int, String>>): String {
         fun call(index: Int, arguments: String) = buildJsonObject {
             put("index", index)
             put("function", buildJsonObject {
@@ -7160,8 +7228,7 @@ class ExperimentalToolTransportTest {
                 add(buildJsonObject {
                     put("delta", buildJsonObject {
                         put("tool_calls", buildJsonArray {
-                            add(call(0, buildJsonObject { put("content", first) }.toString()))
-                            add(call(followingIndex, followingArguments))
+                            for ((index, arguments) in calls) add(call(index, arguments))
                         })
                     })
                 })

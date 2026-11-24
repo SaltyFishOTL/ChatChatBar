@@ -90,7 +90,8 @@ class NarrativeHistoryWireTest {
         DISPATCHED_BOUNDARIES, AUTHORED_BOUNDARY, SYSTEM_PREAMBLE, AUTHORED_SYSTEM_PREAMBLE, INTERIOR_SYSTEM_PREAMBLE,
         SPLIT_SYSTEM_PREAMBLE,
         UNLABELLED_SYSTEM_INTRODUCTION,
-        WHOLE_REPAIR_SYSTEM_BLOCK, WHOLE_REPAIR_SYSTEM_SUFFIX, REPAIR_SYSTEM_ECHO_ONLY, PARTIAL_REPAIR_TAIL,
+        WHOLE_REPAIR_SYSTEM_BLOCK, WHOLE_REPAIR_SYSTEM_SUFFIX, WHOLE_REPAIR_SYSTEM_INTERIOR,
+        REPAIR_SYSTEM_ECHO_ONLY, PARTIAL_REPAIR_TAIL,
     }
 
     @Before fun prepareSyntheticApplication() = runBlocking {
@@ -454,6 +455,13 @@ class NarrativeHistoryWireTest {
         for (stop in listOf(true, false)) {
             verifyRepair(Transport.ORDINARY, stop, orphan = RepairOrphan.WHOLE_REPAIR_SYSTEM_SUFFIX)
             verifyRepair(Transport.EXPERIMENTAL_TOOL, stop, orphan = RepairOrphan.WHOLE_REPAIR_SYSTEM_SUFFIX)
+        }
+    }
+
+    @Test fun wholeIssuedRepairSystemInteriorPreservesBothColdParagraphs() = runBlocking {
+        for (transport in listOf(Transport.ORDINARY, Transport.EXPERIMENTAL_TOOL)) {
+            verifyRepair(transport, stop = true, orphan = RepairOrphan.WHOLE_REPAIR_SYSTEM_INTERIOR)
+            verifyRepair(transport, stop = false, orphan = RepairOrphan.WHOLE_REPAIR_SYSTEM_INTERIOR)
         }
     }
 
@@ -1468,6 +1476,7 @@ class NarrativeHistoryWireTest {
             RepairOrphan.AUTHORED_BOUNDARY -> "$messageBoundary\n旧。"
             RepairOrphan.AUTHORED_SYSTEM_PREAMBLE -> "$repairSentence\n旧。"
             RepairOrphan.WHOLE_REPAIR_SYSTEM_SUFFIX -> "The door was closed"
+            RepairOrphan.WHOLE_REPAIR_SYSTEM_INTERIOR -> "The door was open. The lamp was out."
             RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY -> "The door was closed"
             RepairOrphan.PARTIAL_REPAIR_TAIL -> "门没关严。"
             else -> "旧。"
@@ -1484,11 +1493,16 @@ class NarrativeHistoryWireTest {
             RepairOrphan.AUTHORED_SYSTEM_PREAMBLE -> "$repairSentence\nA repaired first line."
             RepairOrphan.INTERIOR_SYSTEM_PREAMBLE -> "A repaired first line.\n$repairSecondProse"
             RepairOrphan.WHOLE_REPAIR_SYSTEM_SUFFIX -> "$original."
+            RepairOrphan.WHOLE_REPAIR_SYSTEM_INTERIOR -> "The door was closed."
             RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY -> original
             RepairOrphan.PARTIAL_REPAIR_TAIL -> "门已关严。"
             else -> "A repaired first line."
         }
-        val second = if (splitCaption) close else "A repaired second line."
+        val second = when {
+            splitCaption -> close
+            orphan == RepairOrphan.WHOLE_REPAIR_SYSTEM_INTERIOR -> "The lamp was lit."
+            else -> "A repaired second line."
+        }
         val tool = transport == Transport.EXPERIMENTAL_TOOL
         val parts = if (toolIndexes != null) toolIndexes.map { if (it == 0) first else second } else when (orphan) {
             RepairOrphan.FIRST -> listOf("$first\n$close", second)
@@ -1515,6 +1529,8 @@ class NarrativeHistoryWireTest {
             RepairOrphan.UNLABELLED_SYSTEM_INTRODUCTION -> listOf("$repairIntroduction\n$first")
             RepairOrphan.WHOLE_REPAIR_SYSTEM_BLOCK -> listOf("$repairSystem\n\n$first")
             RepairOrphan.WHOLE_REPAIR_SYSTEM_SUFFIX -> listOf("$first\n\n$repairSystem")
+            RepairOrphan.WHOLE_REPAIR_SYSTEM_INTERIOR ->
+                if (tool) listOf(first, repairSystem, second) else listOf("$first\n\n$repairSystem\n\n$second")
             RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY -> listOf(repairSystem)
             RepairOrphan.PARTIAL_REPAIR_TAIL -> listOf("$first\n{待修复")
             null -> if (tool) listOf(first, second) else listOf(first)
@@ -1531,14 +1547,17 @@ class NarrativeHistoryWireTest {
                 RepairOrphan.INTERIOR_SYSTEM_PREAMBLE, RepairOrphan.SPLIT_SYSTEM_PREAMBLE,
                 RepairOrphan.UNLABELLED_SYSTEM_INTRODUCTION, RepairOrphan.WHOLE_REPAIR_SYSTEM_BLOCK -> "Keep all prose."
                 RepairOrphan.WHOLE_REPAIR_SYSTEM_SUFFIX -> "End the sentence with a period."
+                RepairOrphan.WHOLE_REPAIR_SYSTEM_INTERIOR -> "Keep both revised paragraphs."
                 RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY -> "End the sentence with a period."
                 RepairOrphan.PARTIAL_REPAIR_TAIL -> "Keep all prose."
                 else -> "以下是禁止输出的反例：\n$sample"
             }
             FormatCard.create("Synthetic prohibited history wrapper", instructions)
         }
-        val firstPreview = MessageFormatRepairPolicy.progressiveOverlay(original, first)
+        val visiblePrefix = if (orphan == RepairOrphan.WHOLE_REPAIR_SYSTEM_INTERIOR && !tool) "$first\n\n$second" else first
+        val firstPreview = MessageFormatRepairPolicy.progressiveOverlay(original, visiblePrefix)
         val expected = when {
+            orphan == RepairOrphan.WHOLE_REPAIR_SYSTEM_INTERIOR -> if (tool) "$first\n$second" else visiblePrefix
             toolIndexes != null -> original
             tool && parts.size > 1 && secondCall == RepairSecondCall.COMPLETE -> "$first\n$second"
             stop -> firstPreview
@@ -1580,7 +1599,8 @@ class NarrativeHistoryWireTest {
                 if (orphan in setOf(RepairOrphan.SYSTEM_PREAMBLE, RepairOrphan.AUTHORED_SYSTEM_PREAMBLE,
                         RepairOrphan.INTERIOR_SYSTEM_PREAMBLE, RepairOrphan.SPLIT_SYSTEM_PREAMBLE,
                         RepairOrphan.UNLABELLED_SYSTEM_INTRODUCTION, RepairOrphan.WHOLE_REPAIR_SYSTEM_BLOCK,
-                        RepairOrphan.WHOLE_REPAIR_SYSTEM_SUFFIX, RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY,
+                        RepairOrphan.WHOLE_REPAIR_SYSTEM_SUFFIX, RepairOrphan.WHOLE_REPAIR_SYSTEM_INTERIOR,
+                        RepairOrphan.REPAIR_SYSTEM_ECHO_ONLY,
                         RepairOrphan.PARTIAL_REPAIR_TAIL)
                 ) {
                     assertTrue(messageBoundary in repairUser.lines())

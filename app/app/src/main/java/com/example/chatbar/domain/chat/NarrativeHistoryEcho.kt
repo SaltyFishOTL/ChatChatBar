@@ -694,17 +694,18 @@ object NarrativeHistoryEcho {
                 fun unlabelledRepairRange(part: String): IntRange? =
                     exactLeadingDirectiveBlock(part, repairDispatch.unlabelledSystemBlock)
                         ?: exactLeadingDirective(part, setOfNotNull(repairDispatch.unlabelledIntroduction))
-                fun issuedRepairRanges(part: String): List<IntRange> = listOfNotNull(
+                fun issuedRepairRanges(part: String, lengths: List<Int> = emptyList()): List<IntRange> = listOfNotNull(
                     unlabelledRepairRange(part),
                     exactTrailingDirectiveBlock(part, repairDispatch.unlabelledSystemBlock, provisional),
-                )
+                ) + exactInteriorRepairBlocks(part, repairDispatch.unlabelledSystemBlock, lengths, provisional)
                 fun loggedRepairQuotes(part: String): List<IntRange> {
                     val continuations = repairDispatch.continuations
                     if (continuations.keys.none { it in part }) return emptyList()
                     return loggedDispatchQuoteRanges(part, classifyLiterals(part, includeUnclosed = provisional), continuations)
                 }
                 val interior = if (partLengths.size > 1) interiorRepairEchoRanges(text, repairDispatch, provisional) else emptyList()
-                val prepared = DispatchReply(text, partLengths, loggedRepairQuotes(text)).withoutRanges(issuedRepairRanges(text) + interior)
+                val prepared = DispatchReply(text, partLengths, loggedRepairQuotes(text))
+                    .withoutRanges(issuedRepairRanges(text, partLengths) + interior)
                 val reply = removeRepairBoundary(prepared.text, prepared::isQuoted)
                 val body = prepared.text.substring(reply.body)
                 val lengths = if (reply.body == prepared.text.indices) prepared.partLengths
@@ -939,6 +940,36 @@ object NarrativeHistoryEcho {
         val lead = previousVisibleLine(literals.markdown, start)
         if (!literals.isUnprotected(start) || literals.matchesVisibleLine(lead, logQuotationLead)) return null
         return separator until text.length
+    }
+
+    private fun exactInteriorRepairBlocks(
+        text: String, issuedBlock: String?, partLengths: List<Int>, provisional: Boolean,
+    ): List<IntRange> {
+        if (issuedBlock == null) return emptyList()
+        var occurrence = text.indexOf(issuedBlock, startIndex = 1)
+        if (occurrence < 0) return emptyList()
+        val separators = validatedReplyPartSeparators(text, partLengths)?.toSet() ?: return emptyList()
+        val literals = classifyLiterals(text, includeUnclosed = provisional)
+        return buildList {
+            while (occurrence >= 0) {
+                val start = occurrence
+                val end = start + issuedBlock.length
+                occurrence = text.indexOf(issuedBlock, startIndex = end)
+                if (lineStart(text, start) != start || !literals.isUnprotected(start)) continue
+                val before = previousVisibleLine(literals.markdown, start) ?: continue
+                val after = nextNonblankLine(literals.markdown, end) ?: continue
+                if (literals.matchesVisibleLine(before, logQuotationLead) ||
+                    literals.matchesVisibleLine(before, metadataExampleBridge) || literals.followsLiteralHeadingLead(start) ||
+                    literals.matchesVisibleLine(after, logQuotationTail) || literals.matchesVisibleLine(after, historyExampleExplanation)
+                ) continue
+                // Keep the original separator before the echoed block to join the two remaining prose sections.
+                if (start - 1 in separators && end in separators) {
+                    add(start..end)
+                } else if (paragraphBreak.matches(text.subSequence(before.last + 1, start)) &&
+                    paragraphBreak.matches(text.subSequence(end, after.first))
+                ) add(start until after.first)
+            }
+        }
     }
 
     private fun loggedDispatchQuoteRanges(
