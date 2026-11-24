@@ -3333,6 +3333,44 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `a blank line adjacent to the log caption keeps an exact multipart quotation`(): Unit = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Earlier scene.").copy(narrativeMode = mode)
+        val lead = "Below is a literal quotation copied from the history log."
+        val tail = "That was a verbatim quotation from the log."
+        val body = "A literal example."
+        val sample = PromptTemplates.narrativeModeHistoryReply(body, mode)
+        val newStory = "The lamp was still on."
+        val frame = PromptTemplates.narrativeModeHistoryReply(newStory, mode)
+        val parts = listOf("$lead\n", sample, tail)
+        val expected = parts.joinToString("\n")
+        assertNarrativeReplyDeltas(
+            listOf(expected), listOf(expected), expected, experimental = false, previousAssistant = prior,
+            currentUserText = "Continue.", requestNarrativeMode = mode,
+        )
+        assertMultipartNarrativeReply(
+            listOf(lead, sample, tail), "$lead\n$sample\n$tail",
+            userText = "Continue.", previousAssistant = prior, checkHeldStop = true,
+        )
+        assertMultipartNarrativeReply(
+            listOf("She read the page.\n", frame, tail), "She read the page.\n\n$newStory\n$tail",
+            userText = "Continue.", previousAssistant = prior,
+        )
+        assertMultipartNarrativeReply(
+            listOf("$lead\n", frame, "She moved to the next page."), "$lead\n\n$newStory\nShe moved to the next page.",
+            userText = "Continue.", previousAssistant = prior,
+        )
+        assertMultipartNarrativeReply(parts, expected, userText = "Continue.", previousAssistant = prior, checkHeldStop = true)
+        assertMultipartNarrativeReply(
+            listOf(lead, sample, "\n$tail"), "$lead\n$sample\n\n$tail",
+            userText = "Continue.", previousAssistant = prior, checkHeldStop = true,
+        )
+        assertMultipartNarrativeReply(
+            parts + frame, "$expected\n$newStory", userText = "Continue.", previousAssistant = prior,
+        )
+    }
+
+    @Test
     fun `held multipart Stop retains only the bounded quotation from actual completed calls`() = runBlocking {
         val quoteLead = "Below is a literal quotation copied from the history log."
         val quoteTail = "That was a verbatim quotation from the log."
@@ -4141,6 +4179,54 @@ class ExperimentalToolTransportTest {
             assertNarrativeReplyDeltas(
                 listOf(quote, "\n\n$separatelyWrapped"), listOf(quote, expected), expected, previousAssistant = prior,
                 currentUserText = request, experimental = experimental, toolCall = tool, requestNarrativeMode = mode, checkHeldStop = true,
+            )
+        }
+    }
+
+    @Test
+    fun `a retained legacy citation keeps only its actual quoted projection before issued Advance commentary`() = runBlocking {
+        val mode = ChatNarrativeMode.ADVANCE
+        val oldBody = "The lamp was lit."
+        val legacy = "<聚焦模式=\"沉浸\">\n$oldBody\n</聚焦模式>"
+        val previous = ChatMessage.create("fixture", MessageRole.ASSISTANT, legacy).copy(narrativeMode = ChatNarrativeMode.FOCUS)
+        val earlier = ChatMessage.create("fixture", MessageRole.ASSISTANT, "A previous patrol passed the lamp.").copy(narrativeMode = mode)
+        val modeBlock = PromptTemplates.narrativeModeSystemPrompt(mode)
+        val claimedHeading = modeBlock.lineSequence().first()
+        val tail = PromptTemplates.narrativeModeTailSystemPrompt(mode, ChatNarrativeMode.FOCUS)
+        val commentary = "The scene shows that they can still see."
+        val frame = PromptTemplates.narrativeModeHistoryReply(commentary, mode)
+        val request = "Quote the previous answer with its XML history tags verbatim, then explain in plain prose."
+        val suffix = "\n\n$claimedHeading\n$frame"
+        for ((experimental, tool) in listOf(false to false, true to false, true to true)) {
+            val modern = previous.copy(content = oldBody)
+            val modernQuote = PromptTemplates.narrativeModeHistoryReply(oldBody, ChatNarrativeMode.FOCUS)
+            val expectedModern = "$modernQuote\n\n$commentary"
+            assertNarrativeReplyDeltas(
+                listOf(modernQuote + suffix), listOf(expectedModern), expectedModern, previousAssistant = modern,
+                earlierAssistant = earlier, narrativePrompt = modeBlock, narrativeTail = tail,
+                currentUserText = request, requestNarrativeMode = mode, dispatchActualModeTail = true,
+                experimental = experimental, toolCall = tool,
+            )
+            for (literal in listOf(commentary, frame.prependIndent("> "), "~~~xml\n$frame\n~~~")) {
+                val authored = "$legacy\n\n$literal"
+                assertNarrativeReplyDeltas(
+                    listOf(authored), listOf(authored), authored, previousAssistant = previous, earlierAssistant = earlier,
+                    narrativePrompt = modeBlock, narrativeTail = tail, currentUserText = request, requestNarrativeMode = mode,
+                    dispatchActualModeTail = true, experimental = experimental, toolCall = tool,
+                )
+            }
+            val unprojected = "$legacy\n\n$frame"
+            assertNarrativeReplyDeltas(
+                listOf(unprojected), listOf(unprojected), unprojected, previousAssistant = previous.copy(narrativeMode = null),
+                earlierAssistant = earlier, narrativePrompt = modeBlock, currentUserText = request, requestNarrativeMode = mode,
+                experimental = experimental, toolCall = tool,
+            )
+            val expected = "$legacy\n\n$commentary"
+            assertNarrativeReplyDeltas(
+                listOf(legacy, suffix), listOf(legacy, expected), expected, previousAssistant = previous,
+                earlierAssistant = earlier, narrativePrompt = modeBlock, narrativeTail = tail,
+                currentUserText = request, requestNarrativeMode = mode, dispatchActualModeTail = true,
+                experimental = experimental, toolCall = tool, checkHeldStop = true,
             )
         }
     }

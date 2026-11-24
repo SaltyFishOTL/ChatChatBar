@@ -544,6 +544,7 @@ object NarrativeHistoryEcho {
                 if (retainsLegacyFraming) {
                     projectedOpenings += legacyWrapper.opening
                     projectedClosings += legacyWrapper.closings.first { projection.endsWith(it) }
+                    latestHistoryProjection = projection
                 }
                 return
             }
@@ -2032,9 +2033,13 @@ object NarrativeHistoryEcho {
             fun isBoundedLogQuotation(first: Int, last: Int): Boolean {
                 val before = previousVisibleLine(joinedLiterals.markdown, parts[first].first) ?: return false
                 val after = nextNonblankLine(joinedLiterals.markdown, parts[last].last + 1) ?: return false
-                if (before.last + 2 != parts[first].first || after.first != parts[last].last + 2) return false
-                return joinedLiterals.matchesVisibleLine(before, logQuotationLead) &&
-                    joinedLiterals.matchesVisibleLine(after, logQuotationTail)
+                fun separatesCaption(start: Int, end: Int): Boolean {
+                    val whitespace = text.subSequence(start, end)
+                    return whitespace == "\n" || whitespace == "\r\n" || paragraphBreak.matches(whitespace)
+                }
+                return separatesCaption(before.last + 1, parts[first].first) &&
+                    separatesCaption(parts[last].last + 1, after.first) &&
+                    joinedLiterals.matchesVisibleLine(before, logQuotationLead) && joinedLiterals.matchesVisibleLine(after, logQuotationTail)
             }
 
             var previousGroupClosedWrapper = false

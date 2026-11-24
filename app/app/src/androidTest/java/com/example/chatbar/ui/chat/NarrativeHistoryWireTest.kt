@@ -535,6 +535,35 @@ class NarrativeHistoryWireTest {
         }
     }
 
+    @Test fun adjacentLogBlankLineAndRetainedLegacyQuotePreserveTheRightColdBytes() = runBlocking {
+        val lead = "Below is a literal quotation copied from the history log.\n"
+        val tail = "That was a verbatim quotation from the log."
+        val legacy = "<聚焦模式=\"沉浸\">\nThe lamp was lit.\n</聚焦模式>"
+        for (stop in listOf(true, false)) {
+            val base = buildReplyFixture(Transport.EXPERIMENTAL_TOOL, stop = true).copy(stop = stop)
+            val sample = PromptTemplates.narrativeModeHistoryReply("A literal example.", base.mode)
+            val parts = listOf(lead, sample, tail)
+            runReplyFixture(base.copy(
+                input = "Continue.", parts = parts, preview = lead, expected = parts.joinToString("\n"),
+                reasoningWitness = "All three complete calls have been sent.",
+            ))
+
+            val transport = if (stop) Transport.ORDINARY else Transport.EXPERIMENTAL_TOOL
+            val mode = ChatNarrativeMode.ADVANCE
+            val heading = PromptTemplates.narrativeModeSystemPrompt(mode).lineSequence().first()
+            val prose = "The scene shows that they can still see."
+            val raw = "$legacy\n\n$heading\n" + PromptTemplates.narrativeModeHistoryReply(prose, mode)
+            val expected = "$legacy\n\n$prose"
+            runReplyFixture(base.copy(
+                transport = transport, mode = mode, priorMode = ChatNarrativeMode.FOCUS, prior = legacy,
+                retainsPriorLegacyProjection = true, olderSameModeHistory = "A previous patrol passed the lamp.",
+                sentModeBlock = heading,
+                input = "Quote the previous answer with its XML history tags verbatim, then explain in plain prose.",
+                parts = listOf(raw), preview = expected, expected = expected,
+            ))
+        }
+    }
+
     @Test fun explainedXmlAndExplicitPreviousProjectionSurvivePreviewStopAndReload() = runBlocking {
         val prior = "The rain stopped."
         val focus = ChatNarrativeMode.FOCUS
@@ -699,6 +728,7 @@ class NarrativeHistoryWireTest {
         val disconnectedText: String,
         val checksStrongDenial: Boolean,
         val expectNoUsableReply: Boolean = false,
+        val retainsPriorLegacyProjection: Boolean = false,
     )
 
     private fun buildReplyFixture(
@@ -1184,7 +1214,7 @@ class NarrativeHistoryWireTest {
 
     private fun assertReplyRequest(request: String, fixture: ReplyFixture) {
         val messages = sentMessages(request, fixture.transport)
-        val history = if (fixture.narrativeModesDisabled) fixture.prior
+        val history = if (fixture.narrativeModesDisabled || fixture.retainsPriorLegacyProjection) fixture.prior
         else PromptTemplates.narrativeModeHistoryReply(fixture.prior, fixture.priorMode)
         assertEquals(fixture.includePrior, messages.any {
             it.hasMessage("assistant", history)
