@@ -4999,6 +4999,29 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `authored opening title cannot protect a full issued mode core at the end`() = runBlocking {
+        val story = "She turned the page."
+        for (mode in ChatNarrativeMode.entries) {
+            val issued = PromptTemplates.narrativeModeSystemPrompt(mode)
+            val title = issued.lineSequence().first()
+            val wanted = "$title\n$story"
+            val raw = "$wanted\n\n$issued"
+            for ((experimental, toolCall) in listOf(false to false, true to true)) {
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(wanted), wanted, narrativePrompt = issued,
+                    currentUserText = "Begin the reply with this exact heading verbatim:\n$title",
+                    requestNarrativeMode = mode, experimental = experimental, toolCall = toolCall, checkHeldStop = true,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(raw), raw, narrativePrompt = issued,
+                    currentUserText = "Copy this text verbatim:\n$raw",
+                    requestNarrativeMode = mode, experimental = experimental, toolCall = toolCall,
+                )
+            }
+        }
+    }
+
+    @Test
     fun `a complete mode block split across buffered calls disappears without shifting the prose parts`() = runBlocking {
         val first = "The old sail caught the wind.  \r\n    A dark bow."
         val next = "    The boat stayed close to shore."
