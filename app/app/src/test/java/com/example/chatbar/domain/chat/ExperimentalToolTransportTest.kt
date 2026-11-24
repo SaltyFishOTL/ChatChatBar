@@ -477,6 +477,34 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `a leading narrative heading with no sent continuation keeps the next tool call initial CRLF`(): Unit = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "She listened.").copy(narrativeMode = mode)
+        val tail = PromptTemplates.narrativeModeTailSystemPrompt(mode, mode)
+        val heading = tail.lineSequence().first()
+        val prose = "铜铃响了。"
+        val padded = "\r\n$prose"
+        val parts = listOf(heading, padded)
+        val raw = parts.joinToString("\n")
+        assertMultipartNarrativeReply(parts, raw, previousAssistant = prior, userText = "Continue.", checkHeldStop = true)
+        assertMultipartNarrativeReply(
+            parts, raw, previousAssistant = prior, userText = "Print this title verbatim:\n$heading",
+            requestNarrativeMode = mode, checkHeldStop = true,
+        )
+        assertNarrativeReplyDeltas(
+            listOf(raw), listOf(prose), prose, previousAssistant = prior, currentUserText = "Continue.",
+            narrativeTail = tail, dispatchActualModeTail = true, requestNarrativeMode = mode, experimental = false,
+        )
+        assertMultipartNarrativeReply(
+            listOf(heading, tail.substringAfter('\n') + "\n$prose"), prose, previousAssistant = prior,
+            userText = "Continue.", requestNarrativeMode = mode, checkHeldStop = true,
+        )
+        assertMultipartNarrativeReply(
+            parts, padded, previousAssistant = prior, userText = "Continue.", requestNarrativeMode = mode, checkHeldStop = true,
+        )
+    }
+
+    @Test
     fun `isolated sent history headings keep adjacent tool call line breaks`() = runBlocking {
         val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "She waited.")
         val heading = PromptTemplates.sectionHeading(PromptTemplates.SECTION_PREVIOUS_TURN)
@@ -7354,6 +7382,36 @@ class ExperimentalToolTransportTest {
             experimental = true, tool = true, expectedFirstPreview = fenced.first(),
         )
         assertRepairBoundaryReply(original, card, null, parts, revised, experimental = true, tool = true, expectedFirstPreview = revised)
+    }
+
+    @Test
+    fun `a leading repair label with no sent continuation keeps the next tool call initial CRLF`(): Unit = runBlocking {
+        val original = "雨停了"
+        val card = "输出单段旁白。"
+        val request = MessageFormatRepairService.PreparedRequest(original, card, null)
+        val label = request.userPrompt.removeSuffix(original).trimEnd().lineSequence().last()
+        val introduction = request.systemPrompt.lineSequence().first().substringBefore('。') + "。"
+        val revised = "雨停了。"
+        val padded = "\r\n$revised"
+        val parts = listOf(label, padded)
+        val raw = parts.joinToString("\n")
+        assertRepairBoundaryReply(original, card, null, listOf(raw), revised, experimental = false, tool = false)
+        assertRepairBoundaryReply(
+            original, card, null, listOf(label, "$introduction\r\n$revised"), revised,
+            experimental = true, tool = true, expectedFirstPreview = "",
+        )
+        assertRepairBoundaryReply(
+            "$label\n$original", card, null, parts, raw, experimental = true, tool = true, expectedFirstPreview = label,
+        )
+        val unsent = "{分段气泡格式}"
+        assertFalse(unsent in request.userPrompt)
+        assertRepairBoundaryReply(
+            original, card, null, listOf(unsent, padded), "$unsent\n$padded",
+            experimental = true, tool = true, expectedFirstPreview = unsent,
+        )
+        assertRepairBoundaryReply(
+            original, card, null, parts, padded, experimental = true, tool = true, expectedFirstPreview = "",
+        )
     }
 
     @Test

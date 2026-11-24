@@ -749,7 +749,7 @@ object NarrativeHistoryEcho {
                     interiorRepairEchoRanges(input.text, repairDispatch, provisional)
                 } else emptyList()
                 val prepared = input.withoutRanges(issuedRepairRanges(input.text, input.partLengths) + interior)
-                    .withoutExactToolEchoes(provisional, repairDispatch.boundaries, repairDispatch.continuations.keys)
+                    .withoutExactToolEchoes(provisional, repairDispatch.boundaries, repairDispatch.continuations)
                 val reply = removeRepairBoundary(prepared.text, prepared::isQuoted)
                 val body = prepared.text.substring(reply.body)
                 val lengths = if (reply.body == prepared.text.indices) prepared.partLengths
@@ -778,7 +778,7 @@ object NarrativeHistoryEcho {
             fun removeToolDirectives(body: String, lengths: List<Int>, switches: Set<String> = emptySet()): DispatchReply {
                 val reply = DispatchReply(body, lengths)
                 if (headings.isEmpty() && switches.isEmpty()) return reply
-                return reply.withoutExactToolEchoes(provisional, headings, narrativeHeadingContinuations.keys) { start, end, _ ->
+                return reply.withoutExactToolEchoes(provisional, headings, narrativeHeadingContinuations) { start, end, _ ->
                     switches.isNotEmpty() && body.substring(start, end).trimEnd('\r', '\n') in switches
                 }
             }
@@ -1183,7 +1183,7 @@ object NarrativeHistoryEcho {
     private fun DispatchReply.withoutExactToolEchoes(
         provisional: Boolean,
         edgeHeadings: Collection<String> = emptyList(),
-        continuationHeadings: Set<String> = emptySet(),
+        headingContinuations: Map<String, Set<List<String>>> = emptyMap(),
         matches: (start: Int, end: Int, atEdge: Boolean) -> Boolean = { _, _, _ -> false },
     ): DispatchReply {
         if (partLengths.size <= 1) return this
@@ -1195,10 +1195,19 @@ object NarrativeHistoryEcho {
             val start = if (index == 0) 0 else separators[index - 1] + 1
             val end = separators.getOrNull(index) ?: text.length
             val atEdge = index == 0 || index == partLengths.lastIndex
-            val edgeHeading = if (atEdge && edgeHeadings.isNotEmpty()) text.substring(start, end).trimEnd('\r', '\n') else null
-            // A leading heading may anchor continued app instructions in the next call.
-            val independentHeading = edgeHeading != null && edgeHeading in edgeHeadings &&
-                (end == text.length || edgeHeading !in continuationHeadings)
+            val edgeHeading = if (atEdge && edgeHeadings.isNotEmpty()) {
+                text.substring(start, end).trimEnd('\r', '\n').takeIf { it in edgeHeadings }
+            } else null
+            // Keep an anchor only when the received reply actually continues its dispatched block.
+            val continuesInReply = if (index == 0 && edgeHeading != null) {
+                val headingEnd = start + edgeHeading.length
+                headingContinuations[edgeHeading]?.let { variants ->
+                    matchedDispatchContinuationEnd(text, headingEnd, variants, provisional) {
+                        isQuoted(it) || literals.ranges.containsOffset(it)
+                    } > headingEnd
+                } == true
+            } else false
+            val independentHeading = edgeHeading != null && !continuesInReply
             val removable = start < end && (independentHeading || matches(start, end, atEdge)) && !isQuoted(start) &&
                 literals.isUnprotected(start) && !hasOrphanClosingCaption(text, start) &&
                 !literals.followsLiteralHeadingLead(start) &&
