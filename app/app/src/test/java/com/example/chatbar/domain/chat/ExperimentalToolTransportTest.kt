@@ -6817,6 +6817,22 @@ class ExperimentalToolTransportTest {
             experimental = true, tool = true, expectedFirstPreview = first)
     }
 
+    @Test
+    fun `stopped opening containing exact complete issued repair rules keeps the original text`() = runBlocking {
+        val original = "The lamp was still out."
+        val card = "Leave the original text intact until the revised text arrives."
+        val revised = "The lamp was lit."
+        val issued = MessageFormatRepairService.PreparedRequest(original, card, null).systemPrompt
+        val prefix = issued.lineSequence().take(4).joinToString("\n")
+        val reply = "$issued\n\n$revised"
+        for (experimental in listOf(false, true)) {
+            assertRepairBoundaryReply(original, card, null, listOf(reply), revised, experimental, tool = false,
+                expectedFirstPreview = "", expectedStopped = "", firstWireFragment = prefix)
+            assertRepairBoundaryReply("$original\n\n$prefix", card, null, listOf(reply), reply, experimental, tool = false,
+                expectedFirstPreview = prefix, expectedStopped = prefix, firstWireFragment = prefix)
+        }
+    }
+
     private suspend fun assertRepairBoundaryReply(
         original: String,
         card: String?,

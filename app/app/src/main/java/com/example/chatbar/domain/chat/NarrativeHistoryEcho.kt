@@ -693,6 +693,7 @@ object NarrativeHistoryEcho {
                 }
                 fun unlabelledRepairRange(part: String): IntRange? =
                     exactLeadingDirectiveBlock(part, repairDispatch.unlabelledSystemBlock)
+                        ?: (if (provisional) exactUnfinishedLeadingDirectiveBlock(part, repairDispatch.unlabelledSystemBlock) else null)
                         ?: exactLeadingDirective(part, setOfNotNull(repairDispatch.unlabelledIntroduction))
                 fun issuedRepairRanges(part: String, lengths: List<Int> = emptyList()): List<IntRange> = listOfNotNull(
                     unlabelledRepairRange(part),
@@ -935,6 +936,15 @@ object NarrativeHistoryEcho {
             offset = nextHistoryLineStart(text, end)
         }
         return end
+    }
+
+    private fun exactUnfinishedLeadingDirectiveBlock(text: String, issuedBlock: String?): IntRange? {
+        val issuedLines = issuedBlock?.lines() ?: return null
+        if (!text.startsWith(issuedLines.first())) return null
+        val observed = text.trimEnd('\r', '\n').lines()
+        // Require the complete introduction, section header and first rule, with no other body.
+        if (observed.size !in 4 until issuedLines.size || observed != issuedLines.take(observed.size)) return null
+        return text.indices
     }
 
     private fun exactTrailingDirectiveBlock(text: String, issuedBlock: String?, provisional: Boolean): IntRange? {
