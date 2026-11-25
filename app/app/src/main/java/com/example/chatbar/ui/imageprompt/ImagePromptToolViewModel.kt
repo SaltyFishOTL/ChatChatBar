@@ -284,7 +284,7 @@ data class ImagePromptToolUiState(
     val canImportCharacterCard: Boolean get() = draftLoaded && !isBusy && !applyingHistory
     val canGenerate: Boolean get() = !isBusy && !applyingHistory && draft.basePrompt.isNotBlank() &&
         draft.activeSettings.sizeValidationError() == null &&
-        draft.imageGuidance.validationError(draft.selectedModel) == null
+        draft.imageGuidance.validationError(draft.activeSettings) == null
     val generationCost: NovelAiGenerationCost
         get() = NovelAiImageCostEstimator.estimate(
             draft.activeSettings,
@@ -1177,13 +1177,12 @@ class ImagePromptToolViewModel : ViewModel() {
             onResult(Result.failure(IllegalStateException("生图工作室正忙，请稍后重试")))
             return
         }
-        if (snapshot.draft.selectedModel == NovelAiImageModel.V5_FULL &&
-            target in setOf(NovelAiImageUseTarget.PRECISE_REFERENCE, NovelAiImageUseTarget.VIBE_REFERENCE)
-        ) {
+        if (!target.isAvailableFor(snapshot.draft.selectedModel)) {
+            val message = "V5 Full 暂不支持氛围参考"
             _uiState.update {
-                it.copy(error = if (showError) "V5 Full 暂不支持精确参考或氛围参考" else null)
+                it.copy(error = if (showError) message else null)
             }
-            onResult(Result.failure(IllegalArgumentException("V5 Full 暂不支持精确参考或氛围参考")))
+            onResult(Result.failure(IllegalArgumentException(message)))
             return
         }
         if (target == NovelAiImageUseTarget.VIBE_REFERENCE &&
@@ -1398,7 +1397,7 @@ class ImagePromptToolViewModel : ViewModel() {
             _uiState.update { it.copy(error = message) }
             return
         }
-        draft.imageGuidance.validationError(draft.selectedModel)?.let { message ->
+        draft.imageGuidance.validationError(configured)?.let { message ->
             _uiState.update { it.copy(error = message) }
             return
         }
@@ -1446,7 +1445,7 @@ class ImagePromptToolViewModel : ViewModel() {
                         val plan = draft.toPromptPlan()
                         val historyId = UUID.randomUUID().toString()
                         pendingHistoryId = historyId
-                        val preparedResult = prepareImageGuidance(token, generationSource, requestSettings.model)
+                        val preparedResult = prepareImageGuidance(token, generationSource, requestSettings)
                         val preparedGuidance = preparedResult.guidance
                         val generationDraft = draft.copy(imageGuidance = preparedResult.updatedDraft)
                         generationSource = generationDraft
@@ -1828,15 +1827,16 @@ class ImagePromptToolViewModel : ViewModel() {
     private suspend fun prepareImageGuidance(
         token: String,
         draft: NovelAiStudioDraft,
-        model: NovelAiImageModel
+        settings: NovelAiGenerationSettings
     ): PreparedImageGuidanceResult = withContext(Dispatchers.IO) {
         val guidance = draft.imageGuidance
+        val model = settings.model
         fun encodedFile(asset: NovelAiStudioAssetRef?): String? = asset?.takeIf(NovelAiStudioAssetRef::isUsable)?.let {
             val file = File(it.path)
             require(file.isFile) { "图像引导文件不存在" }
             Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)
         }
-        val effectiveMode = guidance.effectiveReferenceMode(model)
+        val effectiveMode = guidance.effectiveReferenceMode(settings)
         val usableVibes = if (effectiveMode == NovelAiReferenceMode.VIBE) {
             guidance.vibes.filter(NovelAiVibeReferenceDraft::isUsable)
         } else emptyList()
@@ -1875,13 +1875,14 @@ class ImagePromptToolViewModel : ViewModel() {
                 inpaintStrength = guidance.inpaintStrength,
                 preciseReferenceBase64 = if (effectiveMode == NovelAiReferenceMode.PRECISE) {
                     guidanceAssets.encodePreciseReference(
-                        requireNotNull(guidance.preciseReference.asset) { "精确参考图片不可用" }
+                        requireNotNull(guidance.preciseReference.asset) { "精确参考图片不可用" }, model
                     )
                 } else null,
-                preciseReferenceType = guidance.preciseReference.type,
-                preciseReferenceStrength = guidance.preciseReference.strength,
+                preciseReferenceType = guidance.preciseReference.typeFor(model),
+                preciseReferenceStrength = guidance.preciseReference.strengthFor(model),
                 preciseReferenceFidelity = guidance.preciseReference.fidelity,
-                vibes = preparedVibes
+                vibes = preparedVibes,
+                preciseReferencePreferSameOutfit = guidance.preciseReference.v5PreferSameOutfit
             ),
             updatedDraft = updated,
             focusedInpaintPlan = focusedInpaint?.plan,
@@ -1890,7 +1891,7 @@ class ImagePromptToolViewModel : ViewModel() {
     }
 
     private fun countVibeCacheMisses(draft: NovelAiStudioDraft): Int {
-        if (draft.imageGuidance.effectiveReferenceMode(draft.selectedModel) != NovelAiReferenceMode.VIBE) return 0
+        if (draft.imageGuidance.effectiveReferenceMode(draft.activeSettings) != NovelAiReferenceMode.VIBE) return 0
         return draft.imageGuidance.vibes.count { vibe ->
             vibe.isUsable && vibe.encodedVibe.isNullOrBlank() && vibe.asset?.let { asset ->
                 !vibeEncoder.isCached(asset.sha256, draft.selectedModel, vibe.informationExtracted)

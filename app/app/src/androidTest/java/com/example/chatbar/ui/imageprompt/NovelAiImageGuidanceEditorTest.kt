@@ -9,7 +9,9 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.performClick
 import com.example.chatbar.domain.image.NovelAiGenerationAction
+import com.example.chatbar.domain.image.NovelAiGenerationSettings
 import com.example.chatbar.domain.image.NovelAiImageGuidanceDraft
 import com.example.chatbar.domain.image.NovelAiImageModel
 import com.example.chatbar.domain.image.NovelAiStudioAssetRef
@@ -22,12 +24,12 @@ class NovelAiImageGuidanceEditorTest {
     val composeTestRule = createAndroidComposeRule<ComponentActivity>()
 
     @Test
-    fun v5HidesUnavailableReferenceTabs() {
+    fun v5ShowsPreciseReferenceWithV5Controls() {
         composeTestRule.setContent {
             ChatBarTheme {
                 NovelAiImageGuidanceEditor(
                     initial = NovelAiImageGuidanceDraft(),
-                    model = NovelAiImageModel.V5_FULL,
+                    settings = NovelAiGenerationSettings(model = NovelAiImageModel.V5_FULL),
                     onDismiss = {},
                     onPickImage = {},
                     stagedAsset = null,
@@ -41,8 +43,11 @@ class NovelAiImageGuidanceEditorTest {
 
         composeTestRule.onNode(hasText("图生图") and hasClickAction()).assertIsDisplayed()
         composeTestRule.onNodeWithText("聚焦重绘").assertIsDisplayed()
-        composeTestRule.onAllNodesWithText("精确").assertCountEquals(0)
         composeTestRule.onAllNodesWithText("氛围").assertCountEquals(0)
+        composeTestRule.onNode(hasText("精确") and hasClickAction()).performClick()
+        composeTestRule.onNodeWithText("服装").assertExists()
+        composeTestRule.onNodeWithContentDescription("优先相同服装").assertIsDisplayed()
+        composeTestRule.onAllNodesWithText("保真度").assertCountEquals(0)
     }
 
     @Test
@@ -51,7 +56,7 @@ class NovelAiImageGuidanceEditorTest {
             ChatBarTheme {
                 NovelAiImageGuidanceEditor(
                     initial = NovelAiImageGuidanceDraft(),
-                    model = NovelAiImageModel.V4_5_FULL,
+                    settings = NovelAiGenerationSettings(),
                     onDismiss = {},
                     onPickImage = {},
                     stagedAsset = null,
@@ -77,7 +82,7 @@ class NovelAiImageGuidanceEditorTest {
                         action = NovelAiGenerationAction.IMAGE_TO_IMAGE,
                         baseImage = NovelAiStudioAssetRef(path = "/missing/source.png", width = 832, height = 1216)
                     ),
-                    model = NovelAiImageModel.V4_5_FULL,
+                    settings = NovelAiGenerationSettings(),
                     onDismiss = {},
                     onPickImage = {},
                     stagedAsset = null,

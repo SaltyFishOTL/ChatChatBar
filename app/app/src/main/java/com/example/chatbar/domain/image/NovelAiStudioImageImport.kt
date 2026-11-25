@@ -40,7 +40,8 @@ data class NovelAiImportedImageGuidance(
     val preciseType: NovelAiPreciseReferenceType? = null,
     val preciseStrength: Float? = null,
     val preciseFidelity: Float? = null,
-    val vibes: List<NovelAiVibeReferenceDraft> = emptyList()
+    val vibes: List<NovelAiVibeReferenceDraft> = emptyList(),
+    val precisePreferSameOutfit: Boolean? = null
 ) {
     val hasAny: Boolean get() = action != NovelAiGenerationAction.TEXT_TO_IMAGE ||
         baseImageBase64 != null || maskBase64 != null || preciseImageBase64 != null || vibes.isNotEmpty()
@@ -168,6 +169,21 @@ fun NovelAiStudioDraft.applyImportedMetadata(
     }
     if (selection.imageGuidance && metadata.imageGuidance.hasAny) {
         val imported = metadata.imageGuidance
+        val reference = result.imageGuidance.preciseReference
+        val sourceModel = metadata.settings.model ?: result.selectedModel
+        val preciseReference = if (sourceModel == NovelAiImageModel.V5_FULL) {
+            reference.copy(
+                v5Type = imported.preciseType ?: reference.v5Type,
+                v5Strength = imported.preciseStrength ?: reference.v5Strength,
+                v5PreferSameOutfit = imported.precisePreferSameOutfit ?: reference.v5PreferSameOutfit
+            )
+        } else {
+            reference.copy(
+                type = imported.preciseType?.takeUnless { it == NovelAiPreciseReferenceType.OUTFIT } ?: reference.type,
+                strength = imported.preciseStrength ?: reference.strength,
+                fidelity = imported.preciseFidelity ?: reference.fidelity
+            )
+        }
         val activeAction = imported.action.takeIf {
             imported.baseImageBase64 != null && (it != NovelAiGenerationAction.INPAINT || imported.maskBase64 != null)
         } ?: NovelAiGenerationAction.TEXT_TO_IMAGE
@@ -182,11 +198,7 @@ fun NovelAiStudioDraft.applyImportedMetadata(
                     imported.vibes.isNotEmpty() -> NovelAiReferenceMode.VIBE
                     else -> NovelAiReferenceMode.NONE
                 },
-                preciseReference = result.imageGuidance.preciseReference.copy(
-                    type = imported.preciseType ?: result.imageGuidance.preciseReference.type,
-                    strength = imported.preciseStrength ?: result.imageGuidance.preciseReference.strength,
-                    fidelity = imported.preciseFidelity ?: result.imageGuidance.preciseReference.fidelity
-                ),
+                preciseReference = preciseReference,
                 vibes = imported.vibes
             )
         )

@@ -282,7 +282,7 @@ object NovelAiPngMetadataReader {
             ?.firstOrNull()?.jsonObjectOrNull()
             ?.get("caption")?.jsonObjectOrNull()
             ?.get("base_caption")?.jsonPrimitive?.contentOrNull
-        val preciseType = NovelAiPreciseReferenceType.entries.firstOrNull { it.wireCaption == preciseCaption }
+        val preciseType = NovelAiPreciseReferenceWirePolicy.readType(preciseCaption)
         val preciseStrength = this["director_reference_strength_values"]?.jsonArrayOrNull()
             ?.firstOrNull()?.jsonPrimitive?.floatOrNull
         val preciseFidelity = this["director_reference_secondary_strength_values"]?.jsonArrayOrNull()
@@ -352,6 +352,9 @@ object NovelAiPngMetadataReader {
                 preciseType = preciseType,
                 preciseStrength = preciseStrength,
                 preciseFidelity = preciseFidelity,
+                precisePreferSameOutfit = preciseType?.takeIf { it.includesCharacter }?.let {
+                    NovelAiPreciseReferenceWirePolicy.readV5PreferSameOutfit(preciseCaption)
+                },
                 vibes = importedVibes
             ),
             seed = this["seed"]?.jsonPrimitive?.longOrNull

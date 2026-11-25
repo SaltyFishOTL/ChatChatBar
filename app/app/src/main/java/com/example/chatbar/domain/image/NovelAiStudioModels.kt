@@ -370,7 +370,15 @@ fun novelAiHistoryImages(paths: List<String>, baseSeed: Long): List<NovelAiGener
 enum class NovelAiHistoryApplyMode { FULL, NEW_SEED, SEED_ONLY }
 
 fun NovelAiGenerationRecipe.requiresImageGuidanceReuseWarning(mode: NovelAiHistoryApplyMode): Boolean =
-    mode != NovelAiHistoryApplyMode.FULL && imageGuidance.hasMissingHistorySource()
+    mode != NovelAiHistoryApplyMode.FULL && recordedImageGuidance.hasMissingHistorySource()
+
+val NovelAiGenerationRecipe.recordedImageGuidance: NovelAiImageGuidanceDraft
+    get() = if (settings.model == NovelAiImageModel.V5_FULL &&
+        imageGuidance.referenceMode == NovelAiReferenceMode.PRECISE && imageGuidance.preciseReference.v5Strength == null
+    ) {
+        // Old V5 entries captured the draft's inactive reference before V5 support.
+        imageGuidance.copy(referenceMode = NovelAiReferenceMode.NONE)
+    } else imageGuidance
 
 fun NovelAiStudioDraft.applyHistoryRecipe(
     recipe: NovelAiGenerationRecipe,
@@ -412,7 +420,7 @@ fun NovelAiStudioDraft.toRecipe(settings: NovelAiGenerationSettings = activeSett
         characters = characters,
         negativePrompt = negativePrompt,
         settings = settings,
-        imageGuidance = imageGuidance.toHistoryRecipe()
+        imageGuidance = imageGuidance.toHistoryRecipe(settings)
     )
 
 fun NovelAiImageGuidanceDraft.hasMissingHistorySource(): Boolean =
@@ -420,12 +428,21 @@ fun NovelAiImageGuidanceDraft.hasMissingHistorySource(): Boolean =
         referenceMode == NovelAiReferenceMode.PRECISE ||
         referenceMode == NovelAiReferenceMode.VIBE && vibes.any { it.encodedVibe.isNullOrBlank() }
 
-private fun NovelAiImageGuidanceDraft.toHistoryRecipe(): NovelAiImageGuidanceDraft = copy(
-    baseImage = null,
-    maskImage = null,
-    preciseReference = preciseReference.copy(asset = null),
-    vibes = vibes.map { it.copy(asset = null) }.filter { !it.encodedVibe.isNullOrBlank() }
-)
+private fun NovelAiImageGuidanceDraft.toHistoryRecipe(settings: NovelAiGenerationSettings): NovelAiImageGuidanceDraft {
+    val mode = effectiveReferenceMode(settings)
+    return copy(
+        baseImage = null,
+        maskImage = null,
+        referenceMode = mode,
+        preciseReference = preciseReference.copy(
+            asset = null,
+            v5Strength = if (settings.model == NovelAiImageModel.V5_FULL && mode == NovelAiReferenceMode.PRECISE) {
+                preciseReference.strengthFor(settings.model)
+            } else preciseReference.v5Strength
+        ),
+        vibes = vibes.map { it.copy(asset = null) }.filter { !it.encodedVibe.isNullOrBlank() }
+    )
+}
 
 private fun NovelAiImageGuidanceDraft.restoredFromHistory(): NovelAiImageGuidanceDraft = copy(
     action = NovelAiGenerationAction.TEXT_TO_IMAGE,

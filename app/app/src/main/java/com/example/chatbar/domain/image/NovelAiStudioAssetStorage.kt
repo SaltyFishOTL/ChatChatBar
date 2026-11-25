@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
+import android.graphics.Paint
 import android.media.ExifInterface
 import android.net.Uri
 import android.util.Base64
@@ -70,22 +71,30 @@ class NovelAiStudioAssetStorage(private val context: Context) {
         }
     }
 
-    fun encodePreciseReference(asset: NovelAiStudioAssetRef): String {
+    fun encodePreciseReference(asset: NovelAiStudioAssetRef, model: NovelAiImageModel): String {
         require(asset.isUsable) { "精确参考图片不可用" }
         val source = File(asset.path)
         require(source.isFile) { "精确参考图片不存在" }
         val decoded = decodeOriented(source)
-        val targetSize = NovelAiPreciseReferenceWirePolicy.targetSize(decoded.width, decoded.height)
-        val fitted = centerFit(decoded, targetSize.width, targetSize.height)
         return try {
-            ByteArrayOutputStream().use { output ->
-                check(fitted.compress(Bitmap.CompressFormat.PNG, 100, output)) {
-                    "精确参考 PNG 编码失败"
+            val targetSize = NovelAiPreciseReferenceWirePolicy.targetSize(decoded.width, decoded.height, model)
+            val (width, height) = targetSize
+            val prepared = when {
+                model == NovelAiImageModel.V4_5_FULL -> centerFit(decoded, width, height)
+                decoded.width == width && decoded.height == height -> decoded
+                else -> centerCrop(decoded, width, height, preserveAlpha = true)
+            }
+            try {
+                ByteArrayOutputStream().use { output ->
+                    check(prepared.compress(Bitmap.CompressFormat.PNG, 100, output)) {
+                        "精确参考 PNG 编码失败"
+                    }
+                    Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
                 }
-                Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
+            } finally {
+                if (prepared !== decoded) prepared.recycle()
             }
         } finally {
-            fitted.recycle()
             decoded.recycle()
         }
     }
@@ -200,14 +209,15 @@ class NovelAiStudioAssetStorage(private val context: Context) {
         return transformed
     }
 
-    private fun centerCrop(source: Bitmap, targetWidth: Int, targetHeight: Int): Bitmap {
+    private fun centerCrop(source: Bitmap, targetWidth: Int, targetHeight: Int, preserveAlpha: Boolean = false): Bitmap {
         val scale = maxOf(targetWidth.toFloat() / source.width, targetHeight.toFloat() / source.height)
         val left = (targetWidth - source.width * scale) / 2f
         val top = (targetHeight - source.height * scale) / 2f
         return Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888).also { target ->
             Canvas(target).apply {
-                drawColor(Color.BLACK)
-                drawBitmap(source, Matrix().apply { setScale(scale, scale); postTranslate(left, top) }, null)
+                if (!preserveAlpha) drawColor(Color.BLACK)
+                val paint = if (preserveAlpha) Paint(Paint.FILTER_BITMAP_FLAG) else null
+                drawBitmap(source, Matrix().apply { setScale(scale, scale); postTranslate(left, top) }, paint)
             }
         }
     }

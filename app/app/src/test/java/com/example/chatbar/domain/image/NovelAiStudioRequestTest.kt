@@ -5,9 +5,47 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class NovelAiStudioRequestTest {
+    @Test
+    fun `v5 precise request sends outfit captions and strength above one`() {
+        val settings = NovelAiGenerationSettings(model = NovelAiImageModel.V5_FULL)
+        val reference = NovelAiPreparedImageGuidance(
+            action = NovelAiGenerationAction.IMAGE_TO_IMAGE,
+            imageBase64 = "base",
+            preciseReferenceBase64 = "reference",
+            preciseReferenceStrength = 3.2f,
+            preciseReferenceFidelity = 0.2f,
+            preciseReferencePreferSameOutfit = true
+        )
+        val service = NovelAiImageService()
+        val prompt = NovelAiPromptPlan("scene", emptyList())
+        val cases = mapOf(
+            NovelAiPreciseReferenceType.CHARACTER to "character_mainoutfit",
+            NovelAiPreciseReferenceType.CHARACTER_AND_STYLE to "character&style",
+            NovelAiPreciseReferenceType.STYLE to "style",
+            NovelAiPreciseReferenceType.OUTFIT to "costume"
+        )
+        for ((type, caption) in cases) {
+            val parameters = Json.parseToJsonElement(service.buildRequestBody(
+                prompt, settings.imageSize(), settings, reference.copy(preciseReferenceType = type)
+            )).jsonObject.getValue("parameters").jsonObject
+            assertEquals("reference", parameters.getValue("director_reference_images").jsonArray.single().jsonPrimitive.content)
+            assertEquals(caption, parameters.getValue("director_reference_descriptions").jsonArray.single().jsonObject
+                .getValue("caption").jsonObject.getValue("base_caption").jsonPrimitive.content)
+            assertEquals("3.2", parameters.getValue("director_reference_strength_values").jsonArray.single().jsonPrimitive.content)
+            assertEquals("0.0", parameters.getValue("director_reference_secondary_strength_values").jsonArray.single().jsonPrimitive.content)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            service.buildRequestBody(prompt, settings.imageSize(), settings.copy(effort = NovelAiEffort.MEDIUM), reference)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            service.buildRequestBody(prompt, settings.imageSize(), settings, reference.copy(action = NovelAiGenerationAction.INPAINT))
+        }
+    }
+
     @Test
     fun `card negative reaches both request fields without an additional preset`() {
         val draft = NovelAiStudioDraft(basePrompt = "scene", negativePrompt = "stale")

@@ -338,9 +338,7 @@ class NovelAiHistoryViewModel : ViewModel() {
             _uiState.update { it.copy(busy = true, error = null) }
             runCatching {
                 val current = repository.loadDraft()
-                if (current.selectedModel == NovelAiImageModel.V5_FULL &&
-                    target in setOf(NovelAiImageUseTarget.PRECISE_REFERENCE, NovelAiImageUseTarget.VIBE_REFERENCE)
-                ) error("V5 Full 暂不支持精确参考或氛围参考")
+                if (!target.isAvailableFor(current.selectedModel)) error("V5 Full 暂不支持氛围参考")
                 if (target == NovelAiImageUseTarget.VIBE_REFERENCE &&
                     current.imageGuidance.vibes.size >= NovelAiImageGuidanceDraft.MAX_VIBES
                 ) error("氛围参考已满；请回工作室管理")

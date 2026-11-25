@@ -10,15 +10,22 @@ class NovelAiImageGuidanceTest {
     private val asset = NovelAiStudioAssetRef(path = "owned.png", sha256 = "abc", width = 1024, height = 1024)
 
     @Test
-    fun `v5 pauses references without deleting v45 configuration`() {
+    fun `v5 uses precise reference only with high text and image generation`() {
         val guidance = NovelAiImageGuidanceDraft(
             referenceMode = NovelAiReferenceMode.PRECISE,
             preciseReference = NovelAiPreciseReferenceDraft(asset = asset)
         )
 
-        assertEquals(NovelAiReferenceMode.NONE, guidance.effectiveReferenceMode(NovelAiImageModel.V5_FULL))
-        assertEquals(NovelAiReferenceMode.PRECISE, guidance.effectiveReferenceMode(NovelAiImageModel.V4_5_FULL))
-        assertEquals(asset, guidance.preciseReference.asset)
+        val high = NovelAiGenerationSettings(model = NovelAiImageModel.V5_FULL)
+        val medium = high.copy(effort = NovelAiEffort.MEDIUM)
+        val inpaint = guidance.copy(action = NovelAiGenerationAction.INPAINT)
+        val img2img = guidance.copy(action = NovelAiGenerationAction.IMAGE_TO_IMAGE)
+        assertEquals(NovelAiReferenceMode.PRECISE, guidance.effectiveReferenceMode(high))
+        assertEquals(NovelAiReferenceMode.PRECISE, img2img.effectiveReferenceMode(high))
+        assertEquals(NovelAiReferenceMode.NONE, guidance.effectiveReferenceMode(medium))
+        assertEquals(NovelAiReferenceMode.NONE, inpaint.effectiveReferenceMode(high))
+        assertEquals(NovelAiReferenceMode.PRECISE, inpaint.effectiveReferenceMode(NovelAiGenerationSettings()))
+        assertEquals(NovelAiReferenceMode.NONE, guidance.copy(referenceMode = NovelAiReferenceMode.VIBE).effectiveReferenceMode(high))
     }
 
     @Test
@@ -30,7 +37,7 @@ class NovelAiImageGuidanceTest {
             maskImage = emptyMask
         )
 
-        assertEquals("请使用聚焦工具框选重绘区域", guidance.validationError(NovelAiImageModel.V4_5_FULL))
+        assertEquals("请使用聚焦工具框选重绘区域", guidance.validationError(NovelAiGenerationSettings()))
         assertNull(
             guidance.copy(
                 focusedInpaintRegion = NovelAiFocusedInpaintRegion(
@@ -39,7 +46,7 @@ class NovelAiImageGuidanceTest {
                     width = 0.5f,
                     height = 0.5f
                 )
-            ).validationError(NovelAiImageModel.V4_5_FULL)
+            ).validationError(NovelAiGenerationSettings())
         )
     }
 
@@ -69,11 +76,11 @@ class NovelAiImageGuidanceTest {
             vibes = sixteen
         )
 
-        assertNull(guidance.validationError(NovelAiImageModel.V4_5_FULL))
+        assertNull(guidance.validationError(NovelAiGenerationSettings()))
         assertEquals(
             "氛围参考最多 16 张",
             guidance.copy(vibes = sixteen + NovelAiVibeReferenceDraft(asset = asset)).validationError(
-                NovelAiImageModel.V4_5_FULL
+                NovelAiGenerationSettings()
             )
         )
     }
@@ -92,6 +99,17 @@ class NovelAiImageGuidanceTest {
             NovelAiImageSize(1536, 1024, "Large Landscape"),
             NovelAiPreciseReferenceWirePolicy.targetSize(1600, 900)
         )
+    }
+
+    @Test
+    fun `v5 reference chooses aspect buckets across orientations`() {
+        val model = NovelAiImageModel.V5_FULL
+        val sizes = listOf(832 to 1216, 1024 to 1024, 1216 to 832, 256 to 4096)
+        for ((width, height) in sizes) {
+            val actual = NovelAiPreciseReferenceWirePolicy.targetSize(width * 2, height * 2, model)
+            assertEquals(width, actual.width)
+            assertEquals(height, actual.height)
+        }
     }
 
     @Test
@@ -136,5 +154,25 @@ class NovelAiImageGuidanceTest {
         assertNull(stored.baseImage)
         assertTrue(stored.hasMissingHistorySource())
         assertFalse(NovelAiImageGuidanceDraft().hasMissingHistorySource())
+    }
+
+    @Test
+    fun `history marks only used v5 reference source as missing`() {
+        val guidance = NovelAiImageGuidanceDraft(
+            referenceMode = NovelAiReferenceMode.PRECISE,
+            preciseReference = NovelAiPreciseReferenceDraft(asset = asset, strength = 0.75f)
+        )
+        val settings = NovelAiGenerationSettings(model = NovelAiImageModel.V5_FULL)
+        val draft = NovelAiStudioDraft(imageGuidance = guidance)
+        val recipe = draft.toRecipe(settings)
+        assertEquals(0.75f, recipe.recordedImageGuidance.preciseReference.v5Strength)
+        assertNull(recipe.recordedImageGuidance.preciseReference.asset)
+        assertTrue(recipe.recordedImageGuidance.hasMissingHistorySource())
+        val pausedRecipe = draft.toRecipe(settings.copy(effort = NovelAiEffort.MEDIUM))
+        assertFalse(pausedRecipe.recordedImageGuidance.hasMissingHistorySource())
+        val legacy = recipe.copy(imageGuidance = guidance.copy(
+            preciseReference = guidance.preciseReference.copy(asset = null)
+        ))
+        assertFalse(legacy.recordedImageGuidance.hasMissingHistorySource())
     }
 }

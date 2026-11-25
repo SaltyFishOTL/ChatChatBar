@@ -241,10 +241,18 @@ class NovelAiImageService(
         require(imageGuidance.preciseReferenceBase64 == null || imageGuidance.vibes.isEmpty()) {
             "精确参考与氛围参考不能同时启用"
         }
-        require(
-            settings.model == NovelAiImageModel.V4_5_FULL ||
-                imageGuidance.preciseReferenceBase64 == null && imageGuidance.vibes.isEmpty()
-        ) { "V5 Full 暂不支持精确参考或氛围参考" }
+        require(imageGuidance.vibes.isEmpty() || NovelAiImageUseTarget.VIBE_REFERENCE.isAvailableFor(settings.model)) {
+            "V5 Full 暂不支持氛围参考"
+        }
+        if (imageGuidance.preciseReferenceBase64 != null) {
+            NovelAiPreciseReferenceWirePolicy.unavailableReason(settings, imageGuidance.action)?.let {
+                throw IllegalArgumentException(it)
+            }
+            require(settings.model == NovelAiImageModel.V5_FULL ||
+                imageGuidance.preciseReferenceType != NovelAiPreciseReferenceType.OUTFIT) {
+                "服装参考仅支持 V5 Full"
+            }
+        }
         settings.validationError(prompt.characterCaptions.size)?.let { error(it) }
         val effectivePrompt = if (enhance != null) settings.withEffectiveNegativePrompt(prompt)
             else NovelAiV5TextPromptPolicy.prepareForRequest(prompt, settings)
@@ -380,7 +388,14 @@ class NovelAiImageService(
                     put("director_reference_descriptions", buildJsonArray {
                         add(buildJsonObject {
                             put("caption", buildJsonObject {
-                                put("base_caption", imageGuidance.preciseReferenceType.wireCaption)
+                                put(
+                                    "base_caption",
+                                    NovelAiPreciseReferenceWirePolicy.caption(
+                                        settings.model,
+                                        imageGuidance.preciseReferenceType,
+                                        imageGuidance.preciseReferencePreferSameOutfit
+                                    )
+                                )
                                 put("char_captions", buildJsonArray { })
                             })
                             put("legacy_uc", false)
@@ -388,10 +403,13 @@ class NovelAiImageService(
                     })
                     put("director_reference_information_extracted", buildJsonArray { add(1f) })
                     put("director_reference_strength_values", buildJsonArray {
-                        add(imageGuidance.preciseReferenceStrength.coerceIn(0f, 1f))
+                        add(imageGuidance.preciseReferenceStrength.coerceIn(
+                            NovelAiPreciseReferenceWirePolicy.strengthRange(settings.model)
+                        ))
                     })
                     put("director_reference_secondary_strength_values", buildJsonArray {
-                        add(NovelAiPreciseReferenceWirePolicy.secondaryStrength(imageGuidance.preciseReferenceFidelity))
+                        add(if (settings.model == NovelAiImageModel.V5_FULL) 0f else
+                            NovelAiPreciseReferenceWirePolicy.secondaryStrength(imageGuidance.preciseReferenceFidelity))
                     })
                 }
                 if (imageGuidance.vibes.isNotEmpty()) {

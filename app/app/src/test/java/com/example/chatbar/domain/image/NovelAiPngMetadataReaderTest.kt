@@ -96,4 +96,26 @@ class NovelAiPngMetadataReaderTest {
         assertEquals(0.75f, guidance?.preciseFidelity)
         assertEquals("encoded", guidance?.vibes?.single()?.encodedVibe)
     }
+
+    @Test
+    fun `imports v5 reference settings without overwriting v45 strength and fidelity`() {
+        val comment = """
+            {
+              "prompt":"scene", "uc":"bad", "width":1024, "height":1024,
+              "model":"nai-diffusion-5-full", "steps":23, "sampler":"k_euler_ancestral", "seed":7,
+              "director_reference_images":["precise"],
+              "director_reference_descriptions":[{"caption":{"base_caption":"character_mainoutfit","char_captions":[]}}],
+              "director_reference_strength_values":[3.5],
+              "director_reference_secondary_strength_values":[0.0]
+            }
+        """.trimIndent()
+        val metadata = requireNotNull(NovelAiPngMetadataReader.parseStudioComment(comment, "/tmp/guided.png"))
+        val v45 = NovelAiPreciseReferenceDraft(type = NovelAiPreciseReferenceType.STYLE, strength = 0.8f, fidelity = 0.3f)
+        val draft = NovelAiStudioDraft(imageGuidance = NovelAiImageGuidanceDraft(preciseReference = v45))
+        val merged = draft.applyImportedMetadata(metadata, NovelAiStudioMetadataSelection(generationSettings = false))
+
+        assertEquals(NovelAiImageModel.V4_5_FULL, merged.selectedModel)
+        assertEquals(v45.copy(v5Type = NovelAiPreciseReferenceType.CHARACTER, v5Strength = 3.5f, v5PreferSameOutfit = true),
+            merged.imageGuidance.preciseReference)
+    }
 }

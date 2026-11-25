@@ -91,6 +91,8 @@ import com.example.chatbar.domain.image.NovelAiGenerationChargeKind
 import com.example.chatbar.domain.image.NovelAiHistoryApplyMode
 import com.example.chatbar.domain.image.NovelAiImageModel
 import com.example.chatbar.domain.image.NovelAiImageUseTarget
+import com.example.chatbar.domain.image.NovelAiPreciseReferenceWirePolicy
+import com.example.chatbar.domain.image.NovelAiReferenceMode
 import com.example.chatbar.domain.image.NovelAiStudioAssetRef
 import com.example.chatbar.domain.image.NovelAiSampler
 import com.example.chatbar.domain.image.NovelAiSeedMode
@@ -179,6 +181,7 @@ fun ImagePromptToolScreen(
     var sizeEditorSettings by remember { mutableStateOf<NovelAiGenerationSettings?>(null) }
     var positionEditorDraft by remember { mutableStateOf<NovelAiStudioDraft?>(null) }
     var showGuidanceEditor by remember { mutableStateOf(false) }
+    var guidanceInitialTarget by remember { mutableStateOf<NovelAiImageUseTarget?>(null) }
     var guidancePickTarget by remember { mutableStateOf<NovelAiImageUseTarget?>(null) }
     var stagedGuidanceAsset by remember {
         mutableStateOf<Pair<NovelAiImageUseTarget, Pair<NovelAiStudioAssetRef, NovelAiStudioAssetRef?>>?>(null)
@@ -209,8 +212,12 @@ fun ImagePromptToolScreen(
     val v5Label = state.account.approximateV5Images?.let { "约${it}张" }
         ?: if (state.account.loading) "…" else if (state.account.error != null) "获取失败" else "—"
     val generationCost = state.generationCost
-    val guidanceSummary = state.draft.imageGuidance.summary(state.draft.selectedModel)
+    val guidanceSummary = state.draft.imageGuidance.summary(state.draft.activeSettings)
+    val precisePauseReason = if (state.draft.imageGuidance.referenceMode == NovelAiReferenceMode.PRECISE) {
+        NovelAiPreciseReferenceWirePolicy.unavailableReason(state.draft.activeSettings, state.draft.imageGuidance.action)
+    } else null
     val openGuidanceEditor: () -> Unit = {
+        guidanceInitialTarget = null
         viewModel.beginGuidanceEditor()
         showGuidanceEditor = true
     }
@@ -239,8 +246,9 @@ fun ImagePromptToolScreen(
         }
     }
     LaunchedEffect(state.guidanceEditorRequest) {
-        if (state.guidanceEditorRequest != null) {
+        state.guidanceEditorRequest?.let { target ->
             openGuidanceEditor()
+            guidanceInitialTarget = target
             viewModel.consumeGuidanceEditorRequest()
         }
     }
@@ -451,7 +459,7 @@ fun ImagePromptToolScreen(
             elevation = 4.dp
         ) {
             Column(Modifier.fillMaxWidth()) {
-                if (guidanceSummary.isNotBlank()) {
+                if (guidanceSummary.isNotBlank() || precisePauseReason != null) {
                     Row(
                         Modifier
                             .fillMaxWidth()
@@ -460,7 +468,8 @@ fun ImagePromptToolScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         CbText(
-                            "图像引导已启用 · $guidanceSummary",
+                            precisePauseReason?.let { "$it · 已暂停" }
+                                ?: "图像引导已启用 · $guidanceSummary",
                             Modifier.weight(1f),
                             color = ChatBarTheme.colors.primary,
                             style = ChatBarTheme.typography.caption
@@ -533,7 +542,7 @@ fun ImagePromptToolScreen(
                         variant = if (state.isBusy) ButtonVariant.Destructive else ButtonVariant.Default,
                         autoSizeText = true,
                         supportingText = state.rateLimitStatus
-                            ?: state.draft.imageGuidance.validationError(state.draft.selectedModel)
+                            ?: state.draft.imageGuidance.validationError(state.draft.activeSettings)
                             ?: if (state.autoRunTarget > 0 && !state.isBusy) "已保存 ${state.autoCompletedCount}/${state.autoRunTarget} 张"
                             else if (state.autoModeEnabled && !state.isBusy) "连续 ${state.autoTargetCount} 张 · 每批费用"
                             else if (!state.applyingHistory && !state.isBusy && configured &&
@@ -588,7 +597,8 @@ fun ImagePromptToolScreen(
     if (showGuidanceEditor) {
         NovelAiImageGuidanceEditor(
             initial = state.guidanceCheckpoint ?: state.draft.imageGuidance,
-            model = state.draft.selectedModel,
+            settings = state.draft.activeSettings,
+            initialTarget = guidanceInitialTarget,
             onDismiss = {
                 showGuidanceEditor = false
                 stagedGuidanceAsset = null
@@ -1016,17 +1026,12 @@ private fun ReversePromptStreamPanel(
 }
 
 @Composable
-private fun ImageUseAsDialog(
+internal fun ImageUseAsDialog(
     model: NovelAiImageModel,
     onDismiss: () -> Unit,
     onSelect: (NovelAiImageUseTarget) -> Unit
 ) {
-    val targets = NovelAiImageUseTarget.entries.filter {
-        model == NovelAiImageModel.V4_5_FULL || it in setOf(
-            NovelAiImageUseTarget.IMAGE_TO_IMAGE,
-            NovelAiImageUseTarget.INPAINT
-        )
-    }
+    val targets = NovelAiImageUseTarget.entries.filter { it.isAvailableFor(model) }
     CbDialog(
         onDismissRequest = onDismiss,
         title = "用作图像引导",

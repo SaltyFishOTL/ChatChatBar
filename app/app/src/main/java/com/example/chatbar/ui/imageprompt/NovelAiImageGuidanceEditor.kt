@@ -61,17 +61,18 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import com.example.chatbar.domain.image.NovelAiGenerationAction
 import com.example.chatbar.domain.image.NovelAiAspectRatio
-import com.example.chatbar.domain.image.NovelAiGenerationSettings
 import com.example.chatbar.domain.image.NovelAiFocusedInpaintPlanner
 import com.example.chatbar.domain.image.NovelAiFocusedInpaintRegion
+import com.example.chatbar.domain.image.NovelAiGenerationAction
+import com.example.chatbar.domain.image.NovelAiGenerationSettings
 import com.example.chatbar.domain.image.NovelAiImageSize
 import com.example.chatbar.domain.image.NovelAiSizeTier
 import com.example.chatbar.domain.image.NovelAiImageGuidanceDraft
 import com.example.chatbar.domain.image.NovelAiImageModel
 import com.example.chatbar.domain.image.NovelAiImageUseTarget
 import com.example.chatbar.domain.image.NovelAiPreciseReferenceType
+import com.example.chatbar.domain.image.NovelAiPreciseReferenceWirePolicy
 import com.example.chatbar.domain.image.NovelAiReferenceMode
 import com.example.chatbar.domain.image.NovelAiStudioAssetRef
 import com.example.chatbar.domain.image.NovelAiVibeReferenceDraft
@@ -89,6 +90,7 @@ import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.ChatBarSpacing
 import com.example.chatbar.ui.kit.ChatBarTheme
+import com.example.chatbar.ui.kit.SettingsSwitch
 import java.io.File
 import java.util.UUID
 import kotlin.math.min
@@ -165,25 +167,29 @@ private data class CanvasTabState(
 @Composable
 fun NovelAiImageGuidanceEditor(
     initial: NovelAiImageGuidanceDraft,
-    model: NovelAiImageModel,
+    settings: NovelAiGenerationSettings,
     onDismiss: () -> Unit,
     onPickImage: (NovelAiImageUseTarget) -> Unit,
     stagedAsset: Pair<NovelAiImageUseTarget, Pair<NovelAiStudioAssetRef, NovelAiStudioAssetRef?>>?,
     onConsumeStagedAsset: () -> Unit,
     onSaveBitmap: (Bitmap, Boolean, (NovelAiStudioAssetRef) -> Unit) -> Unit,
     onCheckpoint: (NovelAiImageGuidanceDraft) -> Unit,
-    onSave: (NovelAiImageGuidanceDraft) -> Unit
+    onSave: (NovelAiImageGuidanceDraft) -> Unit,
+    initialTarget: NovelAiImageUseTarget? = null
 ) {
+    val model = settings.model
     var guidance by remember(initial) { mutableStateOf(initial) }
     val scope = rememberCoroutineScope()
-    var tab by remember { mutableStateOf(defaultTab(initial, model)) }
+    val startingTab = initialTarget?.takeIf { it.isAvailableFor(model) }?.let(::tabForTarget)
+        ?: defaultTab(initial, model)
+    var tab by remember { mutableStateOf(startingTab) }
     val layers = remember { mutableStateListOf(CanvasLayer(name = "图层 1")) }
     var activeLayer by remember { mutableIntStateOf(0) }
     val undo = remember { mutableStateListOf<CanvasEditorSnapshot>() }
     val redo = remember { mutableStateListOf<CanvasEditorSnapshot>() }
     var tool by remember {
         mutableStateOf(
-            if (defaultTab(initial, model) == GuidanceEditorTab.INPAINT && initial.focusedInpaintRegion == null) {
+            if (startingTab == GuidanceEditorTab.INPAINT && initial.focusedInpaintRegion == null) {
                 CanvasTool.FOCUS
             } else {
                 CanvasTool.HARD
@@ -485,14 +491,14 @@ fun NovelAiImageGuidanceEditor(
                 GuidanceSourceBar(
                     tab = tab,
                     guidance = guidance,
-                    model = model,
+                    settings = settings,
                     onPickImage = onPickImage,
                     onClearImage = ::clearCurrentSource,
                     onGuidance = ::applyGuidanceChange
                 )
                 GuidanceParameterBar(
                     tab,
-                    model,
+                    settings,
                     guidance,
                     onClearMask = {
                         sourceBitmap?.let { base ->
@@ -989,7 +995,7 @@ private fun EditorSlider(
 private fun GuidanceSourceBar(
     tab: GuidanceEditorTab,
     guidance: NovelAiImageGuidanceDraft,
-    model: NovelAiImageModel,
+    settings: NovelAiGenerationSettings,
     onPickImage: (NovelAiImageUseTarget) -> Unit,
     onClearImage: () -> Unit,
     onGuidance: (String, NovelAiImageGuidanceDraft) -> Unit
@@ -997,9 +1003,10 @@ private fun GuidanceSourceBar(
     val active = when (tab) {
         GuidanceEditorTab.I2I -> guidance.action == NovelAiGenerationAction.IMAGE_TO_IMAGE
         GuidanceEditorTab.INPAINT -> guidance.action == NovelAiGenerationAction.INPAINT
-        GuidanceEditorTab.PRECISE -> guidance.effectiveReferenceMode(model) == NovelAiReferenceMode.PRECISE
-        GuidanceEditorTab.VIBE -> guidance.effectiveReferenceMode(model) == NovelAiReferenceMode.VIBE
+        GuidanceEditorTab.PRECISE -> guidance.effectiveReferenceMode(settings) == NovelAiReferenceMode.PRECISE
+        GuidanceEditorTab.VIBE -> guidance.effectiveReferenceMode(settings) == NovelAiReferenceMode.VIBE
     }
+    val selected = active || tab == GuidanceEditorTab.PRECISE && guidance.referenceMode == NovelAiReferenceMode.PRECISE
     val asset = assetFor(tab, guidance)
     val sourceAvailable = when (tab) {
         GuidanceEditorTab.VIBE -> guidance.vibes.any(NovelAiVibeReferenceDraft::isUsable)
@@ -1007,6 +1014,7 @@ private fun GuidanceSourceBar(
     }
     val detail = when {
         active -> "已启用"
+        selected -> "已暂停"
         sourceAvailable -> "图片已加载 · 未启用"
         else -> "未选择图片"
     }
@@ -1034,9 +1042,9 @@ private fun GuidanceSourceBar(
                     style = ChatBarTheme.typography.caption
                 )
             }
-            CbText(if (active) "开" else "关", style = ChatBarTheme.typography.caption)
+            CbText(if (selected) "开" else "关", style = ChatBarTheme.typography.caption)
             CbSwitch(
-                checked = active,
+                checked = selected,
                 onCheckedChange = { enabled ->
                     onGuidance("source:${tab.name}:active", when (tab) {
                         GuidanceEditorTab.I2I -> guidance.copy(action = if (enabled) NovelAiGenerationAction.IMAGE_TO_IMAGE else NovelAiGenerationAction.TEXT_TO_IMAGE)
@@ -1064,11 +1072,12 @@ private fun GuidanceSourceBar(
 @Composable
 private fun GuidanceParameterBar(
     tab: GuidanceEditorTab,
-    model: NovelAiImageModel,
+    settings: NovelAiGenerationSettings,
     guidance: NovelAiImageGuidanceDraft,
     onClearMask: () -> Unit,
     onGuidance: (String, NovelAiImageGuidanceDraft) -> Unit
 ) {
+    val model = settings.model
     Column(Modifier.fillMaxWidth().padding(horizontal = ChatBarSpacing.md)) {
         when (tab) {
             GuidanceEditorTab.I2I -> {
@@ -1097,19 +1106,37 @@ private fun GuidanceParameterBar(
                     CbButton("清空蒙版", onClearMask, size = ButtonSize.Sm, variant = ButtonVariant.Ghost)
                 }
             }
-            GuidanceEditorTab.PRECISE -> if (model == NovelAiImageModel.V4_5_FULL) {
+            GuidanceEditorTab.PRECISE -> {
+                val reference = guidance.preciseReference
+                val isV5 = model == NovelAiImageModel.V5_FULL
+                val selectedType = reference.typeFor(model)
+                val strength = reference.strengthFor(model)
+                NovelAiPreciseReferenceWirePolicy.unavailableReason(settings, guidance.action)?.let { reason ->
+                    CbText(reason, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+                }
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.xs)) {
-                    NovelAiPreciseReferenceType.entries.forEach { type ->
-                        CbChoiceChip(type.displayName, guidance.preciseReference.type == type, {
-                            onGuidance("precise:type", guidance.copy(preciseReference = guidance.preciseReference.copy(type = type)))
+                    NovelAiPreciseReferenceType.entries.filter { isV5 || it != NovelAiPreciseReferenceType.OUTFIT }.forEach { type ->
+                        CbChoiceChip(type.displayName, selectedType == type, {
+                            val updated = if (isV5) reference.copy(v5Type = type) else reference.copy(type = type)
+                            onGuidance("precise:type", guidance.copy(preciseReference = updated))
                         })
                     }
                 }
-                EditorSlider("参考强度", "%.2f".format(guidance.preciseReference.strength), guidance.preciseReference.strength, 0f..1f) {
-                    onGuidance("precise:strength", guidance.copy(preciseReference = guidance.preciseReference.copy(strength = it)))
+                EditorSlider("参考强度", "%.2f".format(strength), strength, NovelAiPreciseReferenceWirePolicy.strengthRange(model)) {
+                    val updated = if (isV5) reference.copy(v5Strength = it) else reference.copy(strength = it)
+                    onGuidance("precise:strength", guidance.copy(preciseReference = updated))
                 }
-                EditorSlider("保真度", "%.2f".format(guidance.preciseReference.fidelity), guidance.preciseReference.fidelity, 0f..1f) {
-                    onGuidance("precise:fidelity", guidance.copy(preciseReference = guidance.preciseReference.copy(fidelity = it)))
+                if (!isV5) {
+                    EditorSlider("保真度", "%.2f".format(reference.fidelity), reference.fidelity, 0f..1f) {
+                        onGuidance("precise:fidelity", guidance.copy(preciseReference = reference.copy(fidelity = it)))
+                    }
+                } else if (selectedType.includesCharacter) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        CbText("优先相同服装", Modifier.weight(1f), style = ChatBarTheme.typography.caption)
+                        SettingsSwitch(reference.v5PreferSameOutfit, { checked ->
+                            onGuidance("precise:outfit", guidance.copy(preciseReference = reference.copy(v5PreferSameOutfit = checked)))
+                        }, label = "优先相同服装")
+                    }
                 }
             }
             GuidanceEditorTab.VIBE -> if (model == NovelAiImageModel.V4_5_FULL) {
@@ -1149,7 +1176,7 @@ private fun GuidanceTabs(tab: GuidanceEditorTab, model: NovelAiImageModel, onTab
         Modifier.fillMaxWidth().padding(horizontal = ChatBarSpacing.sm, vertical = ChatBarSpacing.xs),
         horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.xs)
     ) {
-        GuidanceEditorTab.entries.filter { model == NovelAiImageModel.V4_5_FULL || it in setOf(GuidanceEditorTab.I2I, GuidanceEditorTab.INPAINT) }
+        GuidanceEditorTab.entries.filter { it.target.isAvailableFor(model) }
             .forEach { item ->
                 CbButton(
                     item.label,
@@ -1165,9 +1192,9 @@ private fun GuidanceTabs(tab: GuidanceEditorTab, model: NovelAiImageModel, onTab
 private fun defaultTab(guidance: NovelAiImageGuidanceDraft, model: NovelAiImageModel): GuidanceEditorTab = when {
     guidance.action == NovelAiGenerationAction.INPAINT -> GuidanceEditorTab.INPAINT
     guidance.action == NovelAiGenerationAction.IMAGE_TO_IMAGE -> GuidanceEditorTab.I2I
-    model == NovelAiImageModel.V5_FULL -> GuidanceEditorTab.I2I
     guidance.referenceMode == NovelAiReferenceMode.PRECISE -> GuidanceEditorTab.PRECISE
-    guidance.referenceMode == NovelAiReferenceMode.VIBE -> GuidanceEditorTab.VIBE
+    guidance.referenceMode == NovelAiReferenceMode.VIBE && NovelAiImageUseTarget.VIBE_REFERENCE.isAvailableFor(model) ->
+        GuidanceEditorTab.VIBE
     else -> GuidanceEditorTab.I2I
 }
 

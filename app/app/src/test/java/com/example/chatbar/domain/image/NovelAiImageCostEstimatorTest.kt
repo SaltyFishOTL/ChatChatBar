@@ -126,6 +126,14 @@ class NovelAiImageCostEstimatorTest {
 
         assertEquals(50, cost.anlas)
         assertEquals(0, cost.encodingAnlas)
+        val v5 = NovelAiGenerationSettings(model = NovelAiImageModel.V5_FULL, count = 2)
+        val baseline = NovelAiImageCostEstimator.estimate(v5, account = null)
+        assertEquals(baseline.anlas + 10, NovelAiImageCostEstimator.estimate(v5, null, precise).anlas)
+        val medium = v5.copy(effort = NovelAiEffort.MEDIUM)
+        assertEquals(
+            NovelAiImageCostEstimator.estimate(medium, null),
+            NovelAiImageCostEstimator.estimate(medium, null, precise)
+        )
     }
 
     @Test

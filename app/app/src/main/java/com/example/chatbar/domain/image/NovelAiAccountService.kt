@@ -122,21 +122,21 @@ object NovelAiImageCostEstimator {
             settings, if (settings.isMediumEffort) requestPixels else max(requestPixels, MIN_PRICED_PIXELS), strength
         )
 
+        val referenceMode = imageGuidance.effectiveReferenceMode(settings)
         val freeSampleEligible = account?.isActiveOpus == true &&
             settings.count == 1 &&
             (imageGuidance.action == NovelAiGenerationAction.INPAINT || sourcePixels <= NORMAL_MAX_PIXELS) &&
             settings.effectiveSteps <= FREE_MAX_STEPS &&
             imageGuidance.action != NovelAiGenerationAction.IMAGE_TO_IMAGE &&
-            imageGuidance.effectiveReferenceMode(settings.model) == NovelAiReferenceMode.NONE &&
+            referenceMode == NovelAiReferenceMode.NONE &&
             (settings.model != NovelAiImageModel.V5_FULL ||
                 account.v5AllowancePercent != null && !account.v5AllowanceExhausted)
         val preciseCost = if (
-            settings.model == NovelAiImageModel.V4_5_FULL &&
-            imageGuidance.effectiveReferenceMode(settings.model) == NovelAiReferenceMode.PRECISE &&
+            referenceMode == NovelAiReferenceMode.PRECISE &&
             imageGuidance.preciseReference.asset?.isUsable == true
         ) PRECISE_REFERENCE_COST * settings.count else 0
         val activeVibeCount = if (
-            imageGuidance.effectiveReferenceMode(settings.model) == NovelAiReferenceMode.VIBE
+            referenceMode == NovelAiReferenceMode.VIBE
         ) {
             imageGuidance.vibes.count(NovelAiVibeReferenceDraft::isUsable)
         } else {
