@@ -61,7 +61,7 @@ class ReplyRemovalDurabilityTest {
             writeBytes(byteArrayOf())
         }
 
-        assertNull(fixture.removals.remove(reply, replacement, version))
+        assertTrue(fixture.removeAndSettle(reply, replacement, version))
 
         assertEquals(replacement.displayContent, fixture.chats.getMessage(reply.id, session.id)?.displayContent)
         assertFalse(ownedAnchor.exists())
@@ -93,7 +93,7 @@ class ReplyRemovalDurabilityTest {
         assertTrue(audioFile.mkdir())
         val obstruction = File(audioFile, "synthetic-child").also { it.writeText("blocks directory deletion") }
         try {
-            assertNotNull(fixture.removals.remove(reply, replacement, target))
+            assertFalse(fixture.removeAndSettle(reply, replacement, target))
             assertEquals(replacement.displayContent, fixture.chats.getMessage(reply.id, session.id)?.displayContent)
             assertNull("The invalidation must already be complete while cleanup is pending", rag.getChunkById(stale.id))
             assertTrue(obstruction.isFile)
@@ -157,8 +157,7 @@ class ReplyRemovalDurabilityTest {
         val directory = File(fixture.context.filesDir, "entities/generated_voice_messages")
         assertTrue(directory.setWritable(false))
         try {
-            val warning = direct.removals.remove(reply, replacement, retired.id)
-            assertTrue(warning.orEmpty().startsWith("回复已删除"))
+            assertFalse(direct.removeAndSettle(reply, replacement, retired.id))
             assertEquals(witnessed, direct.voices.get(witnessed.id))
         } finally {
             assertTrue(directory.setWritable(true))
@@ -169,7 +168,7 @@ class ReplyRemovalDurabilityTest {
         assertEquals(witnessed, direct.voices.get(witnessed.id))
 
         val cold = Fixture(fixture.context, fixture.app)
-        assertTrue(cold.removals.retryMessage(session.id, reply.id, retired.id))
+        assertTrue(cold.removals.resumePending(session.id))
         val persisted = requireNotNull(cold.chats.getMessage(reply.id, session.id))
         assertEquals(replacement.displayContent, persisted.displayContent)
         assertEquals(listOf(unwitnessed.id), cold.voices.placementsForMessage(persisted).map { it.voice.id })
@@ -194,8 +193,7 @@ class ReplyRemovalDurabilityTest {
         val directory = File(fixture.context.filesDir, "entities/generated_voice_messages")
         assertTrue(directory.setWritable(false))
         try {
-            val warning = fixture.removals.remove(reply, replacement, retired)
-            assertTrue(warning.orEmpty().startsWith("回复已删除"))
+            assertFalse(fixture.removeAndSettle(reply, replacement, retired))
             assertEquals(replacement.displayContent, fixture.chats.getMessage(reply.id, session.id)?.displayContent)
             assertEquals(legacy, fixture.voices.get(legacy.id))
             assertTrue(File(legacy.audioPath).isFile)
@@ -205,7 +203,7 @@ class ReplyRemovalDurabilityTest {
         }
 
         val cold = Fixture(fixture.context, fixture.app)
-        assertTrue(cold.removals.retryMessage(session.id, reply.id, retired))
+        assertTrue(cold.removals.resumePending(session.id))
         val persisted = requireNotNull(cold.chats.getMessage(reply.id, session.id))
         assertEquals(replacement.displayContent, persisted.displayContent)
         assertTrue(cold.voices.listForCurrentVersion(persisted).isEmpty())
@@ -215,8 +213,38 @@ class ReplyRemovalDurabilityTest {
         ReplyRemovalCoordinator.requireSettledForBackup(fixture.context.filesDir)
     }
 
-    @Test fun failedAlternativeBodyWriteAllowsOneConfirmedRetry() = verifyUncommittedRetry(versionOnly = true)
-    @Test fun failedWholeMessageBodyDeleteAllowsOneConfirmedRetry() = verifyUncommittedRetry(versionOnly = false)
+    @Test fun interruptedAlternativeBodyWriteResumesOnColdLoad() = verifyUncommittedRetry(versionOnly = true)
+    @Test fun interruptedWholeMessageDeleteResumesOnColdLoad() = verifyUncommittedRetry(versionOnly = false)
+    @Test fun interruptedDeleteLeavesNewerReplyIntact() = verifyUncommittedRetry(versionOnly = false, changed = true)
+
+    @Test fun unreadableVoiceRecordKeepsTheOwnerOfTheLastImage() = withFixture { fixture ->
+        val session = fixture.createSession()
+        val original = fixture.addReply(session, versionOnly = false)
+        val voice = fixture.addVoice(original)
+        val blank = requireNotNull(fixture.chats.updateMessageIfUnchanged(original, original.copy(content = "")))
+        val file = File(fixture.context.filesDir, "entities/generated_voice_messages/${voice.id}.json")
+        val bytes = file.readBytes()
+        file.writeText("{")
+        try {
+            val cold = Fixture(fixture.context, fixture.app)
+            assertNull(cold.removals.removeIfUnvoiced(blank))
+            assertEquals(blank, cold.chats.getMessage(blank.id, session.id))
+        } finally {
+            file.writeBytes(bytes)
+        }
+        assertTrue(File(voice.audioPath).isFile)
+    }
+
+    @Test fun validRemovalSettlesEvenWithAnUnreadableNeighbor() = withFixture { fixture ->
+        val session = fixture.createSession()
+        val message = fixture.addReply(session, versionOnly = false)
+        fixture.removals.remove(message, null, null)
+        val journal = File(fixture.context.filesDir, "entities/pending_reply_removals")
+        val bad = File(journal, "invalid.json").also { it.writeText("{") }
+        assertFalse(fixture.removals.resumePending())
+        assertEquals(listOf(bad.name), journal.listFiles().orEmpty().map(File::getName))
+        assertFalse(File(message.images.single()).exists())
+    }
     @Test fun legacyArchiveStillOwnsAudioAndImageAfterMessageRemoval() = withFixture { fixture ->
         val session = fixture.createSession()
         val message = fixture.addReply(session, versionOnly = false)
@@ -226,7 +254,7 @@ class ReplyRemovalDurabilityTest {
             schemaVersion = 4, voiceMessages = listOf(voice.copy(audioPath = File(voice.audioPath).toURI().toString()))
         )
         fixture.storage.saveEntityUncached("save_slots", slot.id, slot, SaveSlot.serializer())
-        assertNull(fixture.removals.remove(message, null, null))
+        assertTrue(fixture.removeAndSettle(message, null, null))
         assertNull(fixture.chats.getMessage(message.id, session.id))
         assertNull(fixture.voices.get(voice.id))
         assertTrue(File(voice.audioPath).isFile)
@@ -244,9 +272,9 @@ class ReplyRemovalDurabilityTest {
                 file.toURI().toString(), "synthetic", emptyList(), "", "normal", 64, 64
             ))
         ))
-        assertNull(fixture.removals.remove(message, null, null))
+        assertTrue(fixture.removeAndSettle(message, null, null))
         assertTrue(file.isFile)
-        assertNull(fixture.removals.remove(owner, null, null))
+        assertTrue(fixture.removeAndSettle(owner, null, null))
         assertFalse(file.exists())
     }
 
@@ -261,7 +289,7 @@ class ReplyRemovalDurabilityTest {
         fixture.voices.save(otherVoice)
         val version = MessageAlternativeVersionPolicy.activeVersionId(message)
         val replacement = requireNotNull(MessageAlternativeVersionPolicy.remove(message, version))
-        assertNull(fixture.removals.remove(message, replacement, version))
+        assertTrue(fixture.removeAndSettle(message, replacement, version))
         assertEquals(otherVoice, fixture.voices.get(otherVoice.id))
         assertTrue(File(otherVoice.audioPath).isFile)
     }
@@ -284,7 +312,7 @@ class ReplyRemovalDurabilityTest {
             assertNull(requireNotNull(rawLegacy).messageVersionId)
         }
         val replacement = requireNotNull(MessageAlternativeVersionPolicy.remove(reply, removedId))
-        assertNull(fixture.removals.remove(reply, replacement, removedId))
+        assertTrue(fixture.removeAndSettle(reply, replacement, removedId))
 
         val cold = Fixture(fixture.context, fixture.app)
         val survivingReply = requireNotNull(cold.chats.getMessage(reply.id, session.id))
@@ -310,7 +338,7 @@ class ReplyRemovalDurabilityTest {
         fixture.voices.save(legacy)
         val survivor = requireNotNull(MessageAlternativeVersionPolicy.remove(reply, removed.id))
         assertNotEquals(legacy.sourceText, survivor.displayContent)
-        assertNull(fixture.removals.remove(reply, survivor, removed.id))
+        assertTrue(fixture.removeAndSettle(reply, survivor, removed.id))
 
         val cold = Fixture(fixture.context, fixture.app)
         val persisted = requireNotNull(cold.chats.getMessage(reply.id, session.id))
@@ -453,12 +481,12 @@ class ReplyRemovalDurabilityTest {
 
             val version = MessageAlternativeVersionPolicy.activeVersionId(middle)
             val survivor = requireNotNull(MessageAlternativeVersionPolicy.remove(middle, version))
-            assertNull(fixture.removals.remove(middle, survivor, version))
+            assertTrue(fixture.removeAndSettle(middle, survivor, version))
             assertEquals(listOf(firstVoice.id, lastVoice.id), playback.state.value.queueVoiceIds)
             assertEquals(firstVoice.id, playback.state.value.currentVoiceId)
             assertTrue(audio.isFile)
 
-            assertNull(fixture.removals.remove(first, replacement = null, versionId = null))
+            assertTrue(fixture.removeAndSettle(first, replacement = null, versionId = null))
             assertEquals(listOf(lastVoice.id), playback.state.value.queueVoiceIds)
             assertEquals(listOf(lastVoice.id), fixture.voices.listForSession(session.id).map { it.id })
             assertTrue(audio.isFile)
@@ -467,7 +495,7 @@ class ReplyRemovalDurabilityTest {
         }
     }
 
-    private fun verifyUncommittedRetry(versionOnly: Boolean) = withFixture { fixture ->
+    private fun verifyUncommittedRetry(versionOnly: Boolean, changed: Boolean = false) = withFixture { fixture ->
         val session = fixture.createSession()
         val message = fixture.addReply(session, versionOnly)
         val voice = fixture.addVoice(message)
@@ -485,12 +513,21 @@ class ReplyRemovalDurabilityTest {
         } finally {
             assertTrue(directory.setWritable(true))
         }
+        val edited = if (changed) fixture.chats.updateMessageIfUnchanged(
+            message, message.copy(content = "Newer synthetic reply")
+        ) else null
         val cold = Fixture(fixture.context, fixture.app)
-        assertFalse(cold.removals.retryMessage(session.id, message.id, target))
-        assertNull(cold.removals.remove(message, replacement, target))
-        assertEquals(replacement?.displayContent, cold.chats.getMessage(message.id, session.id)?.displayContent)
-        assertNull(cold.voices.get(voice.id))
-        assertFalse(File(voice.audioPath).exists())
+        assertTrue(cold.removals.resumePending(session.id))
+        if (changed) {
+            assertNotNull(edited)
+            assertEquals(edited, cold.chats.getMessage(message.id, session.id))
+            assertEquals(voice, cold.voices.get(voice.id))
+            assertTrue(File(voice.audioPath).exists())
+        } else {
+            assertEquals(replacement?.displayContent, cold.chats.getMessage(message.id, session.id)?.displayContent)
+            assertNull(cold.voices.get(voice.id))
+            assertFalse(File(voice.audioPath).exists())
+        }
         ReplyRemovalCoordinator.requireSettledForBackup(fixture.context.filesDir)
     }
 
@@ -510,8 +547,7 @@ class ReplyRemovalDurabilityTest {
             assertTrue(directory.isDirectory)
             assertTrue(directory.setWritable(false))
             try {
-                val error = fixture.removals.remove(message, replacement, target.takeIf { versionOnly })
-                assertNotNull("An incomplete deletion must be reported as pending", error)
+                assertFalse(fixture.removeAndSettle(message, replacement, target.takeIf { versionOnly }))
                 assertTrue(File(voice.audioPath).isFile)
                 assertTrue(File(message.images.single()).isFile)
                 val persisted = fixture.chats.getMessage(message.id, session.id)
@@ -613,8 +649,7 @@ class ReplyRemovalDurabilityTest {
         val replacement = if (versionOnly) MessageAlternativeVersionPolicy.remove(message, retired.id) else null
         assertTrue(anchorDirectory.setWritable(false))
         try {
-            val error = fixture.removals.remove(message, replacement, retired.id.takeIf { versionOnly })
-            assertNotNull("The retired anchor must remain pending when its deletion fails", error)
+            assertFalse(fixture.removeAndSettle(message, replacement, retired.id.takeIf { versionOnly }))
             assertTrue(retiredFile.isFile)
             assertTrue(File(retiredVoice.audioPath).isFile)
             val pendingVoice = requireNotNull(fixture.voices.get(retiredVoice.id))
@@ -655,6 +690,11 @@ class ReplyRemovalDurabilityTest {
         val voices = VoiceMessageRepository(storage, chats::getMessage)
         val audio = FishAudioStorage(context)
         val removals = ReplyRemovalCoordinator(storage, chats, voices, audio, NovelAiImageStorage(context), app.voicePlaybackController)
+
+        suspend fun removeAndSettle(expected: ChatMessage, replacement: ChatMessage?, versionId: String?): Boolean {
+            removals.remove(expected, replacement, versionId)
+            return removals.resumePending(expected.sessionId)
+        }
 
         suspend fun createSession(): ChatSession =
             chats.createSession(ChatSession.create("synthetic-card", "Synthetic chat"))

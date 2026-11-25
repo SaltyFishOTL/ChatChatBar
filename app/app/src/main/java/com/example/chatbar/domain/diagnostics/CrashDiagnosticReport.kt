@@ -52,7 +52,8 @@ data class CrashDiagnosticReport(
     val device: DiagnosticDeviceInfo,
     val breadcrumbs: List<String>,
     val throwable: DiagnosticThrowableInfo? = null,
-    val systemExit: DiagnosticSystemExitInfo? = null
+    val systemExit: DiagnosticSystemExitInfo? = null,
+    val operationFailure: Boolean = false
 )
 
 object CrashDiagnosticReportFormatter {
@@ -69,7 +70,7 @@ object CrashDiagnosticReportFormatter {
     private val urlQuery = Regex("(?i)(https?://[^\\s?#]+)[?#][^\\s]*")
 
     fun format(report: CrashDiagnosticReport): String = buildString {
-        appendLine("ChatBar 崩溃诊断报告")
+        appendLine(if (report.operationFailure) "ChatBar 操作诊断报告" else "ChatBar 崩溃诊断报告")
         appendLine("请将此单个文件发送给开发者。")
         appendLine("已排除 API Key、Token、聊天正文、Prompt 与完整接口响应。")
         appendLine()
@@ -88,7 +89,7 @@ object CrashDiagnosticReportFormatter {
         appendLine("Android: ${redact(report.device.androidRelease)} (API ${report.device.sdkInt})")
         appendLine("ABI: ${report.device.abis.joinToString().ifBlank { "unknown" }}")
         appendLine("语言区域: ${redact(report.device.locale)}")
-        report.throwable?.let { appendThrowableSection(it) }
+        report.throwable?.let { appendThrowableSection(it, report.operationFailure) }
         report.systemExit?.let { append(formatSystemExitSection(it)) }
         appendBreadcrumbSection(report.breadcrumbs)
     }.let(::redact)
@@ -139,9 +140,9 @@ object CrashDiagnosticReportFormatter {
         return "$cleanCategory: $cleanMessage"
     }
 
-    private fun StringBuilder.appendThrowableSection(throwable: DiagnosticThrowableInfo) {
+    private fun StringBuilder.appendThrowableSection(throwable: DiagnosticThrowableInfo, operationFailure: Boolean) {
         appendLine()
-        appendLine("[未捕获异常]")
+        appendLine(if (operationFailure) "[操作异常]" else "[未捕获异常]")
         appendLine("线程: ${redact(throwable.threadName)}")
         throwable.causes.forEachIndexed { index, cause ->
             appendLine(if (index == 0) "异常: ${redact(cause.type)}" else "Caused by: ${redact(cause.type)}")

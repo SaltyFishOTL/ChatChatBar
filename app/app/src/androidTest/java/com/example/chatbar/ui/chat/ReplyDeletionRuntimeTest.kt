@@ -13,6 +13,7 @@ import com.example.chatbar.domain.voice.VoiceGenerationPolicy
 import java.io.File
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -49,6 +50,41 @@ class ReplyDeletionRuntimeTest {
         openModel(repaired.id)
         withContext(Dispatchers.Main) { vm.deleteMessage(repaired.id) }
         assertGone(repaired.id)
+    }
+
+    @Test fun unreadableReplyProducesShareableDeletionDiagnostic() = verifyUnreadableDeletion("删除消息失败") { reply ->
+        deleteMessage(reply)
+    }
+
+    @Test fun unreadableSegmentProducesShareableDeletionDiagnostic() = verifyUnreadableDeletion("删除片段失败") { reply ->
+        editMessageSegment(reply, 0, reply.displayContent.length, "")
+    }
+
+    @Test fun unreadableEditorReplyProducesShareableDeletionDiagnostic() =
+        verifyUnreadableDeletion("读取待编辑的消息失败") { reply ->
+            editMessage(reply.id, reply.content, emptyList())
+        }
+
+    private fun verifyUnreadableDeletion(title: String, delete: ChatViewModel.(ChatMessage) -> Unit) = runBlocking<Unit> {
+        val reply = app.chatRepository.addMessage(
+            ChatMessage.create(session.id, MessageRole.ASSISTANT, "Synthetic private reply")
+        )
+        openModel(reply.id)
+        val file = File(app.filesDir, "entities/chat_messages/${session.id}_${reply.id}.json")
+        val held = File(file.parentFile, "${file.name}.held")
+        assertTrue(file.renameTo(held))
+        try {
+            assertTrue(file.mkdir())
+            withContext(Dispatchers.Main) { vm.delete(reply) }
+            val report = stage("deletion diagnostic") { vm.deletionFailure.first { it != null } }!!
+            assertEquals(title, report.title)
+            assertTrue(report.content.contains("IOException"))
+            assertFalse(report.content.contains(reply.content))
+            assertNull(vm.messageActionError.value)
+        } finally {
+            if (file.isDirectory) assertTrue(file.delete())
+            assertTrue(held.renameTo(file))
+        }
     }
 
     @Test fun actualViewModelCurrentCandidateDeleteRemovesLastReplyAndPreservesUser() = runBlocking<Unit> {
@@ -98,10 +134,14 @@ class ReplyDeletionRuntimeTest {
         assertNotNull(app.chatRepository.updateMessageIfUnchanged(confirmation, replacement))
         val saved = requireNotNull(app.chatRepository.getMessage(reply.id, session.id))
 
+        val conflict = async(start = CoroutineStart.UNDISPATCHED) {
+            stage("stale segment confirmation rejected") { vm.deletionNotices.first() }
+        }
         withContext(Dispatchers.Main) {
             vm.editMessageSegment(confirmation, 0, confirmation.displayContent.length, "")
         }
-        stage("stale segment confirmation rejected") { vm.messageActionError.first { it != null } }
+        conflict.await()
+        assertNull(vm.deletionFailure.value)
         val cold = com.example.chatbar.data.repository.ChatRepository(com.example.chatbar.data.local.JsonFileStorage(app))
         assertEquals(saved, cold.getMessage(reply.id, session.id))
         assertEquals("New", saved.displayContent)
@@ -186,7 +226,7 @@ class ReplyDeletionRuntimeTest {
         vm.saveSlotOperation.first { !it.busy && !it.status.isNullOrBlank() }
     }
 
-    @Test fun staleSwitchCannotResurrectCandidateDeletedBeforeUiRefresh() = competingSwitch("delete")
+    @Test fun deletedCandidateRefreshesBeforeVectorCleanup() = competingSwitch("delete")
     @Test fun staleSwitchCannotOverwriteUndoBeforeUiRefresh() = competingSwitch("undo")
     @Test fun staleSwitchCannotOverwriteRedoBeforeUiRefresh() = competingSwitch("redo")
 
@@ -202,10 +242,12 @@ class ReplyDeletionRuntimeTest {
         val initial = vm.messages.value.single { it.id == reply.id }
         val storage = app.jsonFileStorage
         val storageMutex = storage.javaClass.getDeclaredMethod("mutexFor", String::class.java).let {
-            it.isAccessible = true; it.invoke(storage, "chat_sessions") as kotlinx.coroutines.sync.Mutex }
+            it.isAccessible = true
+            it.invoke(storage, if (operation == "delete") "vector_chunks" else "chat_sessions") as Mutex
+        }
         val appendMutex = app.chatRepository.javaClass.getDeclaredField("messageAppendMutex").let {
             it.isAccessible = true; it.get(app.chatRepository) as kotlinx.coroutines.sync.Mutex }
-        lateinit var switchJob: Job
+        var switchJob: Job? = null
         storageMutex.lock()
         try {
             withContext(Dispatchers.Main) {
@@ -219,17 +261,24 @@ class ReplyDeletionRuntimeTest {
             stage("first mutation persisted") {
                 while (cold.getMessage(reply.id, session.id).let { it == null || it == initial }) delay(20)
             }
-            // The first transaction is persisted but blocked finishing its session update.
-            assertEquals(initial, vm.messages.value.single { it.id == reply.id })
-            assertTrue(appendMutex.isLocked)
-            withContext(Dispatchers.Main) {
-                val scopeJob = requireNotNull(vm.viewModelScope.coroutineContext[Job])
-                val before = scopeJob.children.toSet()
-                vm.switchAssistantAlternative(reply.id, -1)
-                switchJob = scopeJob.children.single { it !in before }
+            if (operation == "delete") {
+                stage("UI reflected delete while vector cleanup was blocked") {
+                    vm.messages.first { messages -> messages.single { it.id == reply.id }.alternatives.size == 2 }
+                }
+                assertNull(vm.deletionFailure.value)
+            } else {
+                // The first transaction is persisted but blocked finishing its session update.
+                assertEquals(initial, vm.messages.value.single { it.id == reply.id })
+                assertTrue(appendMutex.isLocked)
+                withContext(Dispatchers.Main) {
+                    val scopeJob = requireNotNull(vm.viewModelScope.coroutineContext[Job])
+                    val before = scopeJob.children.toSet()
+                    vm.switchAssistantAlternative(reply.id, -1)
+                    switchJob = scopeJob.children.single { it !in before }
+                }
             }
         } finally { storageMutex.unlock() }
-        stage("competing switch completed") { switchJob.join() }
+        stage("competing switch completed") { switchJob?.join() }
         val cold = com.example.chatbar.data.repository.ChatRepository(com.example.chatbar.data.local.JsonFileStorage(app))
         val saved = requireNotNull(cold.getMessage(reply.id, session.id))
         if (operation == "delete") {
@@ -242,7 +291,7 @@ class ReplyDeletionRuntimeTest {
             assertEquals(if (operation == "undo") "candidate C original" else "candidate C repaired", saved.displayContent)
         }
         stage("UI refreshed from persisted message") { vm.messages.first { list -> list.any { it.id == reply.id && it == saved } } }
-        stage("conflict visible") { vm.messageActionError.first { it != null } }
+        if (operation != "delete") stage("conflict visible") { vm.messageActionError.first { it != null } }
         withContext(Dispatchers.Main) { vm.clearMessageActionError(); vm.switchAssistantAlternative(reply.id, -1) }
         withTimeout(10_000) { vm.messages.first { list -> list.any {
             it.id == reply.id && it.currentAlternativeIndex == saved.currentAlternativeIndex - 1 } } }
@@ -254,6 +303,33 @@ class ReplyDeletionRuntimeTest {
         assertEquals(saved.alternatives, final.alternatives)
         assertEquals(saved.formatRepairNotice, final.formatRepairNotice)
         if (operation != "delete") assertNotNull(MessageFormatRepairPolicy.applicableNotice(final))
+    }
+
+    @Test fun deletingOpeningPublishesTimelineBeforeBlockedCleanup() = runBlocking<Unit> {
+        val opening = app.chatRepository.addMessage(
+            ChatMessage.create(session.id, MessageRole.ASSISTANT, "Synthetic opening")
+        )
+        assertEquals(0L, opening.sourceTurnOrder)
+        openModel(opening.id)
+        val storage = app.jsonFileStorage
+        val vectorLock = storage.javaClass.getDeclaredMethod("mutexFor", String::class.java).let {
+            it.isAccessible = true
+            it.invoke(storage, "vector_chunks") as Mutex
+        }
+        vectorLock.lock()
+        try {
+            withContext(Dispatchers.Main) { vm.deleteMessage(opening) }
+            stage("opening gone with vectors still locked") { vm.messages.first { it.none { row -> row.id == opening.id } } }
+            val next = stage("append while cleanup is blocked") {
+                app.chatRepository.addMessage(ChatMessage.create(session.id, MessageRole.USER, "Next turn"))
+            }
+            assertEquals(1L, next.sourceTurnOrder)
+            val context = app.chatRepository.getContextCandidateSnapshot(session.id, recentTurnCount = 10)
+            assertEquals(setOf(next.id), context.completeRecentMessageIds)
+        } finally {
+            vectorLock.unlock()
+        }
+        assertTrue(app.replyRemovalCoordinator.resumePending(session.id))
     }
 
     private suspend fun <T> stage(name: String, block: suspend () -> T): T = try {

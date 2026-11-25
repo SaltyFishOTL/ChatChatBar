@@ -221,7 +221,7 @@ class VoiceMessageRepositoryTest {
         val removal = ReplyRemoval("remove-legacy", original.sessionId, original.id, originalId, original.role,
             original.sourceTurnId, original.sourceTurnOrder, original.timelineTurn, emptyList(), emptyList())
         assertTrue(voices.finishReplyRemoval(removal, { cleanup -> chats.finishReplyRemoval(removal, cleanup) }, {},
-            { error("The unconfirmed recording must be retained") }))
+            { paths -> assertTrue("The unconfirmed recording must be retained", paths.isEmpty()) }))
 
         val coldChats = ChatRepository(JsonFileStorage(context))
         val cold = VoiceMessageRepository(JsonFileStorage(context), coldChats::getMessage)
@@ -381,7 +381,7 @@ class VoiceMessageRepositoryTest {
         assertTrue(cold.placementsForMessage(displayedC).isEmpty())
         val pending = requireNotNull(coldStorage.loadEntity(ReplyRemoval.STORE, removal.id, ReplyRemoval.serializer()))
         assertTrue(cold.finishReplyRemoval(pending, { cleanup -> coldChats.finishReplyRemoval(pending, cleanup) }, {},
-            { error("The surviving recording must be retained") }))
+            { paths -> assertTrue("The surviving recording must be retained", paths.isEmpty()) }))
         val displayedA = requireNotNull(coldChats.updateMessageIfUnchanged(
             displayedC, MessageAlternativeVersionPolicy.select(displayedC, 0)
         ))

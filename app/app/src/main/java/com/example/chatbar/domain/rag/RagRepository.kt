@@ -148,15 +148,19 @@ class RagRepository(private val storage: JsonFileStorage) {
         return idsToDelete.size
     }
 
-    internal suspend fun invalidateReplyMemory(
+    internal suspend fun scanReplyMemory(
         sessionId: String,
         sourceTurnId: String?,
         messageId: String,
-        keepChunkIds: Set<String>
+        visit: suspend (VectorChunk) -> Unit
     ) {
-        storage.deleteWhereUncached(ENTITY_TYPE, VectorChunk.serializer(), requireSuccessfulDelete = true) { chunk ->
-            chunk.isAutomaticReplyMemory(sessionId, sourceTurnId, messageId) && chunk.id !in keepChunkIds
+        storage.scanEntityRecords(ENTITY_TYPE, VectorChunk.serializer()) { chunk ->
+            if (chunk.isAutomaticReplyMemory(sessionId, sourceTurnId, messageId)) visit(chunk)
         }
+    }
+
+    internal suspend fun deleteReplyMemoryIfUnchanged(chunk: VectorChunk) {
+        storage.deleteUncachedIfUnchanged(ENTITY_TYPE, chunk.id, chunk, VectorChunk.serializer())
     }
 
     /** 完整重建成功后只保留本次生成的自动块；所有手动块永久保留。 */

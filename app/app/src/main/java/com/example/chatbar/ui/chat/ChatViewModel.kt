@@ -37,6 +37,8 @@ import com.example.chatbar.domain.chat.SaveSlotJsonTransfer
 import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.chat.TimelineArchiveBoundaryPolicy
 import com.example.chatbar.domain.chat.editRoleplayMessageSegment
+import com.example.chatbar.domain.deletion.ReplyRemovalConflict
+import com.example.chatbar.domain.deletion.ReplyRemovalCoordinator
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.NovelAiGenerationSettings
 import com.example.chatbar.domain.image.NovelAiImageModel
@@ -79,6 +81,8 @@ import com.example.chatbar.data.repository.VoiceMessagePlacement
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import com.example.chatbar.domain.service.BackgroundGenerationProtectionCancellationException
 import com.example.chatbar.domain.service.StreamingNotificationManager
+import com.example.chatbar.utils.diagnostics.CrashReportManager
+import com.example.chatbar.utils.diagnostics.OperationDiagnostic
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
@@ -103,7 +107,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.yield
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import java.io.File
@@ -514,9 +517,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     val memoryCompressionEvents: SharedFlow<String> = _memoryCompressionEvents.asSharedFlow()
     private val memoryHistoryLimits = ConcurrentHashMap<MemoryTier, Int>()
 
-    private val _isDeletingMemory = MutableStateFlow(false)
-    val isDeletingMemory: StateFlow<Boolean> = _isDeletingMemory.asStateFlow()
-
     private val _chatBubbleFontScale = MutableStateFlow(1.0f)
     val chatBubbleFontScale: StateFlow<Float> = _chatBubbleFontScale.asStateFlow()
 
@@ -618,6 +618,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         observeSettingsChanges()
         observeFishAudioCredentialChanges()
         observeVoiceMessages()
+        viewModelScope.launch {
+            replyRemovalCoordinator.recoveredSessions.collect { recoveredSessionId ->
+                if (recoveredSessionId == sessionId) refreshMessages()
+            }
+        }
     }
 
     private fun observeVoiceMessages() {
@@ -840,7 +845,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     fun loadSessionData() {
         viewModelScope.launch {
-            replyRemovalCoordinator.resumePending(sessionId)
             val s = chatRepository.getSession(sessionId)
             _session.value = s
             s?.let(::acceptPersistedNarrativeMode)
@@ -2361,6 +2365,31 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     val messageActionError = _messageActionError.asStateFlow()
     fun clearMessageActionError() { _messageActionError.value = null }
 
+    private val _deletionFailure = MutableStateFlow<OperationDiagnostic?>(null)
+    internal val deletionFailure = _deletionFailure.asStateFlow()
+    internal fun clearDeletionFailure() { _deletionFailure.value = null }
+
+    private val _deletionNotices = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    internal val deletionNotices = _deletionNotices.asSharedFlow()
+
+    private fun showDeletionConflict() {
+        refreshMessages()
+        _deletionNotices.tryEmit("消息已变化，删除已取消")
+    }
+
+    private suspend fun <T> commitDeletion(title: String, operation: suspend () -> T): T? = try {
+        currentCoroutineContext().ensureActive()
+        withContext(Dispatchers.IO + NonCancellable) { operation() }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: ReplyRemovalConflict) {
+        showDeletionConflict()
+        null
+    } catch (error: Exception) {
+        _deletionFailure.value = CrashReportManager.createOperationDiagnostic(title, error)
+        null
+    }
+
     fun restoreMessageFormatOriginal(messageId: String, shown: ChatMessage? = null) =
         toggleFormatRepair(messageId, shown, redo = false)
     fun redoMessageFormatRepair(messageId: String, shown: ChatMessage? = null) =
@@ -2395,27 +2424,23 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private fun deleteMessageAlternative(messageId: String, versionId: String, expected: ChatMessage?) {
         if (_isResponding.value) return
         viewModelScope.launch {
-            try {
-                fishAudioCoordinator.cancelAndJoinForMessage(sessionId, messageId)
-                if (withContext(NonCancellable) { replyRemovalCoordinator.retryMessage(sessionId, messageId, versionId) }) {
-                    refreshMessages()
-                    return@launch
-                }
-                val message = chatRepository.getMessage(messageId, sessionId)
-                if (message == null) {
-                    check(chatRepository.deleteMessageIfUnchanged(messageId, sessionId, null)) { "消息已变化，请重新操作" }
-                    refreshMessages()
-                    return@launch
-                }
-                check(expected == message) { "消息已变化，请重新操作" }
-                val changed = MessageAlternativeVersionPolicy.remove(message, versionId)
-                if (changed == null) {
-                    deleteMessage(messageId, message)
-                    return@launch
-                }
+            val message = commitDeletion("删除备选失败") {
+                chatRepository.getMessageForDeletion(messageId, sessionId)
+            }
+            if (message == null || MessageAlternativeVersionPolicy.versions(message).none { it.id == versionId }) {
+                refreshMessages()
+                return@launch
+            }
+            if (expected != message) {
+                showDeletionConflict()
+                return@launch
+            }
+            val changed = MessageAlternativeVersionPolicy.remove(message, versionId)
+            if (changed == null) {
+                deleteMessage(messageId, message)
+            } else {
                 commitReplyAlternativeRemoval(message, versionId, changed)
-            } catch (cancelled: CancellationException) { throw cancelled }
-            catch (error: Exception) { _messageActionError.value = error.message ?: "删除备选失败" }
+            }
         }
     }
 
@@ -2424,13 +2449,15 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         versionId: String,
         changed: ChatMessage
     ) {
-        val cleanupError = withContext(NonCancellable) {
+        val commit = commitDeletion("删除备选失败") {
             longTermMemoryService.preserveActionProjectionBeforeMutation(message, changed)
-            replyRemovalCoordinator.remove(message, changed, versionId)
-        }
-        replaceMessagesFromRepository()
-        if (cleanupError != null) _messageActionError.value = cleanupError
-        refreshMemoryAfterMessageEdit(changed)
+            replyRemovalCoordinator.remove(message, changed, versionId).also {
+                fishAudioCoordinator.cancelForMessage(sessionId, message.id)
+            }
+        } ?: return
+        val saved = checkNotNull(commit.replacement)
+        publishMessageDeletion(message.id, saved)
+        updateMemoryAfterDeletion { refreshMemoryAfterMessageEdit(saved, cleanupSupersededMemory = false) }
     }
 
     private suspend fun performMessageFormatRepair(
@@ -3755,71 +3782,41 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     private fun deleteMessage(messageId: String, expected: ChatMessage?) {
         viewModelScope.launch {
-            fishAudioCoordinator.cancelAndJoinForMessage(sessionId, messageId)
-            val recovered: Boolean
-            var cleanupError: String? = null
-            try {
-                coroutineContext.ensureActive()
-                recovered = withContext(NonCancellable) {
-                    if (expected != null) longTermMemoryService.preserveActionProjectionBeforeMutation(expected)
-                    if (replyRemovalCoordinator.retryMessage(sessionId, messageId, versionId = null)) {
-                        true
-                    } else {
-                        if (expected == null) {
-                            check(chatRepository.deleteMessageIfUnchanged(messageId, sessionId, null)) {
-                                "消息已变化，请重新操作"
-                            }
-                        } else {
-                            cleanupError = replyRemovalCoordinator.remove(expected, replacement = null, versionId = null)
-                        }
-                        false
-                    }
-                }
-            } catch (error: Exception) {
-                if (error is CancellationException) throw error
-                _messageActionError.value = error.message ?: if (expected == null) "删除消息失败" else "删除备选失败"
-                return@launch
-            }
-            finishMessageDeletion(messageId, expected, recovered, cleanupError)
-        }
-    }
-
-    private suspend fun finishMessageDeletion(
-        messageId: String,
-        expected: ChatMessage?,
-        recovered: Boolean,
-        cleanupError: String?
-    ) {
-        if (!recovered) selectNeighborWindowAnchor(messageId)
-        refreshMessages()
-        if (cleanupError != null) _messageActionError.value = cleanupError
-        if (chatRepository.getMessage(messageId, sessionId) != null) return
-        enqueueLongTermMemoryAfterMessageDeletion()
-
-        if (expected == null || ChatMemoryIndexPolicy.contributesToIndex(expected)) {
-            _isDeletingMemory.value = true
-            yield()
-            try {
+            commitDeletion("删除消息失败") {
                 if (expected == null) {
-                    clearRemovedReplyMemory(messageId, sourceTurnId = null)
+                    if (!chatRepository.deleteMessageIfUnchanged(messageId, sessionId, null)) throw ReplyRemovalConflict()
                 } else {
-                    refreshMemoryAfterMessageDeletion(expected)
+                    longTermMemoryService.preserveActionProjectionBeforeMutation(expected)
+                    replyRemovalCoordinator.remove(expected, replacement = null, versionId = null)
+                    fishAudioCoordinator.cancelForMessage(sessionId, messageId)
                 }
-            } finally {
-                _isDeletingMemory.value = false
+                Unit
+            } ?: return@launch
+            publishMessageDeletion(messageId, replacement = null)
+            updateMemoryAfterDeletion {
+                if (expected == null) clearRemovedReplyMemory(messageId, sourceTurnId = null)
+                else if (ChatMemoryIndexPolicy.contributesToIndex(expected)) refreshMemoryAfterMessageDeletion(expected)
             }
         }
     }
 
-    private suspend fun removeUnreferencedMessageImages(paths: Collection<String>) {
-        if (paths.isEmpty()) return
-        withContext(Dispatchers.IO) {
+    private fun publishMessageDeletion(messageId: String, replacement: ChatMessage?) {
+        if (replacement == null) selectNeighborWindowAnchor(messageId)
+        messageRefreshSequence.incrementAndGet()
+        _messages.update { messages ->
+            messages.mapNotNull { if (it.id == messageId) replacement else it }
+        }
+        refreshMessages()
+    }
+
+    private fun updateMemoryAfterDeletion(update: suspend () -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
             try {
-                chatRepository.deleteUnreferencedChatImages(paths) { deleteDisposableChatImage(it) }
+                update()
             } catch (error: CancellationException) {
                 throw error
-            } catch (_: Exception) {
-                _messageActionError.value = "消息已更新，但无法核对图片引用，已保留图片文件"
+            } catch (error: Exception) {
+                Log.w(CHAT_VIEW_MODEL_TAG, "Post-deletion RAG refresh failed: ${error.javaClass.name}")
             }
         }
     }
@@ -3854,42 +3851,32 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     fun deleteImage(messageId: String, imagePath: String) {
         viewModelScope.launch {
-            val message = chatRepository.getMessage(messageId, sessionId) ?: return@launch
+            val message = commitDeletion("删除图片失败") {
+                chatRepository.getMessageForDeletion(messageId, sessionId)
+            } ?: return@launch
             if (imagePath !in message.images) return@launch
             val remaining = message.images.filterNot { it == imagePath }
-            if (remaining.isEmpty() && message.displayContent.isBlank() &&
-                MessageAlternativeVersionPolicy.versions(message).none { it.content.isNotBlank() }
-            ) {
-                val removed = try {
-                    withContext(NonCancellable) {
-                        longTermMemoryService.preserveActionProjectionBeforeMutation(message)
-                        replyRemovalCoordinator.removeIfUnvoiced(message)
+            val commit = commitDeletion("删除图片失败") {
+                val wholeRemoval = if (remaining.isEmpty() && message.displayContent.isBlank() &&
+                    MessageAlternativeVersionPolicy.versions(message).none { it.content.isNotBlank() }
+                ) {
+                    longTermMemoryService.preserveActionProjectionBeforeMutation(message)
+                    replyRemovalCoordinator.removeIfUnvoiced(message)?.also {
+                        fishAudioCoordinator.cancelForMessage(sessionId, messageId)
                     }
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (error: Exception) {
-                    _messageActionError.value = error.message ?: "删除图片失败"
-                    return@launch
-                }
-                if (removed != null) {
-                    fishAudioCoordinator.cancelAndJoinForMessage(sessionId, messageId)
-                    finishMessageDeletion(messageId, message, recovered = false, cleanupError = removed.cleanupError)
-                    return@launch
-                }
-            }
-            val updatedMessage = message.copy(
-                images = remaining,
-                generatedImageMetadata = message.generatedImageMetadata.filter { it.imagePath in remaining }
-            )
-            if (chatRepository.updateMessageIfUnchanged(message, updatedMessage) == null) {
-                _messageActionError.value = "消息已变化，请重新操作"
-                return@launch
-            }
-            _messages.value = _messages.value.map { current ->
-                if (current.id == messageId) updatedMessage else current
-            }
-            refreshMessages()
-            removeUnreferencedMessageImages(listOf(imagePath))
+                } else null
+                wholeRemoval ?: ReplyRemovalCoordinator.RemovalCommit(
+                    replyRemovalCoordinator.commitRetainedReply(
+                        message,
+                        message.copy(
+                            images = remaining,
+                            generatedImageMetadata = message.generatedImageMetadata.filter { it.imagePath in remaining }
+                        ),
+                        listOf(imagePath)
+                    )
+                )
+            } ?: return@launch
+            publishMessageDeletion(messageId, commit.replacement)
         }
     }
 
@@ -3897,8 +3884,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
      */
     fun editMessage(messageId: String, content: String, imagePaths: List<String>) {
         viewModelScope.launch {
-            val oldMessage = chatRepository.getMessage(messageId, sessionId) ?: return@launch
             if (content.isBlank() && imagePaths.isEmpty()) return@launch
+            val oldMessage = commitDeletion("读取待编辑的消息失败") {
+                chatRepository.getMessageForDeletion(messageId, sessionId)
+            } ?: return@launch
 
             applyMessageEdit(
                 oldMessage = oldMessage,
@@ -3916,14 +3905,22 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         replacement: String
     ) {
         viewModelScope.launch {
+            val deletingSegment = replacement.isEmpty()
             if (_isResponding.value || _saveSlotOperation.value.busy) {
-                _messageActionError.value = "请等待回复或读档完成后再编辑片段"
+                val message = "请等待回复或读档完成后再编辑片段"
+                if (deletingSegment) _deletionNotices.tryEmit(message) else _messageActionError.value = message
                 return@launch
             }
             val messageId = expected.id
-            if (chatRepository.getMessage(messageId, sessionId) != expected || start !in expected.displayContent.indices ||
+            val current = if (deletingSegment) {
+                commitDeletion("删除片段失败") {
+                    chatRepository.getMessageForDeletion(messageId, sessionId)
+                } ?: return@launch
+            } else chatRepository.getMessage(messageId, sessionId)
+            if (current != expected || start !in expected.displayContent.indices ||
                 endExclusive <= start || endExclusive > expected.displayContent.length) {
-                _messageActionError.value = "回复片段已变化，请重新打开片段操作"
+                if (deletingSegment) showDeletionConflict()
+                else _messageActionError.value = "回复片段已变化，请重新打开片段操作"
                 return@launch
             }
             val oldMessage = expected
@@ -3941,21 +3938,15 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
             val oldVersionId = MessageAlternativeVersionPolicy.activeVersionId(oldMessage)
             if (MessageAlternativeVersionPolicy.activeVersionId(updatedMessage) != oldVersionId) {
-                try {
-                    fishAudioCoordinator.cancelAndJoinForMessage(sessionId, messageId)
-                    commitReplyAlternativeRemoval(oldMessage, oldVersionId, updatedMessage)
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (error: Exception) {
-                    _messageActionError.value = error.message ?: "删除备选失败"
-                }
+                commitReplyAlternativeRemoval(oldMessage, oldVersionId, updatedMessage)
                 return@launch
             }
             applyMessageEdit(
                 oldMessage = oldMessage,
                 content = updatedMessage.content,
                 imagePaths = updatedMessage.images,
-                deleteRemovedImages = false
+                deleteRemovedImages = false,
+                deletingSegment = deletingSegment
             )
         }
     }
@@ -3964,7 +3955,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         oldMessage: ChatMessage,
         content: String,
         imagePaths: List<String>,
-        deleteRemovedImages: Boolean
+        deleteRemovedImages: Boolean,
+        deletingSegment: Boolean = false
     ) {
         val edited = MessageAlternativeVersionPolicy.editCurrentContent(
             message = oldMessage,
@@ -3976,22 +3968,37 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         )
         val updatedMessage = MessageFormatRepairPolicy.updateCurrentNotice(edited, null)
 
-        longTermMemoryService.preserveActionProjectionBeforeMutation(oldMessage, updatedMessage)
-        if (chatRepository.updateMessageIfUnchanged(oldMessage, updatedMessage) == null) {
-            _messageActionError.value = "消息已变化，请重新操作"
-            return
+        val removedImages = if (deleteRemovedImages) oldMessage.images.filterNot(imagePaths::contains) else emptyList()
+        val deletingText = deletingSegment || (oldMessage.displayContent.isNotBlank() && content.isBlank())
+        if (deletingText || removedImages.isNotEmpty()) {
+            val saved = commitDeletion(if (deletingText) "删除内容失败" else "删除图片失败") {
+                longTermMemoryService.preserveActionProjectionBeforeMutation(oldMessage, updatedMessage)
+                replyRemovalCoordinator.commitRetainedReply(oldMessage, updatedMessage, removedImages)
+            } ?: return
+            publishMessageDeletion(saved.id, saved)
+            if (oldMessage.displayContent != saved.displayContent ||
+                oldMessage.displayActionOptionsFormat != saved.displayActionOptionsFormat) {
+                updateMemoryAfterDeletion { refreshMemoryAfterMessageEdit(saved, cleanupSupersededMemory = false) }
+            }
+        } else {
+            longTermMemoryService.preserveActionProjectionBeforeMutation(oldMessage, updatedMessage)
+            if (chatRepository.updateMessageIfUnchanged(oldMessage, updatedMessage) == null) {
+                _messageActionError.value = "消息已变化，请重新操作"
+                return
+            }
+            refreshMessages()
+            refreshMemoryAfterMessageEdit(updatedMessage)
         }
-        if (deleteRemovedImages) {
-            removeUnreferencedMessageImages(oldMessage.images.filterNot(imagePaths::contains))
-        }
-        refreshMessages()
-
-        refreshMemoryAfterMessageEdit(updatedMessage)
     }
 
-    private suspend fun refreshMemoryAfterMessageEdit(updatedMessage: ChatMessage) {
+    private suspend fun refreshMemoryAfterMessageEdit(
+        updatedMessage: ChatMessage,
+        cleanupSupersededMemory: Boolean = true
+    ) {
         val messageId = updatedMessage.id
-        if (updatedMessage.role == MessageRole.ASSISTANT) invalidateActionMemoryDependingOn(messageId)
+        if (cleanupSupersededMemory && updatedMessage.role == MessageRole.ASSISTANT) {
+            invalidateActionMemoryDependingOn(messageId)
+        }
         val revision = chatRepository.ragSourceRevision(sessionId)
         val contextSize = effectiveContextWindowSize()
         val recentAndTurn = chatRepository.getContextCandidateMessages(
@@ -4021,7 +4028,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             if (embeddingConfig != null) {
                 try {
                     AiBackgroundWorkManager.run(sessionId) {
-                        indexTimelineTurnMemory(indexableTurn, embeddingConfig, revision, sourceMessages)
+                        indexTimelineTurnMemory(indexableTurn, embeddingConfig, revision, sourceMessages,
+                            cleanupSupersededMemory)
                     }
                     return
                 } catch (error: CancellationException) {
@@ -4031,27 +4039,22 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 }
             }
         }
-        replyRemovalCoordinator.publishReplyMemory(
-            sessionId, revision, live.sourceTurnId, turn?.messageIds.orEmpty() + messageId, emptyList(),
-            sourceMessages = sourceMessages,
-            keepCurrent = turn?.let(::ChatMemoryProjection)
-        )
+        if (cleanupSupersededMemory) {
+            replyRemovalCoordinator.publishReplyMemory(
+                sessionId, revision, live.sourceTurnId, turn?.messageIds.orEmpty() + messageId, emptyList(),
+                sourceMessages = sourceMessages,
+                keepCurrent = turn?.let(::ChatMemoryProjection)
+            )
+        }
     }
 
     private suspend fun refreshMemoryAfterMessageDeletion(deletedMessage: ChatMessage) {
-        if (deletedMessage.role == MessageRole.ASSISTANT) {
-            invalidateActionMemoryDependingOn(deletedMessage.id)
-        }
-        if (!ChatMemoryIndexPolicy.contributesToIndex(deletedMessage)) return
-
         val remainingTurnMessage = deletedMessage.sourceTurnId?.let { sourceTurnId ->
             chatRepository.getMessagesForSourceTurn(sessionId, sourceTurnId).firstOrNull()
         }
         if (remainingTurnMessage != null) {
-            refreshMemoryAfterMessageEdit(remainingTurnMessage)
-            return
+            refreshMemoryAfterMessageEdit(remainingTurnMessage, cleanupSupersededMemory = false)
         }
-        clearRemovedReplyMemory(deletedMessage.id, deletedMessage.sourceTurnId)
     }
 
     private suspend fun invalidateActionMemoryDependingOn(messageId: String) =
@@ -4064,14 +4067,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         if (chatRepository.getMessage(messageId, sessionId) == null) {
             replyRemovalCoordinator.publishReplyMemory(sessionId, revision, sourceTurnId, setOf(messageId), emptyList())
         }
-    }
-
-    private suspend fun enqueueLongTermMemoryAfterMessageDeletion() {
-        if (chatRepository.getSession(sessionId)?.longTermMemoryEnabled != true) return
-        longTermMemoryAutoMaintenanceCoordinator.enqueue(
-            sessionId,
-            MemoryMaintenanceTrigger.MESSAGE_DELETED
-        )
     }
 
     fun switchAssistantAlternative(messageId: String, direction: Int) {
@@ -4173,12 +4168,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         turn: ChatMemoryTurn,
         embeddingConfig: EmbeddingConfig,
         revision: ChatRagSourceRevision,
-        sourceMessages: List<ChatMessage>?
+        sourceMessages: List<ChatMessage>?,
+        cleanupSuperseded: Boolean = true
     ): Boolean {
         val chunks = ragManager.embedTimelineTurnMemory(turn, sessionId, embeddingConfig)
         return replyRemovalCoordinator.publishReplyMemory(
             sessionId, revision, turn.sourceTurnId, turn.messageIds, chunks,
-            sourceMessages = sourceMessages.takeIf { turn.confirmedChoices.isEmpty() }
+            sourceMessages = sourceMessages.takeIf { turn.confirmedChoices.isEmpty() },
+            cleanupSuperseded = cleanupSuperseded
         )
     }
 
@@ -4492,13 +4489,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                       cancellable = true
                   )
                   narrativeModeSaveMutex.withLock { }
-                  val curSession = chatRepository.getSession(sessionId) ?: error("当前会话尚未加载")
+                  val renderSession = chatRepository.getSession(sessionId) ?: error("当前会话尚未加载")
                   fishAudioCoordinator.cancelAndJoinForSession(sessionId)
                   val slot = saveSlotRepository.getById(summary.id) ?: error("存档不存在")
-                  val restoredRenderContext = placeholderRenderContext(curSession.copy(playerName = slot.playerName))
+                  val restoredRenderContext = placeholderRenderContext(renderSession.copy(playerName = slot.playerName))
                   val status = replyRemovalCoordinator.withRestoredReplyMemory(
                       sessionId, { it.renderWith(restoredRenderContext) }
                   ) { prepareChunk ->
+                      val curSession = chatRepository.getSession(sessionId) ?: error("当前会话尚未加载")
                       if (slot.schemaVersion >= com.example.chatbar.domain.chat.SaveSlotPackageStorage.SCHEMA_VERSION &&
                           slot.packageRef != null
                       ) {

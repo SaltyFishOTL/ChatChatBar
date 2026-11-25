@@ -39,24 +39,46 @@ class JsonFileStorage(private val context: Context) {
         com.example.chatbar.domain.backup.BackupDataRegistry.canonicalLocalMediaPath(context.filesDir, path)
 
     internal suspend fun deleteUnreferencedRegisteredMedia(
-        candidates: MutableSet<String>,
+        candidates: Set<String>,
         types: Set<String>,
+        guard: suspend (suspend () -> Boolean) -> Boolean = { it() },
         delete: (String) -> Unit
-    ) {
-        if (candidates.isEmpty()) return
-        // Hold the same per-store locks as writers until the files have been checked and removed.
+    ) = com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+        if (candidates.isEmpty()) return@access
         val locks = types.sorted().map(::mutexFor)
-        suspend fun withLocks(index: Int) {
-            if (index < locks.size) {
-                locks[index].withStorageAccess { withLocks(index + 1) }
-            } else {
+        suspend fun <T> withLocks(index: Int, action: suspend () -> T): T =
+            if (index == locks.size) action()
+            else locks[index].withStorageAccess { withLocks(index + 1, action) }
+
+        repeat(3) {
+            val revisions = withLocks(0) { types.associateWith(::entityWriteRevision) }
+            val unreferenced = candidates.toMutableSet()
+            var scanError: Exception? = null
+            try {
                 withContext(Dispatchers.IO) {
-                    com.example.chatbar.domain.backup.BackupDataRegistry.retainReferencedMedia(context.filesDir, candidates, types)
-                    candidates.forEach(delete)
+                    com.example.chatbar.domain.backup.BackupDataRegistry.retainReferencedMedia(
+                        context.filesDir, unreferenced, types
+                    )
+                }
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                scanError = error
+            }
+            val settled = guard {
+                withLocks(0) {
+                    if (revisions.any { (type, revision) -> entityWriteRevision(type) != revision }) {
+                        false
+                    } else {
+                        scanError?.let { throw it }
+                        withContext(Dispatchers.IO) { unreferenced.forEach(delete) }
+                        true
+                    }
                 }
             }
+            if (settled) return@access
         }
-        withLocks(0)
+        throw IOException("附件引用正在变化，清理将在重试时继续")
     }
 
 
@@ -76,6 +98,7 @@ class JsonFileStorage(private val context: Context) {
     }
 
     private val entityMutexes = ConcurrentHashMap<String, Mutex>()
+    private val entityWriteRevisions = ConcurrentHashMap<String, Long>()
     private val _singletonReadFailures = MutableStateFlow<Map<String, SingletonReadException>>(emptyMap())
     val singletonReadFailures = _singletonReadFailures.asStateFlow()
     private val failedSingletonReaders = ConcurrentHashMap<String, suspend () -> Unit>()
@@ -105,6 +128,41 @@ class JsonFileStorage(private val context: Context) {
 
     private suspend inline fun <T> Mutex.withStorageAccess(block: () -> T): T =
         com.example.chatbar.domain.backup.LocalDataMaintenance.access { withLock { block() } }
+
+    internal fun entityWriteRevision(entityType: String): Long = entityWriteRevisions[entityType] ?: 0L
+
+    private suspend inline fun <T> mutateEntities(entityType: String, block: () -> T): T =
+        mutexFor(entityType).withStorageAccess {
+            entityWriteRevisions[entityType] = entityWriteRevision(entityType) + 1
+            block()
+        }
+
+    internal suspend fun listEntityIdsUncached(entityType: String): List<String> =
+        mutexFor(entityType).withStorageAccess {
+            withContext(Dispatchers.IO) {
+                val files = entityDir(entityType).listFiles { file -> file.extension == "json" }
+                    ?: throw IOException("无法读取 $entityType 文件目录")
+                files.map { it.nameWithoutExtension }
+            }
+        }
+
+    /** Each record gets a short read lock, so a full-file scan does not exclude writers. */
+    internal suspend fun <T : Any> scanEntityRecords(
+        entityType: String,
+        serializer: KSerializer<T>,
+        skipMalformedRecords: Boolean = false,
+        action: suspend (T) -> Unit
+    ) {
+        for (id in listEntityIdsUncached(entityType)) {
+            val record = try {
+                loadEntity(entityType, id, serializer, requireReadable = true)
+            } catch (error: IOException) {
+                if (skipMalformedRecords && error.cause is SerializationException) continue
+                throw error
+            }
+            if (record != null) action(record)
+        }
+    }
 
     private fun entityDir(entityType: String): File {
         return File(context.filesDir, "$ENTITIES_DIR/$entityType").also {
@@ -162,7 +220,7 @@ class JsonFileStorage(private val context: Context) {
         id: String,
         entity: T,
         serializer: KSerializer<T>
-    ) = mutexFor(entityType).withStorageAccess {
+    ) = mutateEntities(entityType) {
         withContext(Dispatchers.IO) {
             val file = entityFile(entityType, id)
             writeJsonFile(file, entity, serializer)
@@ -421,7 +479,7 @@ class JsonFileStorage(private val context: Context) {
         id: String,
         entity: T,
         serializer: KSerializer<T>
-    ) = mutexFor(entityType).withStorageAccess {
+    ) = mutateEntities(entityType) {
         withContext(Dispatchers.IO) {
             writeJsonFile(entityFile(entityType, id), entity, serializer)
         }
@@ -432,7 +490,7 @@ class JsonFileStorage(private val context: Context) {
         entityType: String,
         entities: Map<String, T>,
         serializer: KSerializer<T>
-    ) = mutexFor(entityType).withStorageAccess {
+    ) = mutateEntities(entityType) {
         withContext(Dispatchers.IO) {
             entities.forEach { (id, entity) ->
                 writeJsonFile(entityFile(entityType, id), entity, serializer)
@@ -445,8 +503,8 @@ class JsonFileStorage(private val context: Context) {
         entityType: String,
         changes: Map<String, T?>,
         serializer: KSerializer<T>
-    ) = mutexFor(entityType).withStorageAccess {
-        if (changes.isEmpty()) return@withStorageAccess
+    ) = mutateEntities(entityType) {
+        if (changes.isEmpty()) return@mutateEntities
         val mutations = changes.toMap()
         withContext(Dispatchers.IO + kotlinx.coroutines.NonCancellable) {
             val directory = entityDir(entityType).canonicalFile
@@ -481,7 +539,7 @@ class JsonFileStorage(private val context: Context) {
         prefix: String,
         serializer: KSerializer<T>,
         producer: suspend (emit: suspend (storageId: String, entity: T) -> Unit) -> Unit
-    ): Int = mutexFor(entityType).withStorageAccess {
+    ): Int = mutateEntities(entityType) {
         replaceMatchingFilesStreamingLocked(
             entityType = entityType,
             serializer = serializer,
@@ -496,7 +554,7 @@ class JsonFileStorage(private val context: Context) {
         serializer: KSerializer<T>,
         predicate: (T) -> Boolean,
         producer: suspend (emit: suspend (storageId: String, entity: T) -> Unit) -> Unit
-    ): Int = mutexFor(entityType).withStorageAccess {
+    ): Int = mutateEntities(entityType) {
         replaceMatchingFilesStreamingLocked(
             entityType = entityType,
             serializer = serializer,
@@ -583,12 +641,27 @@ class JsonFileStorage(private val context: Context) {
 
     /** 删除未进入通用缓存的大型实体。 */
     suspend fun deleteEntityUncached(entityType: String, id: String, requireSuccessfulDelete: Boolean = false) =
-        mutexFor(entityType).withStorageAccess {
+        mutateEntities(entityType) {
             withContext(Dispatchers.IO) {
                 val file = entityFile(entityType, id)
                 if (requireSuccessfulDelete) Files.deleteIfExists(file.toPath()) else file.delete()
             }
         }
+
+    @OptIn(ExperimentalSerializationApi::class)
+    internal suspend fun <T : Any> deleteUncachedIfUnchanged(
+        entityType: String, id: String, expected: T, serializer: KSerializer<T>
+    ) = mutateEntities(entityType) {
+        withContext(Dispatchers.IO) {
+            val file = entityFile(entityType, id)
+            val current = try {
+                openSerializedInput(file).use { json.decodeFromStream(serializer, it) }
+            } catch (_: NoSuchFileException) {
+                return@withContext
+            }
+            if (current == expected) Files.deleteIfExists(file.toPath())
+        }
+    }
 
     /** 逐文件删除大型实体，不创建或更新通用缓存。 */
     suspend fun <T : Any> deleteWhereUncached(
@@ -596,7 +669,7 @@ class JsonFileStorage(private val context: Context) {
         serializer: KSerializer<T>,
         requireSuccessfulDelete: Boolean = false,
         predicate: (T) -> Boolean
-    ): Int = mutexFor(entityType).withStorageAccess {
+    ): Int = mutateEntities(entityType) {
         withContext(Dispatchers.IO) {
             val files = entityDir(entityType).listFiles { file -> file.extension == "json" }
             check(!requireSuccessfulDelete || files != null) { "无法读取 $entityType 文件目录" }
@@ -624,7 +697,7 @@ class JsonFileStorage(private val context: Context) {
         entityType: String,
         id: String,
         requireSuccess: Boolean = false
-    ) = mutexFor(entityType).withStorageAccess {
+    ) = mutateEntities(entityType) {
         withContext(Dispatchers.IO) {
             val file = entityFile(entityType, id)
             if (requireSuccess) {
@@ -645,7 +718,7 @@ class JsonFileStorage(private val context: Context) {
 
     /** 按存储 ID 前缀批量删除，不反序列化实体。 */
     suspend fun <T : Any> deleteByIdPrefix(entityType: String, prefix: String): Int =
-        mutexFor(entityType).withStorageAccess {
+        mutateEntities(entityType) {
             withContext(Dispatchers.IO) {
                 val deletedIds = entityDir(entityType)
                     .listFiles { file ->
@@ -667,7 +740,7 @@ class JsonFileStorage(private val context: Context) {
         entityType: String,
         serializer: KSerializer<T>,
         predicate: (T) -> Boolean
-    ): Int = mutexFor(entityType).withStorageAccess {
+    ): Int = mutateEntities(entityType) {
         withContext(Dispatchers.IO) {
             val deletedIds = entityDir(entityType)
                 .listFiles { file -> file.extension == "json" }
@@ -718,7 +791,7 @@ class JsonFileStorage(private val context: Context) {
         entityType: String,
         entity: T,
         serializer: KSerializer<T>
-    ) = mutexFor(entityType).withStorageAccess {
+    ) = mutateEntities(entityType) {
         withContext(Dispatchers.IO) {
             // 拒绝用默认值或尚未加载的编辑状态覆盖损坏/暂不可读的旧文件。
             readSingletonOrThrow(entityType, serializer)
@@ -792,7 +865,7 @@ class JsonFileStorage(private val context: Context) {
 
     /** 按存储 ID 前缀删除大型实体，不创建或更新通用缓存。 */
     suspend fun deleteByIdPrefixUncached(entityType: String, prefix: String): Int =
-        mutexFor(entityType).withStorageAccess {
+        mutateEntities(entityType) {
             withContext(Dispatchers.IO) {
                 entityDir(entityType)
                     .listFiles { file ->
@@ -804,7 +877,7 @@ class JsonFileStorage(private val context: Context) {
         }
 
     /** 删除不再使用的单例派生数据。 */
-    suspend fun deleteSingleton(entityType: String): Boolean = mutexFor(entityType).withStorageAccess {
+    suspend fun deleteSingleton(entityType: String): Boolean = mutateEntities(entityType) {
         withContext(Dispatchers.IO) {
             singletonFile(entityType).delete().also { deleted ->
                 if (deleted) {
@@ -834,7 +907,7 @@ class JsonFileStorage(private val context: Context) {
         entityType: String,
         entities: Map<String, T>,
         serializer: KSerializer<T>
-    ) = mutexFor(entityType).withStorageAccess {
+    ) = mutateEntities(entityType) {
         withContext(Dispatchers.IO) {
             val saved = mutableMapOf<String, T>()
             try {
@@ -854,7 +927,7 @@ class JsonFileStorage(private val context: Context) {
     /**
      * 删除某类型全部实体
      */
-    suspend fun <T : Any> deleteAll(entityType: String) = mutexFor(entityType).withStorageAccess {
+    suspend fun <T : Any> deleteAll(entityType: String) = mutateEntities(entityType) {
         withContext(Dispatchers.IO) {
             entityDir(entityType).listFiles()?.forEach { it.delete() }
             val flow = getCacheFlow<T>(entityType)

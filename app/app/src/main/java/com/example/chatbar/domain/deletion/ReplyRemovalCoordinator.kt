@@ -8,7 +8,6 @@ import com.example.chatbar.data.local.entity.ChunkSourceType
 import com.example.chatbar.data.local.entity.VectorChunk
 import com.example.chatbar.data.repository.ChatRepository
 import com.example.chatbar.data.repository.ChatRagSourceRevision
-import com.example.chatbar.data.repository.ReplyAudioFileCleanupException
 import com.example.chatbar.data.repository.VoiceMessageRepository
 import com.example.chatbar.domain.backup.LocalDataMaintenance
 import com.example.chatbar.domain.image.NovelAiImageStorage
@@ -25,15 +24,20 @@ import com.example.chatbar.domain.rag.withCurrentReplyRemovals
 import com.example.chatbar.domain.voice.FishAudioStorage
 import com.example.chatbar.domain.voice.VoicePlaybackController
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.security.MessageDigest
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 internal class ReplyRemovalCoordinator(
     private val storage: JsonFileStorage,
@@ -42,20 +46,76 @@ internal class ReplyRemovalCoordinator(
     private val audio: FishAudioStorage,
     private val images: NovelAiImageStorage,
     private val playback: VoicePlaybackController,
-    private val rag: RagRepository = RagRepository(storage)
+    private val rag: RagRepository = RagRepository(storage),
+    private val onTimelineRemoval: (String) -> Unit = { _ -> }
 ) {
     private val mutex = Mutex()
+    private val cleanupMutex = Mutex()
+    private val cleanupRequested = Channel<Unit>(Channel.CONFLATED)
+    private val _recoveredSessions = MutableSharedFlow<String>(extraBufferCapacity = 16)
+    val recoveredSessions = _recoveredSessions.asSharedFlow()
 
-    data class RemovalCommit(val cleanupError: String?)
+    data class RemovalCommit(val replacement: ChatMessage?)
 
-    suspend fun remove(expected: ChatMessage, replacement: ChatMessage?, versionId: String?): String? =
-        checkNotNull(remove(expected, replacement, versionId, onlyIfUnvoiced = false)) {
-            "消息已变化，请重新操作"
-        }.cleanupError
+    suspend fun runCleanup() {
+        cleanupRequested.trySend(Unit)
+        for (request in cleanupRequested) {
+            var retryDelay = 1_000L
+            while (!resumePending()) {
+                withTimeoutOrNull(retryDelay) { cleanupRequested.receive() }
+                retryDelay = (retryDelay * 2).coerceAtMost(60_000L)
+            }
+        }
+    }
+
+    suspend fun remove(expected: ChatMessage, replacement: ChatMessage?, versionId: String?): RemovalCommit =
+        checkNotNull(remove(expected, replacement, versionId, onlyIfUnvoiced = false))
 
     /** An attachment action can remove the empty row only while it has no stored recording. */
     suspend fun removeIfUnvoiced(expected: ChatMessage): RemovalCommit? =
         remove(expected, replacement = null, versionId = null, onlyIfUnvoiced = true)
+
+    /** A retained reply can lose an attachment or a text segment without deleting its voice version. */
+    suspend fun commitRetainedReply(
+        expected: ChatMessage,
+        replacement: ChatMessage,
+        paths: List<String>
+    ): ChatMessage = mutex.withLock {
+        LocalDataMaintenance.access {
+            val updated = replacement.copy(updatedAt = System.currentTimeMillis(), orderKey = expected.orderKey)
+            val contentChanged = expected.displayContent != updated.displayContent ||
+                expected.displayActionOptionsFormat != updated.displayActionOptionsFormat
+            var pending: ReplyRemoval? = null
+            var committed = false
+            try {
+                if (!chat.commitReplyRemoval(expected, updated, ragSourceChanged = contentChanged,
+                        onCommitted = { committed = true }) {
+                    val removal = ReplyRemoval(
+                        id = UUID.randomUUID().toString(), sessionId = expected.sessionId, messageId = expected.id,
+                        versionId = null, role = expected.role, sourceTurnId = expected.sourceTurnId,
+                        sourceTurnOrder = expected.sourceTurnOrder, timelineTurn = expected.timelineTurn,
+                        images = paths, audioPaths = emptyList(), invalidateAutomaticMemory = contentChanged,
+                        retainsReply = true,
+                        previousContentProof = if (contentChanged) retainedReplyContentProof(expected) else null,
+                        expectedMessageProof = messageProof(expected),
+                        replacement = updated
+                    )
+                    writeRemoval(removal)
+                    pending = removal
+                }) throw ReplyRemovalConflict()
+                publishTimelineSettled(checkNotNull(pending))
+                updated
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                if (!committed) throw error
+                logCleanupFailure(error)
+                updated
+            } finally {
+                if (pending != null) cleanupRequested.trySend(Unit)
+            }
+        }
+    }
 
     private suspend fun remove(
         expected: ChatMessage,
@@ -65,15 +125,16 @@ internal class ReplyRemovalCoordinator(
     ): RemovalCommit? = mutex.withLock {
         require((replacement == null) == (versionId == null))
         LocalDataMaintenance.access {
-            var removal: ReplyRemoval? = null
+            val updated = replacement?.copy(updatedAt = System.currentTimeMillis(), orderKey = expected.orderKey)
+            var pending: ReplyRemoval? = null
             var messageCommitted = false
             try {
                 val prepared = voices.prepareReplyRemoval(
                     expected, versionId, playback::removeQueuedVoices, onlyIfUnvoiced
                 ) { collectMedia ->
-                    chat.commitReplyRemoval(expected, replacement) {
+                    chat.commitReplyRemoval(expected, updated, onCommitted = { messageCommitted = true }) {
                         val media = collectMedia()
-                        val pending = ReplyRemoval(
+                        val removal = ReplyRemoval(
                             id = UUID.randomUUID().toString(), sessionId = expected.sessionId, messageId = expected.id,
                             versionId = versionId, role = expected.role, sourceTurnId = expected.sourceTurnId,
                             sourceTurnOrder = expected.sourceTurnOrder, timelineTurn = expected.timelineTurn,
@@ -81,75 +142,151 @@ internal class ReplyRemovalCoordinator(
                                 (expected.images + expected.generatedImageMetadata.map { it.imagePath }).distinct()
                             } else emptyList(),
                             audioPaths = media.audioPaths,
-                            invalidateAutomaticMemory = (expected.role == MessageRole.ASSISTANT ||
-                                ChatMemoryIndexPolicy.contributesToIndex(expected)) &&
+                            invalidateAutomaticMemory = (ChatMemoryIndexPolicy.contributesToIndex(expected) ||
+                                expected.role == MessageRole.ASSISTANT && (
+                                    expected.displayContent.isNotBlank() || expected.alternatives.any(String::isNotBlank)
+                                )) &&
                                 (replacement == null || expected.displayContent != replacement.displayContent ||
                                     expected.displayActionOptionsFormat != replacement.displayActionOptionsFormat ||
                                     expected.alternatives != replacement.alternatives),
                             legacyVoiceAnchorWitnessId = media.legacyAnchorWitnessId,
-                            legacyVoiceContentHashes = media.legacyVoiceContentHashes
+                            legacyVoiceContentHashes = media.legacyVoiceContentHashes,
+                            expectedMessageProof = messageProof(expected),
+                            replacement = updated,
+                            onlyIfUnvoiced = onlyIfUnvoiced
                         )
-                        storage.saveEntityUncached(STORE, pending.id, pending, ReplyRemoval.serializer())
-                        removal = pending
-                    }.also { messageCommitted = it }
+                        writeRemoval(removal)
+                        pending = removal
+                    }
                 }
-                if (!prepared) return@access null
-                finish(checkNotNull(removal))
-                RemovalCommit(cleanupError = null)
+                if (!prepared) {
+                    if (onlyIfUnvoiced && pending == null &&
+                        chat.getMessageForDeletion(expected.id, expected.sessionId) == expected) {
+                        return@access null
+                    }
+                    throw ReplyRemovalConflict()
+                }
+                publishTimelineSettled(checkNotNull(pending))
+                RemovalCommit(updated)
             } catch (error: CancellationException) {
                 throw error
-            } catch (error: ReplyAudioFileCleanupException) {
-                RemovalCommit(error.message)
             } catch (error: Exception) {
                 if (!messageCommitted) throw error
-                RemovalCommit("回复已删除，相关索引或附件清理尚未完成，将在重新打开会话时重试")
+                logCleanupFailure(error)
+                RemovalCommit(updated)
+            } finally {
+                if (pending != null) cleanupRequested.trySend(Unit)
             }
         }
     }
 
-    suspend fun retryMessage(sessionId: String, messageId: String, versionId: String?) = mutex.withLock {
-        LocalDataMaintenance.access {
-            val matching = pending().filter {
-                it.sessionId == sessionId && it.messageId == messageId &&
-                    (it.versionId == null || it.versionId == versionId)
-            }
-            var committed = false
-            matching.forEach { removal ->
-                if (finish(removal)) committed = true
-            }
-            committed
-        }
+    private suspend fun publishTimelineSettled(removal: ReplyRemoval): ReplyRemoval {
+        val settled = removal.copy(expectedMessageProof = null, replacement = null, timelineSettled = true)
+        writeRemoval(settled)
+        if (!removal.retainsReply && removal.versionId == null) onTimelineRemoval(removal.sessionId)
+        return settled
     }
 
-    suspend fun resumePending(sessionId: String? = null) = mutex.withLock {
-        LocalDataMaintenance.access {
-            val removals = try {
-                pending()
-            } catch (error: CancellationException) {
-                throw error
-            } catch (_: Exception) {
-                Log.w("ReplyRemoval", "Local cleanup could not be read")
-                return@access
+    private suspend fun recoverTimeline(removal: ReplyRemoval): ReplyRemoval {
+        if (removal.timelineSettled) return removal
+        val expectedProof = removal.expectedMessageProof
+        val current = chat.getMessageForDeletion(removal.messageId, removal.sessionId)
+        if (current != null && expectedProof != null && messageProof(current) == expectedProof) {
+            check((removal.retainsReply || removal.versionId != null) == (removal.replacement != null)) {
+                "删除日志缺少待写入的消息"
             }
-            removals.filter { sessionId == null || it.sessionId == sessionId }.forEach { removal ->
-                try {
-                    finish(removal)
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (_: Exception) {
-                    Log.w("ReplyRemoval", "Local cleanup is still pending")
+            var refreshed = removal
+            val committed = if (removal.retainsReply) {
+                chat.commitReplyRemoval(current, removal.replacement,
+                    ragSourceChanged = removal.invalidateAutomaticMemory) {}
+            } else {
+                voices.prepareReplyRemoval(current, removal.versionId, playback::removeQueuedVoices,
+                    onlyIfUnvoiced = removal.onlyIfUnvoiced) { collectMedia ->
+                    chat.commitReplyRemoval(current, removal.replacement) {
+                        val media = collectMedia()
+                        refreshed = removal.copy(
+                            audioPaths = (removal.audioPaths + media.audioPaths).distinct(),
+                            legacyVoiceAnchorWitnessId = media.legacyAnchorWitnessId ?: removal.legacyVoiceAnchorWitnessId,
+                            legacyVoiceContentHashes = removal.legacyVoiceContentHashes + media.legacyVoiceContentHashes
+                        )
+                        writeRemoval(refreshed)
+                    }
+                }
+            }
+            if (committed) return publishTimelineSettled(refreshed).also {
+                _recoveredSessions.tryEmit(removal.sessionId)
+            }
+            if (removal.onlyIfUnvoiced) {
+                val updated = current.copy(
+                    images = current.images.filterNot(removal.images::contains),
+                    generatedImageMetadata = current.generatedImageMetadata.filterNot { it.imagePath in removal.images },
+                    updatedAt = System.currentTimeMillis()
+                )
+                val detachImage = removal.copy(retainsReply = true, onlyIfUnvoiced = false, replacement = updated)
+                if (chat.commitReplyRemoval(current, updated, ragSourceChanged = false) { writeRemoval(detachImage) }) {
+                    return publishTimelineSettled(detachImage).also { _recoveredSessions.tryEmit(removal.sessionId) }
                 }
             }
         }
+        if (chat.settleReplyRemovalTimeline(removal)) return publishTimelineSettled(removal).also {
+            if (expectedProof != null) _recoveredSessions.tryEmit(removal.sessionId)
+        }
+        // A live reply with different contents or restored ownership supersedes the old intent.
+        return removal.copy(expectedMessageProof = null, replacement = null, timelineSettled = true).also {
+            writeRemoval(it)
+        }
+    }
+
+    /** Startup publishes the light timeline before chat becomes available; heavy cleanup stays queued. */
+    suspend fun recoverPendingTimelines() {
+        forEachPending(null) { removal ->
+            mutex.withLock { readRemoval(removal.id)?.let { recoverTimeline(it) } }
+        }
+    }
+
+    suspend fun resumePending(sessionId: String? = null): Boolean =
+        cleanupMutex.withLock { forEachPending(sessionId, ::finish) }
+
+    private suspend fun forEachPending(
+        sessionId: String?,
+        process: suspend (ReplyRemoval) -> Unit
+    ): Boolean = try {
+        var settled = true
+        for (id in storage.listEntityIdsUncached(STORE)) {
+            try {
+                LocalDataMaintenance.access {
+                    val removal = readRemoval(id) ?: return@access
+                    if (sessionId == null || removal.sessionId == sessionId) process(removal)
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                logCleanupFailure(error)
+                settled = false
+            }
+        }
+        settled
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Exception) {
+        logCleanupFailure(error)
+        false
     }
 
     /** Archives and session copies capture only after pending reply cleanup is settled. */
-    suspend fun <T> withSettledSession(sessionId: String, capture: suspend () -> T): T = mutex.withLock {
-        LocalDataMaintenance.access {
-            pending().filter { it.sessionId == sessionId }.forEach { finish(it) }
-            capture()
+    suspend fun <T> withSettledSession(sessionId: String, capture: suspend () -> T): T =
+        cleanupMutex.withLock {
+            LocalDataMaintenance.access {
+                var captured: Result<T>? = null
+                while (captured == null) {
+                    if (!forEachPending(sessionId, ::finish)) throw IOException("会话附件清理尚未完成")
+                    captured = mutex.withLock {
+                        if (pending().none { it.sessionId == sessionId }) Result.success(capture()) else null
+                    }
+                }
+                captured.getOrThrow()
+            }
         }
-    }
 
     /** The same journal that makes invalidation retryable also keeps pending stale chunks out of recall. */
     suspend fun getChunksForRetrieval(characterId: String?, sessionId: String?) = mutex.withLock {
@@ -211,7 +348,8 @@ internal class ReplyRemovalCoordinator(
         messageIds: Set<String>,
         chunks: List<VectorChunk>,
         sourceMessages: List<ChatMessage>? = null,
-        keepCurrent: ChatMemoryProjection? = null
+        keepCurrent: ChatMemoryProjection? = null,
+        cleanupSuperseded: Boolean = true
     ): Boolean = mutex.withLock {
         chat.withCurrentRagSources(sessionId, revision, sourceTurnId, sourceMessages) {
             // A user edit can still own a generated chunk's stable ID.
@@ -223,9 +361,11 @@ internal class ReplyRemovalCoordinator(
                 val proof = ReplyMemorySources(sessionId)
                 rag.saveChunks(automaticChunks.map { proof.authorize(it, invalidations) })
             }
-            rag.deleteSupersededAutomaticChatMemory(
-                sessionId, sourceTurnId, messageIds, automaticChunks.mapTo(mutableSetOf()) { it.id }, keepCurrent
-            )
+            if (cleanupSuperseded) {
+                rag.deleteSupersededAutomaticChatMemory(
+                    sessionId, sourceTurnId, messageIds, automaticChunks.mapTo(mutableSetOf()) { it.id }, keepCurrent
+                )
+            }
         }
     }
 
@@ -235,6 +375,8 @@ internal class ReplyRemovalCoordinator(
         renderMessage: (ChatMessage) -> ChatMessage,
         restore: suspend (prepareChunk: suspend (VectorChunk) -> VectorChunk?) -> T
     ): T = mutex.withLock {
+        // Resolve any durable intent before a readback can put the same snapshot back under its ID.
+        pending().filter { it.sessionId == sessionId && !it.timelineSettled }.forEach { recoverTimeline(it) }
         val invalidations = pendingMemoryInvalidations(sessionId)
         val sources = ReplyMemorySources(sessionId)
         restore { chunk ->
@@ -344,42 +486,90 @@ internal class ReplyRemovalCoordinator(
         return removals
     }
 
-    private suspend fun finish(removal: ReplyRemoval) = withContext(Dispatchers.IO) {
-        var memoryError: Exception? = null
-        val committed = voices.finishReplyRemoval(
-            removal, { cleanup ->
-                chat.finishReplyRemoval(removal) {
-                    if (removal.invalidateAutomaticMemory) {
-                        try {
-                            val proof = ReplyMemorySources(removal.sessionId)
-                            val current = rag.getAllChunksForSession(removal.sessionId).filter { chunk ->
-                                removal.affects(chunk) && proof.isCurrent(chunk, listOf(removal))
-                            }.mapTo(mutableSetOf(), VectorChunk::id)
-                            rag.invalidateReplyMemory(removal.sessionId, removal.sourceTurnId, removal.messageId, current)
-                            storage.saveEntityUncached(
-                                STORE, removal.id, removal.copy(invalidateAutomaticMemory = false), ReplyRemoval.serializer()
-                            )
-                        } catch (error: CancellationException) {
-                            throw error
-                        } catch (error: Exception) {
-                            memoryError = error
-                        }
+    private suspend fun readRemoval(id: String): ReplyRemoval? =
+        storage.loadEntity(STORE, id, ReplyRemoval.serializer(), requireReadable = true)
+
+    private suspend fun writeRemoval(removal: ReplyRemoval) =
+        storage.saveEntityUncached(STORE, removal.id, removal, ReplyRemoval.serializer())
+
+    private fun messageProof(message: ChatMessage): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(storage.json.encodeToString(ChatMessage.serializer(), message).toByteArray())
+            .joinToString("") { "%02x".format(it) }
+
+    private fun retainedReplyContentProof(message: ChatMessage): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        digest.update("${message.displayActionOptionsFormat}:".toByteArray())
+        return digest.digest(message.displayContent.toByteArray()).joinToString("") { "%02x".format(it) }
+    }
+
+    private suspend fun finish(initial: ReplyRemoval): Unit = withContext(Dispatchers.IO) {
+        var removal = mutex.withLock { readRemoval(initial.id)?.let { recoverTimeline(it) } }
+            ?: return@withContext
+        var failure: Exception? = null
+        suspend fun settle(action: suspend () -> Unit) {
+            try {
+                action()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                val prior = failure
+                if (prior == null) failure = error else prior.addSuppressed(error)
+            }
+        }
+        if (removal.invalidateAutomaticMemory) settle {
+            invalidateRemovedMemory(removal)
+            removal = removal.copy(invalidateAutomaticMemory = false).also { writeRemoval(it) }
+        }
+        if (!removal.retainsReply && !removal.voiceRecordsSettled) settle {
+            voices.finishReplyRemoval(
+                removal,
+                { cleanup -> chat.finishReplyRemoval(removal, cleanup) },
+                playback::removeQueuedVoices,
+                checkpointAudio = { paths ->
+                    if (paths != removal.audioPaths) {
+                        removal = removal.copy(audioPaths = paths).also { writeRemoval(it) }
                     }
-                    cleanup()
-                }
-            },
-            playback::removeQueuedVoices,
-            audio::deleteIfOwned
-        )
-        if (!committed) voices.deleteUnownedReplyAudio(removal.audioPaths, audio::deleteIfOwned)
-        if (removal.images.isNotEmpty()) {
+                },
+                withMutationGuard = { change -> mutex.withLock { change() } }
+            )
+            removal = removal.copy(voiceRecordsSettled = true).also { writeRemoval(it) }
+        }
+        if (removal.voiceRecordsSettled && removal.audioPaths.isNotEmpty()) settle {
+            voices.deleteUnownedReplyAudio(removal.audioPaths, audio::deleteIfOwned)
+            removal = removal.copy(audioPaths = emptyList()).also { writeRemoval(it) }
+        }
+        if (removal.images.isNotEmpty()) settle {
             chat.deleteUnreferencedChatImages(removal.images) { path ->
                 check(images.deleteChatAttachmentIfOwned(path)) { "无法清理已删除回复的图片文件" }
             }
+            removal = removal.copy(images = emptyList()).also { writeRemoval(it) }
         }
-        memoryError?.let { throw it }
+        failure?.let { throw it }
         storage.deleteEntityUncached(STORE, removal.id, requireSuccessfulDelete = true)
-        committed
+    }
+
+    private suspend fun invalidateRemovedMemory(removal: ReplyRemoval) {
+        rag.scanReplyMemory(removal.sessionId, removal.sourceTurnId, removal.messageId) { chunk ->
+            mutex.withLock {
+                chat.finishReplyRemoval(removal) {
+                    val current = if (removal.retainsReply) chat.getMessageForDeletion(
+                        removal.messageId, removal.sessionId
+                    ) else null
+                    if (current != null && retainedReplyContentProof(current) == removal.previousContentProof) {
+                        return@finishReplyRemoval
+                    }
+                    if (!ReplyMemorySources(removal.sessionId).isCurrent(chunk, listOf(removal))) {
+                        rag.deleteReplyMemoryIfUnchanged(chunk)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun logCleanupFailure(error: Exception) {
+        val stack = error.stackTrace.take(12).joinToString("\n")
+        Log.w("ReplyRemoval", "Pending cleanup will retry: ${error.javaClass.name}\n$stack")
     }
 
     companion object {
@@ -394,3 +584,5 @@ internal class ReplyRemovalCoordinator(
         }
     }
 }
+
+internal class ReplyRemovalConflict : IllegalStateException("消息已变化，删除已取消")

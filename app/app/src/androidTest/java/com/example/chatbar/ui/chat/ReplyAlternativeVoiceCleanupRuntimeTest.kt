@@ -122,7 +122,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             withContext(Dispatchers.Main) { vm.deleteImage(imageOnly.id, standaloneImage.path) }
             withTimeout(15_000) { vm.messages.first { rows -> rows.none { it.id == imageOnly.id } } }
             assertNull(ChatRepository(JsonFileStorage(app)).getMessage(imageOnly.id, session.id))
-            assertFalse(standaloneImage.exists())
+            withTimeout(15_000) { while (standaloneImage.exists()) delay(25) }
         } finally {
             withContext(Dispatchers.Main) { store.clear() }
             app.chatRepository.deleteMessagesForSession(session.id)
@@ -138,7 +138,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
     @Test fun clearingOnlyAlternativeThroughSegmentDeletesMessageAndVoice() = verify(viaSegmentEdit = true, last = true)
     @Test fun clearingOnlyAlternativePreservesAudioReferencedByIndependentMessage() = verify(viaSegmentEdit = true, last = true, sharedAudio = true)
     @Test fun clearingLastTextSegmentRejectsLateVoiceAndAnchorRecreation() = verify(viaSegmentEdit = true, lateVoice = true, lateAnchor = true, staleUi = true)
-    @Test fun clearingLastTextSegmentReportsCleanupFailureAfterRefreshingMessage() = verify(viaSegmentEdit = true, cleanupFailure = true)
+    @Test fun clearingLastTextSegmentRetriesCleanupSilently() = verify(viaSegmentEdit = true, cleanupFailure = true)
     @Test fun deletingInactiveLegacyVersionPreservesUnconfirmedAudio() = verify(legacy = true)
     @Test fun survivingVoiceKeepsSharedAudioAndMessageImage() = verify(sharedAudio = true)
     @Test fun deletingLastVersionStillDeletesItsVoiceAndMessage() = verify(last = true)
@@ -200,7 +200,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
                     .single { it.id == reply.id }
             }
             assertFalse(ChatMemoryIndexPolicy.contributesToIndex(persisted))
-            // Explicitly deleting a separate chunk waits for the ViewModel's in-flight RAG mutation.
+            assertTrue(app.replyRemovalCoordinator.resumePending(session.id))
             assertTrue(withContext(Dispatchers.Main) { vm.deleteRagMemoryChunk(barrier.id) })
             assertNull(memory.getChunkById(auto.id))
             assertEquals(manual, memory.getChunkById(manual.id))
@@ -279,6 +279,8 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             }
             assertEquals(original.displayContent, ChatRepository(JsonFileStorage(app)).getMessage(reply.id, session.id)?.displayContent)
             assertNotNull("Injected write failure should keep the old vector on disk", app.ragRepository.getChunkById(direct.id))
+            val visible = app.replyRemovalCoordinator.getChunksForRetrieval(null, session.id)
+            assertEquals(setOf(unaffected.id, manual.id), visible.mapTo(mutableSetOf()) { it.id })
             check(vectorDirectory.setWritable(true))
             restoreWriteAccess = false
 
@@ -286,6 +288,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
                 ViewModelProvider(reopenStore, ChatViewModelFactory(session.id))[ChatViewModel::class.java]
             }
             withTimeout(30_000) { reopened.messages.first { rows -> rows.any { it.id == reply.id } } }
+            withTimeout(15_000) { while (app.ragRepository.getChunkById(direct.id) != null) delay(25) }
             val coldRag = RagRepository(JsonFileStorage(app))
             val recalled = VectorSearchEngine().search(query, coldRag.getChunksForRetrieval(null, session.id))
             assertEquals("Cold retrieval must exclude every chunk for the deleted alternative",
@@ -305,8 +308,8 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
     }
 
     @Test fun deletingLastVersionKeepsAudioReferencedByIndependentMessage() = verify(last = true, sharedAudio = true)
-    @Test fun deletingLastVersionReportsCleanupFailureWithoutCrashing() = verify(last = true, cleanupFailure = true)
-    @Test fun deletingOneVersionReportsCleanupFailureAfterRefreshingMessage() = verify(cleanupFailure = true)
+    @Test fun deletingLastVersionRetriesCleanupSilently() = verify(last = true, cleanupFailure = true)
+    @Test fun deletingOneVersionRetriesCleanupSilently() = verify(cleanupFailure = true)
     @Test fun missingVersionDoesNotCleanAnyVoice() = verify(missing = true)
     @Test fun lateSynthesisCannotRestoreDeletedVersionVoice() = verify(lateVoice = true)
     @Test fun lateLegacyRegenerationCannotRestoreDeletedVersionVoice() = verify(legacy = true, lateVoice = true)
@@ -361,7 +364,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             withContext(Dispatchers.Main) { vm.deleteMessage(second.id) }
             withTimeout(15_000) { vm.messages.first { rows -> rows.none { it.id == second.id } } }
             assertNull(coldMessage(second.id))
-            assertFalse("The final owner should release the stored file", shared.exists())
+            withTimeout(15_000) { while (shared.exists()) delay(25) }
         } finally {
             withContext(Dispatchers.Main) { store.clear() }
             app.longTermMemoryAutoMaintenanceCoordinator.cancelAndJoinForSession(session.id)
@@ -575,20 +578,23 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
                 cancelledAfterDelete.complete(Unit)
             } else null
             try {
-                withContext(Dispatchers.Main) {
+                val pendingDelete = withContext(Dispatchers.Main) {
+                    val jobs = requireNotNull(vm.viewModelScope.coroutineContext[Job])
+                    val before = jobs.children.toSet()
                     if (viaSegmentEdit) {
                         val expected = vm.messages.value.single { it.id == reply.id }
                         vm.editMessageSegment(expected, 0, expected.displayContent.length, "")
                     } else {
                         vm.deleteMessageAlternative(reply.id, if (missing) "does-not-exist" else deletedVersion.id)
                     }
+                    jobs.children.firstOrNull { it !in before }
                 }
                 if (cancelAfterCommit) {
                     withTimeout(15_000) { cancelledAfterDelete.await() }
                     // A backup started now must wait for any in-flight data mutation.
                     LocalDataMaintenance.acquire().close()
                 } else if (missing) {
-                    withTimeout(15_000) { vm.messageActionError.first { it != null } }
+                    pendingDelete?.join()
                 } else {
                     withTimeout(15_000) { vm.messages.first { rows ->
                         val current = rows.firstOrNull { it.id == reply.id }
@@ -599,6 +605,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             } finally {
                 watcher?.cancel()
             }
+            if (!missing) assertEquals(!cleanupFailure, app.replyRemovalCoordinator.resumePending(session.id))
             val cold = VoiceMessageRepository(JsonFileStorage(app))
             val coldVoices = cold.listForSession(session.id)
             val coldAnchors = cold.snapshotAnchorsForMessages(session.id, setOf(reply.id, other.id))
@@ -612,13 +619,16 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             assertFalse("Deleted alternative must not retain its anchor state", coldAnchors.any {
                 it.messageId == reply.id && it.messageVersionId == deletedVersion.id })
             if (cleanupFailure) {
-                val error = withTimeout(15_000) { vm.messageActionError.first { it != null } }
-                assertTrue(error!!.contains("语音文件清理失败"))
+                assertNull(vm.messageActionError.value)
+                assertNull(vm.deletionFailure.value)
                 val current = ChatRepository(JsonFileStorage(app)).getMessage(reply.id, session.id)
                 if (last) assertNull(current) else assertFalse(MessageAlternativeVersionPolicy.versions(requireNotNull(current))
                     .any { it.id == deletedVersion.id })
                 assertTrue(deletedAudio.exists())
                 assertTrue(otherAudio.exists())
+                assertTrue(File(deletedAudio, "synthetic-child").delete())
+                withTimeout(15_000) { while (deletedAudio.exists()) delay(25) }
+                assertNull(vm.deletionFailure.value)
                 return@runBlocking
             }
             assertEquals("Shared and unconfirmed audio must remain available", sharedAudio || legacy, deletedAudio.exists())

@@ -270,7 +270,7 @@ class VoiceMessageRepository(
         saveVoiceLocked(voice)
     }
 
-    private suspend fun saveVoiceLocked(voice: GeneratedVoiceMessage) {
+    private suspend fun saveVoiceLocked(voice: GeneratedVoiceMessage) = updateVoiceCache {
         storage.saveEntity(VOICE_TYPE, voice.id, voice, GeneratedVoiceMessage.serializer())
         _voices.value = _voices.value.filterNot { it.id == voice.id } + voice
     }
@@ -298,8 +298,7 @@ class VoiceMessageRepository(
             "回复备选已删除"
         }
         withContext(NonCancellable) {
-            storage.saveEntity(VOICE_TYPE, voice.id, voice, GeneratedVoiceMessage.serializer())
-            _voices.value = _voices.value.filterNot { it.id == voice.id } + voice
+            saveVoiceLocked(voice)
             if (replacing != null && voice.audioPath != replacing.audioPath) removeFromPlayback(setOf(voice.id))
         }
     }
@@ -350,13 +349,19 @@ class VoiceMessageRepository(
     ): Boolean = mutex.withLock {
         ensureInitializedLocked()
         require(!onlyIfUnvoiced || versionId == null)
-        var targeted = if (onlyIfUnvoiced) persistedReplyVoices(message.sessionId, message.id, versionId) else emptyList()
+        if (onlyIfUnvoiced && _voices.value.any { it.belongsToReply(message.sessionId, message.id, null) }) {
+            return@withLock false
+        }
+        var targeted = try {
+            replyVoicesLocked(message.sessionId, message.id, versionId)
+        } catch (error: java.io.IOException) {
+            if (!onlyIfUnvoiced) throw error
+            android.util.Log.w("VoiceMessageRepository", "Preserving reply because audio ownership could not be read")
+            return@withLock false
+        }
         if (onlyIfUnvoiced && targeted.isNotEmpty()) return@withLock false
         var legacyVoiceContentHashes = emptyMap<String, String>()
         val committed = commit {
-            if (!onlyIfUnvoiced) {
-                targeted = persistedReplyVoices(message.sessionId, message.id, versionId, includeUnassigned = true)
-            }
             if (versionId != null) {
                 val (survivingIds, retiringHashes) = preserveLegacyVoiceWitnesses(message, versionId, targeted)
                 targeted = targeted.filterNot { it.id in survivingIds }
@@ -380,40 +385,46 @@ class VoiceMessageRepository(
         committed
     }
 
-    /** The owner guard also holds the message write lock until all voice effects finish. */
+    /** Scan before taking the owner locks, then verify the records have not changed. */
     internal suspend fun finishReplyRemoval(
         removal: ReplyRemoval,
         whileOwnerRemoved: suspend (suspend () -> Unit) -> Boolean,
         removeFromPlayback: suspend (Set<String>) -> Unit,
-        deleteAudio: (String) -> Boolean
-    ): Boolean = mutex.withLock {
-        ensureInitializedLocked()
-        whileOwnerRemoved {
-            val targeted = persistedReplyVoices(removal.sessionId, removal.messageId, removal.versionId,
-                includeUnassigned = true)
-            val removed = targeted.filter {
-                removal.versionId == null || it.messageVersionId == removal.versionId && it.versionOwnershipConfirmed
-            }
-            removeFromPlayback(targeted.mapTo(mutableSetOf(), GeneratedVoiceMessage::id))
-            val anchorKeys = mutableSetOf<VoiceAnchorStateKey>()
-            // Malformed anchor metadata cannot prove ownership and stores no audio file references.
-            storage.forEachUncached(
-                ANCHOR_TYPE,
-                VoiceAnchorState.serializer(),
-                requireCompleteRead = true,
-                skipMalformedRecords = true
-            ) { state ->
-                if (state.messageId == removal.messageId &&
-                    (removal.versionId == null || state.messageVersionId == removal.versionId) &&
-                    ownsReplyAnchor(state, removal)) {
-                    anchorKeys += VoiceAnchorStateKey(state)
+        checkpointAudio: suspend (List<String>) -> Unit,
+        withMutationGuard: suspend (suspend () -> Boolean) -> Boolean = { it() }
+    ): Boolean {
+        val revisions = mutex.withLock {
+            ensureInitializedLocked()
+            storage.entityWriteRevision(VOICE_TYPE) to storage.entityWriteRevision(ANCHOR_TYPE)
+        }
+        val voiceWitnesses = mutableListOf<GeneratedVoiceMessage>()
+        storage.scanEntityRecords(VOICE_TYPE, GeneratedVoiceMessage.serializer()) {
+            if (it.messageId == removal.messageId) voiceWitnesses += it
+        }
+        val targeted = voiceWitnesses.filter { it.belongsToReply(removal.sessionId, removal.messageId, removal.versionId) }
+        val anchors = mutableListOf<VoiceAnchorState>()
+        storage.scanEntityRecords(ANCHOR_TYPE, VoiceAnchorState.serializer(), skipMalformedRecords = true) {
+            if (it.messageId == removal.messageId &&
+                (removal.versionId == null || it.messageVersionId == removal.versionId)) anchors += it
+        }
+        return withMutationGuard {
+            mutex.withLock {
+                check(revisions.first == storage.entityWriteRevision(VOICE_TYPE) &&
+                    revisions.second == storage.entityWriteRevision(ANCHOR_TYPE)) { "语音归属正在变化" }
+                whileOwnerRemoved {
+                    val removed = targeted.filter {
+                        removal.versionId == null || it.messageVersionId == removal.versionId && it.versionOwnershipConfirmed
+                    }
+                    // A retry may see records that were unreadable when the intent was written.
+                    checkpointAudio((removal.audioPaths + removed.map(GeneratedVoiceMessage::audioPath)).distinct())
+                    removeFromPlayback(targeted.mapTo(mutableSetOf(), GeneratedVoiceMessage::id))
+                    // A whole reply's voice rows can be the only witness for an unscoped anchor on retry.
+                    anchors.filter { ownsReplyAnchor(it, removal, voiceWitnesses) }.map(::VoiceAnchorStateKey).distinct()
+                        .forEach { deleteAnchorLocked(it) }
+                    deleteVoiceRecordsLocked(removed)
+                    if (removal.versionId != null) restrictUnconfirmedReplyVoices(targeted, removal.legacyVoiceContentHashes)
                 }
             }
-            // A whole reply's voice rows can be the only witness for an unscoped anchor on retry.
-            anchorKeys.forEach { deleteAnchorLocked(it) }
-            deleteVoiceRecordsLocked(removed)
-            if (removal.versionId != null) restrictUnconfirmedReplyVoices(targeted, removal.legacyVoiceContentHashes)
-            deleteUnownedReplyAudio(removal.audioPaths, deleteAudio)
         }
     }
 
@@ -425,7 +436,23 @@ class VoiceMessageRepository(
 
     internal suspend fun pruneUnreferencedAudio(paths: List<String>, deleteAudio: (String) -> Unit) {
         val candidates = paths.mapNotNullTo(linkedSetOf(), storage::canonicalMediaPath)
-        storage.deleteUnreferencedRegisteredMedia(candidates, setOf(VOICE_TYPE, "save_slots"), deleteAudio)
+        storage.deleteUnreferencedRegisteredMedia(candidates, setOf(VOICE_TYPE, "save_slots"), delete = deleteAudio)
+    }
+
+    private fun GeneratedVoiceMessage.belongsToReply(sessionId: String, messageId: String, versionId: String?) =
+        this.sessionId == sessionId && this.messageId == messageId &&
+            (versionId == null || messageVersionId == versionId || messageVersionId.isNullOrBlank())
+
+    private suspend fun replyVoicesLocked(
+        sessionId: String,
+        messageId: String,
+        versionId: String?
+    ): List<GeneratedVoiceMessage> {
+        if (completeVoiceRevision != storage.entityWriteRevision(VOICE_TYPE)) {
+            _voices.value = storage.loadAll(VOICE_TYPE, GeneratedVoiceMessage.serializer(), requireComplete = true)
+            completeVoiceRevision = storage.entityWriteRevision(VOICE_TYPE)
+        }
+        return _voices.value.filter { it.belongsToReply(sessionId, messageId, versionId) }
     }
 
     private suspend fun persistedReplyVoices(
@@ -494,8 +521,7 @@ class VoiceMessageRepository(
                 legacyVersionContentHash = voice.legacyVersionContentHash ?: legacyVoiceContentHashes[voice.id]
             )
             if (retained != voice) {
-                storage.saveEntity(VOICE_TYPE, retained.id, retained, GeneratedVoiceMessage.serializer())
-                _voices.value = _voices.value.map { if (it.id == retained.id) retained else it }
+                saveVoiceLocked(retained)
             }
         }
     }
@@ -512,7 +538,7 @@ class VoiceMessageRepository(
         return paths
     }
 
-    private suspend fun deleteVoiceRecordsLocked(removed: List<GeneratedVoiceMessage>) {
+    private suspend fun deleteVoiceRecordsLocked(removed: List<GeneratedVoiceMessage>) = updateVoiceCache {
         removed.forEach { voice ->
             storage.deleteEntity<GeneratedVoiceMessage>(VOICE_TYPE, voice.id, requireSuccess = true)
             _voices.value = _voices.value.filterNot { it.id == voice.id }
@@ -539,9 +565,13 @@ class VoiceMessageRepository(
         }
     }
 
-    private fun ownsReplyAnchor(state: VoiceAnchorState, removal: ReplyRemoval): Boolean {
+    private fun ownsReplyAnchor(
+        state: VoiceAnchorState,
+        removal: ReplyRemoval,
+        candidates: List<GeneratedVoiceMessage>
+    ): Boolean {
         if (state.sessionId.isNotBlank()) return state.sessionId == removal.sessionId
-        val witnesses = unscopedAnchorVoices(state)
+        val witnesses = unscopedAnchorVoices(state, candidates)
         if (witnesses.isNotEmpty()) return witnesses.all { it.sessionId == removal.sessionId }
         return state.anchors.any { it.id == removal.legacyVoiceAnchorWitnessId }
     }
@@ -549,10 +579,13 @@ class VoiceMessageRepository(
     private fun unscopedAnchorOwner(state: VoiceAnchorState): String? =
         unscopedAnchorVoices(state).map(GeneratedVoiceMessage::sessionId).distinct().singleOrNull()
 
-    private fun unscopedAnchorVoices(state: VoiceAnchorState): List<GeneratedVoiceMessage> {
+    private fun unscopedAnchorVoices(
+        state: VoiceAnchorState,
+        candidates: List<GeneratedVoiceMessage> = _voices.value
+    ): List<GeneratedVoiceMessage> {
         if (state.sessionId.isNotBlank()) return emptyList()
         val anchors = state.anchors.mapTo(hashSetOf(), VoiceAnchor::id)
-        return _voices.value.filter { voice ->
+        return candidates.filter { voice ->
             voice.messageId == state.messageId && voice.anchorId in anchors &&
                 (state.messageVersionId == null || voice.messageVersionId == state.messageVersionId)
         }
@@ -658,9 +691,9 @@ class VoiceMessageRepository(
         replaceSessionVoicesLocked(sessionId, restored)
     }
 
-    private suspend fun replaceSessionVoicesLocked(sessionId: String, voices: List<GeneratedVoiceMessage>) {
+    private suspend fun replaceSessionVoicesLocked(sessionId: String, voices: List<GeneratedVoiceMessage>) = updateVoiceCache {
         val old = _voices.value.filter { it.sessionId == sessionId }
-        old.forEach { storage.deleteEntity<GeneratedVoiceMessage>(VOICE_TYPE, it.id) }
+        old.forEach { storage.deleteEntity<GeneratedVoiceMessage>(VOICE_TYPE, it.id, requireSuccess = true) }
         voices.forEach { voice ->
             storage.saveEntity(VOICE_TYPE, voice.id, voice, GeneratedVoiceMessage.serializer())
         }
@@ -721,9 +754,24 @@ class VoiceMessageRepository(
         restoreForSession(sessionId, remapped)
     }
 
+    private var completeVoiceRevision: Long? = null
+
+    private suspend fun updateVoiceCache(update: suspend () -> Unit) = withContext(NonCancellable) {
+        val wasComplete = completeVoiceRevision == storage.entityWriteRevision(VOICE_TYPE)
+        completeVoiceRevision = null
+        update()
+        if (wasComplete) completeVoiceRevision = storage.entityWriteRevision(VOICE_TYPE)
+    }
+
     private suspend fun ensureInitializedLocked() {
         if (initialized) return
-        _voices.value = storage.loadAll(VOICE_TYPE, GeneratedVoiceMessage.serializer())
+        _voices.value = try {
+            storage.loadAll(VOICE_TYPE, GeneratedVoiceMessage.serializer(), requireComplete = true).also {
+                completeVoiceRevision = storage.entityWriteRevision(VOICE_TYPE)
+            }
+        } catch (_: java.io.IOException) {
+            storage.loadAll(VOICE_TYPE, GeneratedVoiceMessage.serializer())
+        }
         anchorsByVersion = storage.loadAllById(ANCHOR_TYPE, VoiceAnchorState.serializer()).entries
             .groupBy { VoiceAnchorStateKey(it.value) }
             .mapValues { (key, entries) -> (entries.firstOrNull { it.key == key.storageId } ?: entries.first()).value }
@@ -837,7 +885,7 @@ class VoiceMessageRepository(
     private suspend fun persistChangedVoicesLocked(
         old: List<GeneratedVoiceMessage>,
         next: List<GeneratedVoiceMessage>
-    ) {
+    ) = updateVoiceCache {
         val oldById = old.associateBy(GeneratedVoiceMessage::id)
         next.filter { oldById[it.id] != it }.forEach { voice ->
             storage.saveEntity(VOICE_TYPE, voice.id, voice, GeneratedVoiceMessage.serializer())

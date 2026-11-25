@@ -358,10 +358,9 @@ class FishAudioGenerationCoordinator(
         jobs[batchId]?.cancel()
     }
 
-    suspend fun cancelAndJoinForMessage(sessionId: String, messageId: String) {
-        cancelAndJoinMatching { state ->
-            state.sessionId == sessionId && state.messageId == messageId
-        }
+    fun cancelForMessage(sessionId: String, messageId: String) {
+        _batches.value.filter { it.sessionId == sessionId && it.messageId == messageId }
+            .forEach { cancel(it.id) }
     }
 
     suspend fun cancelAndJoinForSession(sessionId: String) {

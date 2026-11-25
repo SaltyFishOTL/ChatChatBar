@@ -239,6 +239,9 @@ class ChatBarApp : Application() {
                 backupStartupNotice.value = AppBackupBootstrap.recoveryNotice
                 withContext(Dispatchers.Main) {
                     initializeDependencies()
+                }
+                replyRemovalCoordinator.recoverPendingTimelines()
+                withContext(Dispatchers.Main) {
                     dependenciesReady.value = true
                     if (!backupRestoreActive) backupStartupReady.value = true
                 }
@@ -300,7 +303,11 @@ class ChatBarApp : Application() {
         replyRemovalCoordinator = com.example.chatbar.domain.deletion.ReplyRemovalCoordinator(
             jsonFileStorage, chatRepository, voiceMessageRepository, fishAudioStorage, novelAiImageStorage,
             voicePlaybackController, ragRepository
-        )
+        ) { sessionId ->
+            longTermMemoryAutoMaintenanceCoordinator.enqueue(
+                sessionId, com.example.chatbar.domain.memory.MemoryMaintenanceTrigger.MESSAGE_DELETED
+            )
+        }
         qqVoiceTransferCoordinator = QqVoiceTransferCoordinator()
         qqVoiceGestureGateway = QqVoiceGestureGatewayRegistry()
         val novelAiCodexJson = Json {
@@ -488,6 +495,10 @@ class ChatBarApp : Application() {
         )
         applicationScope.launch {
             backupStartupReady.filter { it }.first()
+            replyRemovalCoordinator.runCleanup()
+        }
+        applicationScope.launch {
+            backupStartupReady.filter { it }.first()
             communityService.monitorEnabledStatus()
         }
         applicationScope.launch {
@@ -577,7 +588,6 @@ class ChatBarApp : Application() {
         ).run()
         settingsRepository.initialize()
         voiceMessageRepository.initialize()
-        replyRemovalCoordinator.resumePending()
         fishAudioStorage.cleanupPartialFiles()
         saveSlotPackageStorage.cleanupPartialFiles()
         try {

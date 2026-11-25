@@ -46,6 +46,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -148,6 +149,7 @@ import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.ChatBarTheme
 import com.example.chatbar.ui.kit.FullscreenTextEditor
+import com.example.chatbar.utils.diagnostics.CrashReportManager
 import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -204,7 +206,6 @@ fun ChatScreen(
         mergeStreamingMessageIntoTimeline(messages, streamingMessage)
     }
     val messageFormatRepairState by viewModel.messageFormatRepairState.collectAsState()
-    val deletingMemory by viewModel.isDeletingMemory.collectAsState()
     val contextWindowSize by viewModel.contextWindowSize.collectAsState()
     val novelAiConfigured by viewModel.novelAiConfigured.collectAsState()
     val imageGenerations by viewModel.imageGenerations.collectAsState()
@@ -227,6 +228,11 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    LaunchedEffect(viewModel, context) {
+        viewModel.deletionNotices.collect { message ->
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        }
+    }
     val density = LocalDensity.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val clipboardManager = LocalClipboardManager.current
@@ -322,6 +328,7 @@ fun ChatScreen(
     var deleteMessageTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var deleteAlternativeTarget by remember { mutableStateOf<Pair<ChatMessage, String>?>(null) }
     val messageActionError by viewModel.messageActionError.collectAsState()
+    val deletionFailure by viewModel.deletionFailure.collectAsState()
     var editingMessage by remember { mutableStateOf<ChatMessage?>(null) }
     var editingText by remember { mutableStateOf(TextFieldValue("")) }
     val editingImages = remember { mutableStateListOf<String>() }
@@ -1701,13 +1708,6 @@ fun ChatScreen(
             CbText("当前开启了电池优化，切换到后台时 AI 生成可能被系统中断。建议关闭本应用的电池优化以获得稳定的后台生成体验。", color = ChatBarTheme.colors.mutedForeground)
         }
     }
-    if (deletingMemory) {
-        CbDialog(onDismissRequest = {}, title = "正在删除长期记忆") {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                CbSpinner(); CbText("消息已移除，正在清理对应 RAG 记忆。", color = ChatBarTheme.colors.mutedForeground)
-            }
-        }
-    }
     expandedImageIndex?.let { initialIndex ->
         CompositionLocalProvider(
             LocalChatImageRenderRuntime provides ChatImageRenderRuntime(
@@ -1820,6 +1820,28 @@ fun ChatScreen(
     messageActionError?.let { error ->
         CbDialog(onDismissRequest = viewModel::clearMessageActionError, title = "操作未完成",
             confirm = { CbButton("知道了", viewModel::clearMessageActionError) }) { CbText(error) }
+    }
+    deletionFailure?.let { report ->
+        CbDialog(
+            onDismissRequest = viewModel::clearDeletionFailure,
+            title = report.title,
+            dismiss = { CbButton("关闭", viewModel::clearDeletionFailure, variant = ButtonVariant.Ghost) },
+            confirm = {
+                CbButton("分享诊断", {
+                    CrashReportManager.shareOperationDiagnostic(context, report).onFailure {
+                        Toast.makeText(context, "无法打开系统分享，可复制诊断日志", Toast.LENGTH_SHORT).show()
+                    }
+                })
+            }
+        ) {
+            SelectionContainer {
+                CbText(
+                    report.content,
+                    modifier = Modifier.heightIn(max = 280.dp).verticalScroll(rememberScrollState()),
+                    style = ChatBarTheme.typography.caption
+                )
+            }
+        }
     }
     deleteAlternativeTarget?.let { (target, versionId) ->
         ReplyDeletionConfirmation(target.id, versionId,

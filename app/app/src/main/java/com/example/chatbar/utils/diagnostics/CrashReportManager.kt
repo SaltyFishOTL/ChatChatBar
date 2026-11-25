@@ -37,6 +37,8 @@ data class PendingCrashReport(
     val trigger: String
 )
 
+internal data class OperationDiagnostic(val title: String, val createdAt: Long, val content: String)
+
 object CrashReportManager {
     private const val TAG = "CrashReportManager"
     private const val DIAGNOSTICS_DIR = "diagnostics"
@@ -98,10 +100,48 @@ object CrashReportManager {
         val summary = _pendingReport.value ?: error("没有待发送的崩溃报告")
         val content = readAtomic(pendingReportFile()) ?: error("崩溃报告文件不存在")
         val targetDir = shareDir().apply { mkdirs() }
-        targetDir.listFiles()?.forEach(File::delete)
+        targetDir.listFiles()?.filter { it.name.startsWith("ChatBar-crash-report-") }?.forEach(File::delete)
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date(summary.createdAt))
         val target = File(targetDir, "ChatBar-crash-report-$stamp.txt")
         target.writeText(content, Charsets.UTF_8)
+        shareFile(context, target, "ChatBar 崩溃诊断报告")
+        recordBreadcrumb("diagnostics", "share_crash_report")
+    }
+
+    internal fun createOperationDiagnostic(title: String, error: Throwable): OperationDiagnostic {
+        val now = System.currentTimeMillis()
+        val info = throwableInfo(Thread.currentThread(), error, includeMessages = false)
+        val report = CrashDiagnosticReport(
+            generatedAt = now,
+            trigger = title,
+            app = appInfo(),
+            device = deviceInfo(),
+            breadcrumbs = emptyList(),
+            throwable = info,
+            operationFailure = true
+        )
+        Log.w(TAG, "$title: ${error.javaClass.name}")
+        return OperationDiagnostic(title, now, CrashDiagnosticReportFormatter.format(report))
+    }
+
+    internal fun shareOperationDiagnostic(context: Context, report: OperationDiagnostic): Result<Unit> = runCatching {
+        val targetDir = shareDir().apply { mkdirs() }
+        targetDir.listFiles()?.filter { it.name.startsWith("ChatBar-operation-report-") }?.forEach(File::delete)
+        val target = File(targetDir, "ChatBar-operation-report-${report.createdAt}.txt")
+        val subject = "ChatBar ${report.title}诊断报告"
+        if (runCatching { target.writeText(report.content, Charsets.UTF_8) }.isSuccess) {
+            shareFile(context, target, subject)
+        } else {
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, subject)
+                putExtra(Intent.EXTRA_TEXT, report.content)
+            }
+            launchChooser(context, send, "分享诊断报告")
+        }
+    }
+
+    private fun shareFile(context: Context, target: File, subject: String) {
         val uri = FileProvider.getUriForFile(
             context,
             "${context.packageName}.fileprovider",
@@ -110,20 +150,23 @@ object CrashReportManager {
         val shareIntent = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(Intent.EXTRA_SUBJECT, "ChatBar 崩溃诊断报告")
-            clipData = ClipData.newUri(context.contentResolver, "ChatBar crash report", uri)
+            putExtra(Intent.EXTRA_SUBJECT, subject)
+            clipData = ClipData.newUri(context.contentResolver, subject, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        val chooser = Intent.createChooser(shareIntent, "发送崩溃诊断报告")
+        launchChooser(context, shareIntent, "分享诊断报告")
+    }
+
+    private fun launchChooser(context: Context, send: Intent, title: String) {
+        val chooser = Intent.createChooser(send, title)
         if (context !is Activity) chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(chooser)
-        recordBreadcrumb("diagnostics", "share_crash_report")
     }
 
     fun deletePendingReport() {
         if (!initialized) return
         AtomicFile(pendingReportFile()).delete()
-        shareDir().listFiles()?.forEach(File::delete)
+        shareDir().listFiles()?.filter { it.name.startsWith("ChatBar-crash-report-") }?.forEach(File::delete)
         _pendingReport.value = null
         recordBreadcrumb("diagnostics", "delete_crash_report")
     }
@@ -177,14 +220,18 @@ object CrashReportManager {
         }
     }
 
-    private fun throwableInfo(thread: Thread, throwable: Throwable): DiagnosticThrowableInfo {
+    private fun throwableInfo(
+        thread: Thread,
+        throwable: Throwable,
+        includeMessages: Boolean = true
+    ): DiagnosticThrowableInfo {
         val seen = Collections.newSetFromMap(IdentityHashMap<Throwable, Boolean>())
         val causes = mutableListOf<DiagnosticThrowableCause>()
         var current: Throwable? = throwable
         while (current != null && causes.size < MAX_CAUSES && seen.add(current)) {
             causes += DiagnosticThrowableCause(
                 type = current.javaClass.name,
-                message = CrashDiagnosticReportFormatter.sanitizeThrowableMessage(current.message),
+                message = if (includeMessages) CrashDiagnosticReportFormatter.sanitizeThrowableMessage(current.message) else null,
                 stackFrames = current.stackTrace
                     .take(MAX_STACK_FRAMES_PER_CAUSE)
                     .map(StackTraceElement::toString)
