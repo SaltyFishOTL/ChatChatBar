@@ -37,7 +37,7 @@ class ExperimentalToolChatTest {
         val experimental = Json.parseToJsonElement(service.buildRequestBody(
             logical, model(), true, experimentalApiMode = true
         )).jsonObject
-        val description = tool(experimental, "context").getValue("description").jsonPrimitive.content
+        val description = contextDescription(outputTool(experimental))
         assertTrue(description.endsWith(JsonPrimitive(PromptTemplates.GENERAL_POST_USER_ACK_ASSISTANT_PROMPT).toString().dropLast(1)))
         val restored = Json.parseToJsonElement(description + "\"}]").jsonArray
         assertEquals(logical.drop(1).map { it.content }, restored.map { it.jsonObject.getValue("content") })
@@ -52,19 +52,20 @@ class ExperimentalToolChatTest {
     )
 
     @Test
-    fun `experimental request retains every logical message without rewriting text`() {
+    fun `experimental request carries every logical message in its only callable tool`() {
         val body = request(experimental = true)
         val sent = body.getValue("messages").jsonArray
         assertEquals(listOf("system", "user"), sent.map { it.jsonObject.getValue("role").jsonPrimitive.content })
         assertEquals(messages.first().content, sent.first().jsonObject["content"])
         assertEquals(PromptTemplates.EXPERIMENTAL_TOOL_USER_TAIL, sent.last().jsonObject.getValue("content").jsonPrimitive.content)
-        val description = tool(body, "context").getValue("description").jsonPrimitive.content
+        val tool = outputTool(body)
+        val description = contextDescription(tool)
         assertTrue(description.endsWith(JsonPrimitive(messages.last().content.jsonPrimitive.content).toString().dropLast(1)))
         assertTrue(runCatching { Json.parseToJsonElement(description) }.isFailure)
         val context = Json.parseToJsonElement(description + "\"}]").jsonArray
         assertEquals(messages.drop(1).map { it.role }, context.map { it.jsonObject.getValue("role").jsonPrimitive.content })
         assertEquals(messages.drop(1).map { it.content }, context.map { it.jsonObject.getValue("content") })
-        assertEquals(listOf("content"), tool(body, "game_content").getValue("parameters").jsonObject
+        assertEquals(listOf("content"), tool.getValue("parameters").jsonObject
             .getValue("required").jsonArray.map { it.jsonPrimitive.content })
         assertFalse(body.containsKey("tool_choice"))
         assertEquals(JsonPrimitive(0.7), body["temperature"])
@@ -93,7 +94,7 @@ class ExperimentalToolChatTest {
         val originalMedia = (first.content.jsonArray + second.content.jsonArray)
             .filter { it.jsonObject.getValue("type").jsonPrimitive.content == "image_url" }
         assertEquals(originalMedia, tail.dropLast(1))
-        val description = tool(body, "context").getValue("description").jsonPrimitive.content
+        val description = contextDescription(outputTool(body))
         assertFalse(description.contains("first-image"))
         assertFalse(description.contains("second-image"))
         assertFalse(description.contains("third-image"))
@@ -108,7 +109,7 @@ class ExperimentalToolChatTest {
         val input = listOf(ChatApiMessage.text("user", "连接探测原文"))
         val body = Json.parseToJsonElement(StreamingChatService(experimentalApiModeEnabled = { true })
             .buildRequestBody(input, model(), false)).jsonObject
-        val context = Json.parseToJsonElement(tool(body, "context").getValue("description").jsonPrimitive.content).jsonArray
+        val context = Json.parseToJsonElement(contextDescription(outputTool(body))).jsonArray
         assertEquals(input.single().content, context.single().jsonObject["content"])
     }
 
@@ -201,9 +202,20 @@ class ExperimentalToolChatTest {
         )
     ).jsonObject
 
-    private fun tool(body: JsonObject, name: String): JsonObject = body.getValue("tools").jsonArray
-        .map { it.jsonObject.getValue("function").jsonObject }
-        .single { it.getValue("name").jsonPrimitive.content == name }
+    private fun outputTool(body: JsonObject): JsonObject {
+        val tool = body.getValue("tools").jsonArray.single().jsonObject
+        assertEquals("function", tool.getValue("type").jsonPrimitive.content)
+        val function = tool.getValue("function").jsonObject
+        assertEquals("game_content", function.getValue("name").jsonPrimitive.content)
+        return function
+    }
+
+    private fun contextDescription(tool: JsonObject): String {
+        val prefix = "${PromptTemplates.EXPERIMENTAL_GAME_CONTENT_TOOL_DESCRIPTION}\n\n"
+        val description = tool.getValue("description").jsonPrimitive.content
+        assertTrue(description.startsWith(prefix))
+        return description.removePrefix(prefix)
+    }
 
     private fun model() = ModelConfig(
         id = "test", displayName = "Test", baseUrl = "https://example.invalid/v1", apiKey = "",

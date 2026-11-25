@@ -32,6 +32,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -155,8 +156,7 @@ class ExperimentalToolTransportTest {
                 val request = Json.parseToJsonElement(server.requestBody).jsonObject
                 assertEquals(listOf("system", "user"), request.getValue("messages").jsonArray
                     .map { it.jsonObject.getValue("role").jsonPrimitive.content })
-                val description = request.getValue("tools").jsonArray.map { it.jsonObject.getValue("function").jsonObject }
-                    .single { it.getValue("name").jsonPrimitive.content == "context" }.getValue("description").jsonPrimitive.content
+                val description = experimentalContextDescription(request)
                 assertTrue(description.contains("输入原文"))
             }
         }
@@ -239,8 +239,7 @@ class ExperimentalToolTransportTest {
             val events = withTimeout(5_000) { service().streamChat("multipart-next", nextMessages, model(server)).toList() }
             assertEquals(StreamEvent.Done, events.last())
             val request = Json.parseToJsonElement(server.requestBody).jsonObject
-            val contextDescription = request.getValue("tools").jsonArray.map { it.jsonObject.getValue("function").jsonObject }
-                .single { it.getValue("name").jsonPrimitive.content == "context" }.getValue("description").jsonPrimitive.content
+            val contextDescription = experimentalContextDescription(request)
             val history = Json.parseToJsonElement(contextDescription).jsonArray.first().jsonObject
             assertEquals("assistant", history.getValue("role").jsonPrimitive.content)
             assertEquals(PromptTemplates.narrativeModeHistoryReply(expected, mode), history.getValue("content").jsonPrimitive.content)
@@ -368,10 +367,7 @@ class ExperimentalToolTransportTest {
             assertEquals(parts.map(String::length), lengths)
             assertEquals(lengths, completion?.toolReplyPartLengths)
             assertEquals(StreamEvent.Done, events.last())
-            val sent = Json.parseToJsonElement(server.requestBody).jsonObject.getValue("tools").jsonArray
-                .map { it.jsonObject.getValue("function").jsonObject }
-                .single { it.getValue("name").jsonPrimitive.content == "context" }
-                .getValue("description").jsonPrimitive.content
+            val sent = experimentalContextDescription(Json.parseToJsonElement(server.requestBody).jsonObject)
             val sentHistory = Json.parseToJsonElement(sent).jsonArray
             if (modeTail != null) assertTrue(sentHistory.any {
                 val item = it.jsonObject
@@ -2119,9 +2115,7 @@ class ExperimentalToolTransportTest {
                 }.toList()
             }
             val payload = Json.parseToJsonElement(server.requestBody).jsonObject
-            val context = payload.getValue("tools").jsonArray.map { it.jsonObject.getValue("function").jsonObject }
-                .single { it.getValue("name").jsonPrimitive.content == "context" }
-                .getValue("description").jsonPrimitive.content
+            val context = experimentalContextDescription(payload)
             assertTrue(Json.parseToJsonElement(context + "\"}]").jsonArray.any {
                 card in it.jsonObject.getValue("content").jsonPrimitive.content
             })
@@ -4105,9 +4099,7 @@ class ExperimentalToolTransportTest {
             }
             val request = Json.parseToJsonElement(server.requestBody).jsonObject
             val sent = if (experimental) {
-                val encoded = request.getValue("tools").jsonArray.map { it.jsonObject.getValue("function").jsonObject }
-                    .single { it.getValue("name").jsonPrimitive.content == "context" }
-                    .getValue("description").jsonPrimitive.content
+                val encoded = experimentalContextDescription(request)
                 Json.parseToJsonElement(encoded + "\"}]").jsonArray
             } else request.getValue("messages").jsonArray
             val wireUser = sent.asSequence().map { it.jsonObject }
@@ -6534,9 +6526,7 @@ class ExperimentalToolTransportTest {
             assertEquals(rawPreviews, previews)
             val payload = Json.parseToJsonElement(server.requestBody).jsonObject
             val context = if (experimental) {
-                val description = payload.getValue("tools").jsonArray.map { it.jsonObject.getValue("function").jsonObject }
-                    .single { it.getValue("name").jsonPrimitive.content == "context" }
-                    .getValue("description").jsonPrimitive.content
+                val description = experimentalContextDescription(payload)
                 Json.parseToJsonElement(description + "\"}]").jsonArray
             } else payload.getValue("messages").jsonArray
             if (corePrefix.isNotEmpty()) {
@@ -7573,8 +7563,7 @@ class ExperimentalToolTransportTest {
             assertEquals("system", system.getValue("role").jsonPrimitive.content)
             assertTrue(PromptTemplates.MESSAGE_FORMAT_REPAIR_SYSTEM_PROMPT.trim() in system.getValue("content").jsonPrimitive.content)
             val wireMessages = if (experimental) {
-                val context = payload.getValue("tools").jsonArray.map { it.jsonObject.getValue("function").jsonObject }
-                    .single { it.getValue("name").jsonPrimitive.content == "context" }.getValue("description").jsonPrimitive.content
+                val context = experimentalContextDescription(payload)
                 Json.parseToJsonElement(context + "\"}]").jsonArray
             } else payload.getValue("messages").jsonArray
             assertTrue(wireMessages.any {
@@ -8012,6 +8001,13 @@ class ExperimentalToolTransportTest {
             assertFalse(events.any { it is StreamEvent.Error })
             assertEquals(1, modeReads.get())
         }
+    }
+
+    private fun experimentalContextDescription(request: JsonObject): String {
+        val function = request.getValue("tools").jsonArray.single().jsonObject.getValue("function").jsonObject
+        assertEquals("game_content", function.getValue("name").jsonPrimitive.content)
+        return function.getValue("description").jsonPrimitive.content
+            .removePrefix("${PromptTemplates.EXPERIMENTAL_GAME_CONTENT_TOOL_DESCRIPTION}\n\n")
     }
 
     private fun service() = StreamingChatService(experimentalApiModeEnabled = { true }, allowCleartextHttp = { true })

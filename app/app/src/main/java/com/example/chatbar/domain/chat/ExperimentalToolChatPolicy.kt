@@ -14,7 +14,6 @@ import kotlinx.serialization.json.put
 /** Request-only transport. Logical messages and persisted prompts remain unchanged. */
 internal object ExperimentalToolChatPolicy {
     const val OUTPUT_TOOL = "game_content"
-    const val CONTEXT_TOOL = "context"
 
     fun wrap(request: JsonObject, messages: List<ChatApiMessage>): JsonObject {
         val firstSystem = messages.firstOrNull()?.takeIf { it.role == "system" }
@@ -58,40 +57,30 @@ internal object ExperimentalToolChatPolicy {
                 put("content", tail)
             })
         }
-        val tools = buildJsonArray {
-            add(buildJsonObject {
-                put("type", "function")
-                put("function", buildJsonObject {
-                    put("name", OUTPUT_TOOL)
-                    put("description", PromptTemplates.EXPERIMENTAL_GAME_CONTENT_TOOL_DESCRIPTION)
-                    put("parameters", buildJsonObject {
-                        put("type", "object")
-                        put("properties", buildJsonObject {
-                            put("content", buildJsonObject { put("type", "string") })
-                        })
-                        put("required", buildJsonArray { add(JsonPrimitive("content")) })
+        val outputTool = buildJsonObject {
+            put("type", "function")
+            put("function", buildJsonObject {
+                put("name", OUTPUT_TOOL)
+                put(
+                    "description",
+                    "${PromptTemplates.EXPERIMENTAL_GAME_CONTENT_TOOL_DESCRIPTION}\n\n$contextDescription"
+                )
+                put("parameters", buildJsonObject {
+                    put("type", "object")
+                    put("properties", buildJsonObject {
+                        put("content", buildJsonObject { put("type", "string") })
                     })
-                })
-            })
-            add(buildJsonObject {
-                put("type", "function")
-                put("function", buildJsonObject {
-                    put("name", CONTEXT_TOOL)
-                    put("description", contextDescription)
-                    put("parameters", buildJsonObject {
-                        put("type", "object")
-                        put("properties", JsonObject(emptyMap()))
-                    })
+                    put("required", buildJsonArray { add(JsonPrimitive("content")) })
                 })
             })
         }
         return JsonObject(request.toMutableMap().apply {
             put("messages", transportMessages)
-            put("tools", tools)
+            put("tools", JsonArray(listOf(outputTool)))
             // Keep the same cache behavior while separating the two wire formats.
             (request["prompt_cache_key"] as? JsonPrimitive)?.contentOrNull?.let { key ->
                 val digest = MessageDigest.getInstance("SHA-256")
-                    .digest("experimental-tool-v1:$key".toByteArray(Charsets.UTF_8))
+                    .digest("experimental-tool-v2:$key".toByteArray(Charsets.UTF_8))
                     .joinToString("") { "%02x".format(it) }
                 put("prompt_cache_key", JsonPrimitive(digest))
             }

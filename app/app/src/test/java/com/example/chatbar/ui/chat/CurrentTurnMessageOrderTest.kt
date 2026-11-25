@@ -134,10 +134,9 @@ class CurrentTurnMessageOrderTest {
                 val experimental = Json.parseToJsonElement(service.buildRequestBody(
                     messages, model, stream = true, experimentalApiMode = true
                 )).jsonObject
-                val description = experimental.getValue("tools").jsonArray
-                    .map { it.jsonObject.getValue("function").jsonObject }
-                    .single { it.getValue("name").jsonPrimitive.content == "context" }
-                    .getValue("description").jsonPrimitive.content
+                val description = experimental.getValue("tools").jsonArray.single().jsonObject
+                    .getValue("function").jsonObject.getValue("description").jsonPrimitive.content
+                    .removePrefix("${PromptTemplates.EXPERIMENTAL_GAME_CONTENT_TOOL_DESCRIPTION}\n\n")
                 val context = Json.parseToJsonElement(description + "\"}]").jsonArray
                 assertEquals(messages.drop(1).map { it.content }, context.map { it.jsonObject.getValue("content") })
                 assertEquals("assistant", context.last().jsonObject.getValue("role").jsonPrimitive.content)

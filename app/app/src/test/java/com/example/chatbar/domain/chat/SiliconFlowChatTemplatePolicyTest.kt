@@ -5,6 +5,7 @@ import com.example.chatbar.data.local.entity.ParamValue
 import com.example.chatbar.domain.prompt.AiTaskContext
 import com.example.chatbar.domain.prompt.AiTaskKind
 import com.example.chatbar.domain.prompt.AiTaskMessageAssembler
+import com.example.chatbar.domain.prompt.PromptTemplates
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -83,9 +84,10 @@ class SiliconFlowChatTemplatePolicyTest {
         assertEquals(listOf("system", "user"), sent.roles())
         assertEquals(JsonPrimitive("core one\n\ncore two"), sent.first().jsonObject["content"])
         assertTrue(sent.all { it.jsonObject.getValue("content") is JsonPrimitive })
-        val context = body.getValue("tools").jsonArray.map { it.jsonObject.getValue("function").jsonObject }
-            .single { it.getValue("name").jsonPrimitive.content == "context" }
-            .getValue("description").jsonPrimitive.content
+        val function = body.getValue("tools").jsonArray.single().jsonObject.getValue("function").jsonObject
+        assertEquals("game_content", function.getValue("name").jsonPrimitive.content)
+        val context = function.getValue("description").jsonPrimitive.content
+            .removePrefix("${PromptTemplates.EXPERIMENTAL_GAME_CONTENT_TOOL_DESCRIPTION}\n\n")
         val restored = Json.parseToJsonElement(context + "\"}]").jsonArray
         assertEquals(logical.drop(1).map { it.role }, restored.roles())
         assertEquals(logical.drop(1).map { it.content }, restored.map { it.jsonObject["content"] })

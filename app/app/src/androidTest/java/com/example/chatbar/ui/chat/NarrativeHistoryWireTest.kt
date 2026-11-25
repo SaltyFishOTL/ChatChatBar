@@ -1756,10 +1756,10 @@ class NarrativeHistoryWireTest {
     private fun sentMessages(request: String, transport: Transport): JsonArray {
         val payload = Json.parseToJsonElement(request).jsonObject
         if (!transport.experimental) return payload.getValue("messages").jsonArray
-        val tools = payload.getValue("tools").jsonArray.map { it.jsonObject.getValue("function").jsonObject }
-        assertTrue(tools.any { it.getValue("name").jsonPrimitive.content == "game_content" })
-        val context = tools.single { it.getValue("name").jsonPrimitive.content == "context" }
-            .getValue("description").jsonPrimitive.content
+        val function = payload.getValue("tools").jsonArray.single().jsonObject.getValue("function").jsonObject
+        assertEquals("game_content", function.getValue("name").jsonPrimitive.content)
+        val context = function.getValue("description").jsonPrimitive.content
+            .removePrefix("${PromptTemplates.EXPERIMENTAL_GAME_CONTENT_TOOL_DESCRIPTION}\n\n")
         // Experimental transport intentionally leaves its last assistant string open.
         return runCatching { Json.parseToJsonElement(context).jsonArray }
             .getOrElse { Json.parseToJsonElement(context + "\"}]").jsonArray }
